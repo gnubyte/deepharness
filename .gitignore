@@ -1,0 +1,20 @@
+# Build artifacts
+build/
+*.app/
+
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# Xcode
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Secrets / local config
+.env
+*.key
