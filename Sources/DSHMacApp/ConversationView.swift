@@ -63,6 +63,12 @@ struct ConversationView: View {
             ToolbarItem { ContextMeter(session: session) }
             ToolbarItem { PermissionControl(session: session) }
             ToolbarItem {
+                Button { model.showMemorySkills = true } label: {
+                    Label("Memory & Skills", systemImage: "brain")
+                }
+                .help("Memory & skills (⇧⌘M)")
+            }
+            ToolbarItem {
                 Button { showHistory = true } label: {
                     Label("Prompt History", systemImage: "clock.arrow.circlepath")
                 }
@@ -70,12 +76,15 @@ struct ConversationView: View {
             }
             ToolbarItem {
                 if session.running {
+                    let stopping = model.stopping.contains(session.id)
                     Button {
-                        Task { await model.cancel() }
+                        Task { await model.stop(session) }
                     } label: {
-                        Label("Stop", systemImage: "stop.circle.fill")
+                        Label(stopping ? "Stopping…" : "Stop", systemImage: "stop.circle.fill")
+                            .foregroundStyle(stopping ? Color.secondary : .red)
                     }
-                    .help("Stop the current turn (⌘.)")
+                    .disabled(stopping)
+                    .help(stopping ? "Waiting for the turn to settle" : "Stop this agent (⌘.)")
                 }
             }
             ToolbarItem {

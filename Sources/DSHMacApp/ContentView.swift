@@ -26,6 +26,15 @@ struct ContentView: View {
         .task {
             if !model.isConnected { await model.connect() }
         }
+        // Lives here, not in the conversation, so recovery is reachable even
+        // with no chat selected — which is exactly when a wedged host is
+        // hardest to deal with.
+        .sheet(isPresented: $model.showRecovery) {
+            HarnessRecoveryView().environment(model)
+        }
+        .sheet(isPresented: $model.showMemorySkills) {
+            MemorySkillsView().environment(model)
+        }
         .alert(
             "Something went wrong",
             isPresented: Binding(get: { model.banner != nil }, set: { if !$0 { model.banner = nil } })
@@ -65,6 +74,7 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .top, spacing: 0) { RunningAgentsBar() }
         .searchable(text: $model.searchQuery, placement: .sidebar, prompt: "Search chats")
         .onChange(of: model.searchQuery) { _, q in model.runSearch(q) }
         .overlay {
@@ -230,6 +240,9 @@ struct SessionRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            Spacer(minLength: 0)
+            // Reachable without selecting the chat first.
+            StopButton(session: session, compact: true)
         }
         .padding(.vertical, 2)
         .contextMenu {
@@ -238,6 +251,11 @@ struct SessionRow: View {
                 renaming = true
             }
             Button("Fork") { Task { await model.fork(session) } }
+            if session.running {
+                Divider()
+                Button("Stop Agent") { Task { await model.stop(session) } }
+                Button("Stop Subagents") { Task { await model.stopSubagents(session) } }
+            }
             Divider()
             if model.archivedSessionIds.contains(session.id) {
                 Button("Unarchive") { Task { await model.setArchived(session, archived: false) } }
@@ -272,6 +290,14 @@ struct ConnectionBar: View {
                     .buttonStyle(.link)
                     .font(.caption)
             }
+            Button {
+                model.showRecovery = true
+            } label: {
+                Image(systemName: "stethoscope").font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Harness recovery — stop agents, reconnect, restart")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
@@ -325,9 +351,20 @@ struct ConnectView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "cable.connector")
-                .font(.system(size: 40))
-                .foregroundStyle(.tertiary)
+            Group {
+                if let logo = logoImage {
+                    Image(nsImage: logo)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 88, height: 88)
+                        .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+                } else {
+                    Image(systemName: "cable.connector")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.tertiary)
+                }
+            }
             Text("Connect to a harness").font(.title2).bold()
 
             if case .failed(let why) = model.connection {
@@ -388,4 +425,14 @@ struct ConnectView: View {
         panel.prompt = "Select"
         if panel.runModal() == .OK, let url = panel.url { repoPath = url.path }
     }
+}
+
+/// Loads the bundled logo from the app's Resources, falling back to nil so the
+/// view can show its SF Symbol placeholder instead.
+private var logoImage: NSImage? {
+    if let url = Bundle.main.url(forResource: "Logo", withExtension: "png"),
+       let image = NSImage(contentsOf: url) {
+        return image
+    }
+    return nil
 }

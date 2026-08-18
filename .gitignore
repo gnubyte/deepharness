@@ -18,3 +18,6 @@ xcuserdata/
 # Secrets / local config
 .env
 *.key
+# Distributable artifacts
+*.dmg
+DSH-macos.zip

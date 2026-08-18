@@ -225,8 +225,31 @@ final class AppModel {
         connection = .disconnected
     }
 
+    /// Whether the harness is this app's child and can therefore be restarted.
+    var canRestartHarness: Bool {
+        if case .running = harness.state { return true }
+        return false
+    }
+
+    /// Last known launch parameters, so a restart can reuse them.
+    private var harnessRepoPath: String?
+    private var harnessPort: Int?
+
+    /// Stop and relaunch the harness this app started, then reconnect.
+    func restartHarness() async {
+        guard let repoPath = harnessRepoPath, let port = harnessPort else {
+            note("This harness was started outside the app, so it can’t be restarted from here.")
+            return
+        }
+        disconnect()
+        harness.stop()
+        await startHarnessAndConnect(repoPath: repoPath, port: port)
+    }
+
     /// Start the bundled harness, then connect to it.
     func startHarnessAndConnect(repoPath: String, port: Int) async {
+        harnessRepoPath = repoPath
+        harnessPort = port
         connection = .connecting
         do {
             let url = try await harness.start(repoPath: repoPath, port: port)
@@ -277,6 +300,7 @@ final class AppModel {
             let vm = ensure(sessionId)
             vm.transcript.apply(event: event, view: frame.view)
             vm.running = vm.transcript.running
+            if !vm.running { stopping.remove(sessionId) }
             if vm.transcript.items.contains(where: { if case .user = $0.kind { return true } else { return false } }) {
                 vm.blank = false
             }
@@ -346,6 +370,9 @@ final class AppModel {
                 vm.running = frame.payload["running"]?.boolValue ?? false
                 // A blank session never runs, so the first run clears the bit.
                 if vm.running { vm.blank = false }
+                // The status flip is the authoritative end of a cancel; a
+                // session that starts running again clears a stale pending one.
+                stopping.remove(id)
             }
         case "host/agent-error":
             let message = frame.payload["message"]?.stringValue ?? "The agent reported an error."
@@ -397,6 +424,9 @@ final class AppModel {
             guard let id = item["sessionId"]?.stringValue else { continue }
             let vm = ensure(id)
             vm.running = item["running"]?.boolValue ?? false
+            // A reconnect re-baselines truth, including a cancel that landed
+            // while the stream was down.
+            if !vm.running { stopping.remove(id) }
             vm.blank = item["blank"]?.boolValue ?? vm.blank
             vm.cwd = item["cwd"]?.stringValue ?? vm.cwd
             // The list summary carries no title — it rides the projections block.
@@ -607,9 +637,76 @@ final class AppModel {
         }
     }
 
+    /// Sessions with a cancel in flight, so the UI can say "Stopping" rather
+    /// than continuing to claim the agent is running.
+    var stopping: Set<String> = []
+
+    var runningSessions: [SessionVM] { sessions.filter(\.running) }
+
+    /// Drives the harness-recovery sheet. Held here rather than routed through
+    /// a notification so every surface that needs it — menu, connection bar —
+    /// sets one piece of state the root view observes.
+    var showRecovery = false
+    /// Drives the memory & skills sheet.
+    var showMemorySkills = false
+    /// Bumped whenever memory files change on disk. `MemoryStore` reads the
+    /// filesystem directly, which SwiftUI cannot observe, so views depend on
+    /// this to know a write happened.
+    var memoryRevision = 0
+
+    /// Select a running agent so the user can see what it is doing.
+    func revealRunning() {
+        guard let first = runningSessions.first else { return }
+        selectedID = first.id
+        Task { await hydrate(first) }
+    }
+
+    /// Stop the selected chat's turn (⌘.).
     func cancel() async {
-        guard let vm = selected, vm.running else { return }
-        try? await api.cancel(vm.id)
+        guard let vm = selected else { return }
+        await stop(vm)
+    }
+
+    /// Stop any session's turn, selected or not.
+    ///
+    /// A background agent is exactly the one you most need to stop and least
+    /// want to have to go find, so this takes the session rather than reading
+    /// the selection.
+    func stop(_ vm: SessionVM) async {
+        guard vm.running, !stopping.contains(vm.id) else { return }
+        stopping.insert(vm.id)
+        do {
+            try await api.cancel(vm.id)
+        } catch {
+            // A refused cancel used to vanish into `try?`. Surfacing it matters
+            // most here: the whole point is knowing whether it stopped.
+            stopping.remove(vm.id)
+            note("Couldn’t stop “\(vm.displayTitle)”: \(Self.describe(error))")
+        }
+    }
+
+    /// Stop every running agent.
+    ///
+    /// Sequential because `session.cancel` returns as soon as the request is
+    /// admitted — the turn settles asynchronously afterwards — so there is no
+    /// slow call here to overlap, and every session still gets its request
+    /// even if an earlier one is refused.
+    func stopAll() async {
+        for vm in runningSessions {
+            await stop(vm)
+        }
+    }
+
+    /// Interrupt a session's running subagents.
+    ///
+    /// Cancelling a parent does not reach into session-backed children — they
+    /// have their own interrupt path — so a parent that looks stopped can still
+    /// have work underneath it.
+    func stopSubagents(_ vm: SessionVM) async {
+        await loadSubagents(vm, force: true)
+        for child in vm.subagents where child.running {
+            await interruptSubagent(parent: vm, child: child)
+        }
     }
 
     func selectModel(_ model: ModelVM) async {
@@ -778,10 +875,21 @@ final class AppModel {
         }
     }
 
-    /// Sessions not accounted by any workspace.
+    /// Sessions not accounted by any workspace, running ones first.
+    ///
+    /// Order is computed here rather than relying on the backing array: a
+    /// session added by a live frame is appended, so without this a freshly
+    /// started agent lands at the bottom of a long list — visible in the
+    /// running count but nowhere to be found. Running first guarantees the one
+    /// you most likely want to stop is at the top.
     var ungroupedSessions: [SessionVM] {
         let grouped = Set(workspaces.flatMap(\.sessionIds))
-        return visibleSessions.filter { !grouped.contains($0.id) }
+        return visibleSessions
+            .filter { !grouped.contains($0.id) }
+            .sorted { a, b in
+                if a.running != b.running { return a.running }
+                return a.updatedAt > b.updatedAt
+            }
     }
 
     func sessions(in workspace: Workspace) -> [SessionVM] {
@@ -789,6 +897,69 @@ final class AppModel {
         workspace.sessionIds.compactMap { id in
             visibleSessions.first { $0.id == id }
         }
+    }
+
+    // MARK: - Skills
+
+    var skills: [Skill] = []
+    var skillsLoadedFor: String?
+
+    func refreshSkills(force: Bool = false) async {
+        guard let vm = selected else { skills = []; return }
+        guard force || skillsLoadedFor != vm.id else { return }
+        do {
+            skills = try await api.skillList(vm.id).compactMap(Skill.init)
+            skillsLoadedFor = vm.id
+        } catch {
+            skills = []
+            note(Self.describe(error))
+        }
+    }
+
+    // MARK: - Memory
+
+    /// Memory lives in the session's working directory, so it follows the
+    /// project rather than the app.
+    var memory: MemoryStore? {
+        guard let cwd = selected?.cwd else { return nil }
+        return MemoryStore(root: URL(fileURLWithPath: cwd))
+    }
+
+    /// Create MEMORY.md, today's log, and the memory skill in this project.
+    @discardableResult
+    func installMemory() async -> [URL] {
+        guard let store = memory else {
+            note("Open a project folder first — memory is stored inside it.")
+            return []
+        }
+        do {
+            let created = try store.install()
+            memoryRevision += 1
+            // The skill catalog changes the moment the file lands; the provider
+            // watches these roots, so give its debounce a moment first.
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            await refreshSkills(force: true)
+            return created
+        } catch {
+            note(Self.describe(error))
+            return []
+        }
+    }
+
+    func saveMemory(_ text: String) {
+        guard let store = memory else { return }
+        do {
+            try store.writeMemory(text)
+            memoryRevision += 1
+        } catch { note(Self.describe(error)) }
+    }
+
+    func appendToTodayLog(_ text: String) {
+        guard let store = memory else { return }
+        do {
+            try store.appendToLog(text)
+            memoryRevision += 1
+        } catch { note(Self.describe(error)) }
     }
 
     // MARK: - Subagents

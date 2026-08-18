@@ -167,6 +167,28 @@ public struct Workspace: Identifiable, Sendable {
     }
 }
 
+/// One skill in the catalog visible to a session.
+public struct Skill: Identifiable, Sendable, Hashable {
+    public let name: String
+    public let description: String
+    /// Which provider surfaced it (`filesystem`, `runtime`, …), when reported.
+    public let provider: String?
+    public var id: String { name }
+
+    public init?(_ value: JSONValue) {
+        guard let name = value["name"]?.stringValue else { return nil }
+        self.name = name
+        self.description = value["description"]?.stringValue ?? ""
+        self.provider = value["provider"]?.stringValue
+    }
+
+    /// First sentence, for a one-line row.
+    public var summary: String {
+        guard let end = description.firstIndex(where: { $0 == "." || $0 == "\n" }) else { return description }
+        return String(description[..<end])
+    }
+}
+
 /// One search hit: a session plus an excerpt around the strongest match.
 public struct SearchHit: Identifiable, Sendable {
     public let sessionId: String

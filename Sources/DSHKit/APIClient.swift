@@ -335,6 +335,17 @@ extension APIClient {
         ])
     }
 
+    // MARK: - Skills
+
+    /// The skill catalog visible to one session.
+    ///
+    /// Session-scoped rather than global because discovery depends on the
+    /// session's cwd: project roots are found by walking up from it, so two
+    /// chats in different folders legitimately see different skills.
+    public func skillList(_ sessionId: String) async throws -> [JSONValue] {
+        try await call("skill.list", ["sessionId": .string(sessionId)])["skills"]?.arrayValue ?? []
+    }
+
     // MARK: - Subagents
 
     public func subagentList(parent: String) async throws -> JSONValue {

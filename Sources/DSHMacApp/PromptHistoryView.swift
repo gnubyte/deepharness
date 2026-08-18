@@ -196,4 +196,6 @@ extension Notification.Name {
     static let reusePrompt = Notification.Name("dsh.reusePrompt")
     /// Menu request to open the history browser.
     static let showPromptHistory = Notification.Name("dsh.showPromptHistory")
+    /// Menu request to open the harness recovery sheet.
+    static let showHarnessRecovery = Notification.Name("dsh.showHarnessRecovery")
 }

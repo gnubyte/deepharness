@@ -1,8 +1,28 @@
-# DSH for macOS
+<p align="center">
+  <img src="assets/logo/logo.png" alt="DSH for macOS" width="120" />
+</p>
 
-A native SwiftUI client for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), speaking the harness `/api` gateway directly. No web view.
+<h1 align="center">DSH for macOS</h1>
 
-Streaming, attachments, multiple concurrent chats, and OpenAI-compatible providers (vLLM, Ollama, LM Studio, or any gateway).
+<p align="center">
+  A native SwiftUI client for <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>, speaking the harness <code>/api</code> gateway directly. No web view.
+</p>
+
+<p align="center">
+  Streaming, attachments, multiple concurrent chats, and OpenAI-compatible providers (vLLM, Ollama, LM Studio, or any gateway).
+</p>
+
+---
+
+## Download
+
+Grab the latest build from [Releases](https://github.com/gnubyte/deepharness/releases). The `.dmg` contains the app — drag **DSH** into **Applications**.
+
+> **Note:** releases are ad-hoc-signed for Apple Silicon (arm64), macOS 14+. Gatekeeper will prompt on first launch — right-click the app and choose **Open**, or run:
+>
+> ```bash
+> xattr -d com.apple.quarantine /Applications/DSH.app
+> ```
 
 ## Build
 
@@ -144,6 +164,59 @@ When a turn creates or modifies files, they appear as chips beneath it. Click to
 
 Following the harness's own rule, a mutation is recognised by *render intent* rather than tool name — a diff card, or a generic card declaring `kind: "edit"` — so a new mutation tool joins automatically. Reads carry `locations` too and are excluded; failed and cancelled calls contribute nothing; a path appears once per turn in first-seen order.
 
+## Stopping an agent
+
+A running agent is reachable from four places, none of which require having its chat open:
+
+- **The running bar** at the top of the sidebar — appears whenever anything is running, shows the count, and offers Stop / Stop All. Clicking the label jumps to a running chat.
+- **The chat's own row** in the sidebar — a red stop button while it runs, plus Stop Agent / Stop Subagents in its context menu.
+- **The toolbar** of the open chat, which reads "Stopping…" and disables itself once a cancel is in flight.
+- **Session ▸ Stop Turn (⌘.) / Stop All Agents (⇧⌘.)**.
+
+Running chats sort to the top of the ungrouped list, so a freshly started agent is never buried.
+
+Two behaviours worth knowing, both verified against a live harness:
+
+- **Stopping halts queued work too.** A session with three queued prompts, cancelled mid-turn, recorded exactly one `turn/start` and ended `{"kind":"aborted","reason":{"kind":"user"}}`. The remaining prompts did not resume.
+- **Cancelling a parent does not reach its subagents.** They have their own interrupt path, so a parent that looks stopped can still have work underneath — hence the separate Stop Subagents action.
+
+**Session ▸ Harness Recovery…** (also the stethoscope in the connection bar) handles the case where the harness itself, not one turn, is the problem: stop all agents, reconnect, or restart the process. Restart is offered only for a harness this app started; one launched elsewhere says so rather than showing a button that does nothing.
+
+## Memory and skills
+
+**Session ▸ Memory & Skills… (⇧⌘M)** manages both for the current project.
+
+### Memory
+
+Memory is files inside the project, so the agent reads and edits it with the tools it already has and it diffs like anything else in the repo:
+
+| Path | Lifetime | Loaded |
+|---|---|---|
+| `MEMORY.md` | durable | every session |
+| `memory/YYYY-MM-DD.md` | one day | on demand |
+| `.agents/skills/memory/SKILL.md` | durable | when the task calls for it |
+
+**Set Up Memory** creates all three. The editor shows a line count and warns past ~100 lines, because `MEMORY.md` costs tokens on every request — detail belongs in a skill, and today's state belongs in a daily log.
+
+**How injection actually works.** The harness's `agent-instructions` loader accepts an `instructionFileCandidates` config, and `dsh --profile web --dump-config` shows `MEMORY.md` applied to it — but the running harness ignores it. Verified: in a project root where `AGENTS.md` loads 16 KiB of instructions, a `MEMORY.md` beside it loads nothing. So the app mirrors `MEMORY.md` into a managed block of `AGENTS.md`, delimited by `<!-- dsh:memory:start -->` / `<!-- dsh:memory:end -->`. Anything outside those markers is untouched, so hand-written instructions survive. Confirmed end-to-end: a canary written to `MEMORY.md` appears in the model's `agent-instructions` context.
+
+**A project folder needs a root marker.** `agent-instructions` finds the project root by walking up for `.git`, and with no root it loads nothing at all — not even `AGENTS.md`. A folder that is not a git repository gets no instructions and no memory.
+
+### Skills
+
+Skills already work in the harness — `skill-filesystem` scans project and user roots for `SKILL.md` and watches them for changes. The app surfaces that catalog and lets you author into it.
+
+Discovery roots, highest precedence first:
+
+| Rank | Path |
+|---|---|
+| 100 | `<project>/.dsh/skills` |
+| 200 | `<project>/.agents/skills` |
+| 400 | `$DSH_HOME/skills` |
+| 500 | `$DSH_AGENTS_HOME/skills` |
+
+**New Skill** writes to rank 200. The `description` frontmatter is the only thing the model sees before loading, so it should state *when* the skill applies rather than what it contains.
+
 ## Enabling session search
 
 Search is **off by default**: the base bundle ships `session-query-sqlite` with `openAt: never`, and every search fails with `SESSION_QUERY_SEARCH_DISABLED`. The bundle names the profile patch layer as the place to opt in. In `$DSH_HOME/profiles/<profile>/cordis.patch.yml`:
@@ -177,6 +250,7 @@ Verified against a live harness with a local Ollama endpoint:
 - **Permissions** — setting the default to `danger-full-access` produced a new session pinned to it while the existing session kept `workspace-write`, exactly as the plugin documents
 - **Prompt history** — a prompt sent through the app landed in `~/Library/Application Support/DSH/prompts.db` with its session, cwd, and mode
 - **Produced files** — a turn with one successful and two failed writes showed exactly one chip
+- **Stopping** — Stop All cleared two background agents; a per-row stop halted a third without ever selecting it, and its two queued prompts never started
 
 48 tests over captured wire shapes and regression cases: `swift test`.
 

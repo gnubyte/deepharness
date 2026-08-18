@@ -33,6 +33,19 @@ struct DSHApp: App {
                 Button("Stop Turn") { Task { await model.cancel() } }
                     .keyboardShortcut(".", modifiers: .command)
                     .disabled(model.selected?.running != true)
+                Button(stopAllTitle(model)) { Task { await model.stopAll() } }
+                    .keyboardShortcut(".", modifiers: [.command, .shift])
+                    .disabled(model.runningSessions.isEmpty)
+                Button("Stop Subagents") {
+                    guard let vm = model.selected else { return }
+                    Task { await model.stopSubagents(vm) }
+                }
+                .disabled(model.selected == nil)
+                Divider()
+                Button("Memory & Skills…") { model.showMemorySkills = true }
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                    .disabled(!model.isConnected)
+                Button("Harness Recovery…") { model.showRecovery = true }
                 Button("Fork Chat") {
                     guard let vm = model.selected else { return }
                     Task { await model.fork(vm) }
@@ -58,6 +71,13 @@ struct DSHApp: App {
                 .frame(width: 660, height: 520)
         }
     }
+}
+
+/// Names the count so the menu says what it will actually do.
+@MainActor
+private func stopAllTitle(_ model: AppModel) -> String {
+    let n = model.runningSessions.count
+    return n > 1 ? "Stop All \(n) Agents" : "Stop All Agents"
 }
 
 extension AppModel {

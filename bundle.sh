@@ -18,6 +18,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/DSH"
 
+# Copy the logo assets into the bundle (app icon + in-app logo).
+cp "$ROOT/assets/logo/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/assets/logo/logo.png"     "$APP/Contents/Resources/Logo.png"
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -30,6 +34,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleShortVersionString</key> <string>0.1</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleExecutable</key>      <string>DSH</string>
+  <key>CFBundleIconFile</key>        <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>  <string>14.0</string>
   <key>NSHighResolutionCapable</key> <true/>
   <!-- The harness runs on loopback without TLS, so the app must be allowed
@@ -45,4 +50,15 @@ PLIST
 # Ad-hoc sign so the app launches without a developer identity.
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (unsigned — Gatekeeper may prompt on first launch)"
 
+# Build a distributable DMG (app + an Applications drag target).
+DMG="$ROOT/build/DeepHarness.dmg"
+STAGE="$(mktemp -d)/dmg"
+rm -rf "$STAGE"; mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+echo "==> building DMG ($DMG)"
+hdiutil create -volname "DeepHarness" -srcfolder "$STAGE" -ov -format UDZO -fs HFS+ "$DMG" >/dev/null
+rm -rf "$(dirname "$STAGE")"
+
 echo "==> done: $APP"
+echo "==> done: $DMG"
