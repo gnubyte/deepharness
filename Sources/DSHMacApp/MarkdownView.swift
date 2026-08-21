@@ -1,5 +1,5 @@
 import SwiftUI
-import DSHKit
+import DSHCore
 
 /// Renders markdown blocks. Everything stays selectable.
 struct MarkdownView: View {
@@ -10,7 +10,7 @@ struct MarkdownView: View {
     var body: some View {
         if monospaced {
             Text(source)
-                .font(.system(.callout, design: .monospaced))
+                .font(Theme.codeFont)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -68,6 +68,9 @@ private struct BlockView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+        case .table(let header, let rows):
+            TableBlock(header: header, rows: rows)
+
         case .rule:
             Divider().padding(.vertical, 2)
         }
@@ -99,8 +102,7 @@ private struct CodeBlock: View {
                 }
                 Spacer()
                 Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
+                    copyToPasteboard(text)
                     copied = true
                     Task {
                         try? await Task.sleep(nanoseconds: 1_200_000_000)
@@ -119,13 +121,49 @@ private struct CodeBlock: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(text)
-                    .font(.system(.callout, design: .monospaced))
+                    .font(Theme.codeFont)
                     .textSelection(.enabled)
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        .background(Theme.surfaceStrong, in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+/// A pipe table. Columns size to their content and the whole grid scrolls
+/// sideways rather than squeezing the transcript.
+private struct TableBlock: View {
+    let header: [String]
+    let rows: [[String]]
+
+    private var columnCount: Int {
+        max(header.count, rows.map(\.count).max() ?? 0)
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
+                GridRow {
+                    ForEach(0..<columnCount, id: \.self) { column in
+                        Text(Markdown.inline(header.indices.contains(column) ? header[column] : ""))
+                            .font(.callout.weight(.semibold))
+                    }
+                }
+                Divider().gridCellColumns(columnCount)
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    GridRow {
+                        ForEach(0..<columnCount, id: \.self) { column in
+                            Text(Markdown.inline(row.indices.contains(column) ? row[column] : ""))
+                                .font(.callout)
+                        }
+                    }
+                }
+            }
+            .textSelection(.enabled)
+            .padding(10)
+        }
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 6))
     }
 }

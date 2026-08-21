@@ -31,18 +31,27 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key>     <string>DSH</string>
   <key>CFBundleIdentifier</key>      <string>dev.local.dsh.mac</string>
   <key>CFBundleVersion</key>         <string>1</string>
-  <key>CFBundleShortVersionString</key> <string>0.1</string>
+  <key>CFBundleShortVersionString</key> <string>0.2</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleExecutable</key>      <string>DSH</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>  <string>14.0</string>
   <key>NSHighResolutionCapable</key> <true/>
-  <!-- The harness runs on loopback without TLS, so the app must be allowed
-       to reach http://127.0.0.1 while ATS still governs everything else. -->
+  <!-- Model servers on your own network (a DGX Spark, vLLM, Ollama, LM Studio)
+       speak plain HTTP. NSAllowsLocalNetworking permits loopback, .local, and
+       private-range addresses while ATS still governs the public internet. -->
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsLocalNetworking</key> <true/>
   </dict>
+  <!-- The agent reads and writes the project folder you open, and the
+       integrated terminal runs your login shell there. -->
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>DSH opens project folders you choose so the agent can read and edit them.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>DSH opens project folders you choose so the agent can read and edit them.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>DSH opens project folders you choose so the agent can read and edit them.</string>
 </dict>
 </plist>
 PLIST

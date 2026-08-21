@@ -1,367 +1,297 @@
 import SwiftUI
-import DSHKit
+import AppKit
+import DSHCore
 
-/// Memory and skills for the current project.
+/// Project memory and skills.
 ///
-/// The two sit together because they are the same decision made twice: what
-/// the agent should know without being told. Memory is the small durable part
-/// paid for on every request; a skill is the procedural part paid for only
-/// when it is used.
+/// Both are just files in the project, so they diff and review like anything
+/// else in the repo. This app assembles the system prompt itself, so what is
+/// shown here is literally what the model is told.
 struct MemorySkillsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    enum Tab: String, CaseIterable, Identifiable {
-        case memory = "Memory"
-        case skills = "Skills"
-        var id: String { rawValue }
-    }
+    @State private var selection: Selection = .instructions
+    @State private var editing: URL?
+    @State private var buffer = ""
+    @State private var newSkillName = ""
+    @State private var newSkillDescription = ""
+    @State private var showNewSkill = false
 
-    @State private var tab: Tab = .memory
+    enum Selection: Hashable { case instructions, skills, prompt }
+
+    private var context: ProjectContext? { model.transport.projectContext }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Memory & Skills").font(.headline)
-                Spacer()
-                Picker("", selection: $tab) {
-                    ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+            header
+            Divider()
+            if model.project == nil {
+                EmptyStateView(icon: "folder.badge.questionmark",
+                               title: "No project open",
+                               message: "Memory and skills belong to a project folder.") {
+                    Button("Open Folder…") { model.chooseProject() }
+                        .buttonStyle(.borderedProminent)
+                }
+            } else {
+                Picker("", selection: $selection) {
+                    Text("Instructions").tag(Selection.instructions)
+                    Text("Skills").tag(Selection.skills)
+                    Text("System prompt").tag(Selection.prompt)
                 }
                 .pickerStyle(.segmented)
-                .fixedSize()
-            }
-            .padding(12)
+                .labelsHidden()
+                .padding(10)
 
-            Divider()
-
-            switch tab {
-            case .memory: MemoryPane()
-            case .skills: SkillsPane()
-            }
-
-            Divider()
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }
-            }
-            .padding(12)
-        }
-        .frame(minWidth: 640, minHeight: 520)
-    }
-}
-
-// MARK: - Memory
-
-struct MemoryPane: View {
-    @Environment(AppModel.self) private var model
-    @State private var draft = ""
-    @State private var loadedFrom: String?
-    @State private var dirty = false
-    @State private var logEntry = ""
-    @State private var showingLog = false
-
-    var body: some View {
-        Group {
-            if let store = model.memory {
-                if store.isInstalled {
-                    editor(store)
-                } else {
-                    setup(store)
-                }
-            } else {
-                ContentUnavailableView(
-                    "No project folder",
-                    systemImage: "folder.badge.questionmark",
-                    description: Text("Memory is stored inside a project. Open a project folder first (⌘O).")
-                )
-            }
-        }
-        // Re-reads on both a chat switch and any write this app made.
-        .task(id: "\(model.selectedID ?? "")-\(model.memoryRevision)") { load() }
-    }
-
-    // MARK: Not yet installed
-
-    private func setup(_ store: MemoryStore) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label("Memory is not set up in this project", systemImage: "brain")
-                .font(.headline)
-
-            Text("""
-            Memory is kept as files inside the project, so the agent can read and \
-            edit them with the tools it already has, and they review and diff like \
-            anything else in the repo.
-            """)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 6) {
-                FileRow(path: "MEMORY.md", note: "durable facts — injected into every session")
-                FileRow(path: "memory/\(MemoryStore.logName(for: Date()))", note: "today's working log — read on demand")
-                FileRow(path: ".agents/skills/memory/SKILL.md", note: "teaches the agent the protocol")
-            }
-            .padding(10)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-
-            Button {
-                Task { _ = await model.installMemory(); load() }
-            } label: {
-                Label("Set Up Memory", systemImage: "plus.circle")
-            }
-            .buttonStyle(.borderedProminent)
-
-            Spacer()
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: Installed
-
-    private func editor(_ store: MemoryStore) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Text("MEMORY.md").font(.callout.monospaced())
-                Text("injected every session")
-                    .font(.caption2)
-                    .padding(.horizontal, 5).padding(.vertical, 2)
-                    .background(Color.accentColor.opacity(0.15), in: Capsule())
-                Spacer()
-                Text(sizeNote)
-                    .font(.caption)
-                    .foregroundStyle(overLength ? .orange : .secondary)
-                Button("Reveal") { model.revealLocally(store.memoryFile.path) }
-                    .font(.caption)
-                Button("Save") { save(store) }
-                    .disabled(!dirty)
-            }
-            .padding(10)
-
-            TextEditor(text: $draft)
-                .font(.system(.callout, design: .monospaced))
-                .onChange(of: draft) { _, _ in dirty = true }
-
-            Divider()
-
-            HStack(spacing: 8) {
-                Image(systemName: "calendar").font(.caption)
-                Text("memory/\(MemoryStore.logName(for: Date()))")
-                    .font(.caption.monospaced())
-                TextField("Append a note to today's log…", text: $logEntry)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(appendLog)
-                Button("Append", action: appendLog)
-                    .disabled(logEntry.trimmingCharacters(in: .whitespaces).isEmpty)
-                Button("Open") { showingLog.toggle() }
-            }
-            .padding(10)
-
-            if showingLog {
                 Divider()
-                ScrollView {
-                    Text(store.readLog() ?? "(empty)")
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                }
-                .frame(height: 140)
-            }
-        }
-    }
-
-    private var overLength: Bool { draft.split(separator: "\n").count > 100 }
-
-    private var sizeNote: String {
-        let lines = draft.split(separator: "\n", omittingEmptySubsequences: false).count
-        return overLength ? "\(lines) lines — consider moving detail to a skill" : "\(lines) lines"
-    }
-
-    private func load() {
-        guard let store = model.memory else { return }
-        draft = store.readMemory() ?? ""
-        loadedFrom = store.memoryFile.path
-        dirty = false
-    }
-
-    private func save(_ store: MemoryStore) {
-        model.saveMemory(draft)
-        dirty = false
-    }
-
-    private func appendLog() {
-        let text = logEntry.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty else { return }
-        model.appendToTodayLog(text)
-        logEntry = ""
-    }
-}
-
-private struct FileRow: View {
-    let path: String
-    let note: String
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(path).font(.caption.monospaced())
-            Text(note).font(.caption).foregroundStyle(.secondary)
-            Spacer()
-        }
-    }
-}
-
-// MARK: - Skills
-
-struct SkillsPane: View {
-    @Environment(AppModel.self) private var model
-    @State private var selected: Skill?
-    @State private var creating = false
-    @State private var newName = ""
-    @State private var newDescription = ""
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if model.skills.isEmpty {
-                ContentUnavailableView(
-                    "No skills",
-                    systemImage: "book.closed",
-                    description: Text("Skills are Markdown files the agent loads by name when a task calls for them.")
-                )
-            } else {
-                List(model.skills, selection: Binding(
-                    get: { selected?.name },
-                    set: { name in selected = model.skills.first { $0.name == name } }
-                )) { skill in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(skill.name).font(.callout.monospaced())
-                        Text(skill.summary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                Group {
+                    switch selection {
+                    case .instructions: instructions
+                    case .skills: skills
+                    case .prompt: promptPreview
                     }
-                    .padding(.vertical, 2)
-                    .tag(skill.name)
                 }
-                .listStyle(.inset)
+                .frame(maxHeight: .infinity)
             }
-
-            if let selected {
-                Divider()
-                ScrollView {
-                    Text(selected.description)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                }
-                .frame(height: 120)
-            }
-
             Divider()
+            footer
+        }
+        .frame(width: 680, height: 540)
+        .sheet(isPresented: $showNewSkill) { newSkillSheet }
+    }
+
+    private var header: some View {
+        HStack {
+            Label("Memory & Skills", systemImage: "brain")
+                .font(.headline)
+            Spacer()
+            if let project = model.project {
+                Text(project.lastPathComponent)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+    }
+
+    private var footer: some View {
+        HStack {
+            Button("Reload") { model.transport.refreshProjectContext() }
+            Spacer()
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(12)
+    }
+
+    // MARK: Instructions
+
+    @ViewBuilder
+    private var instructions: some View {
+        let files = context?.instructions ?? []
+        if files.isEmpty {
+            EmptyStateView(icon: "doc.text",
+                           title: "No instruction files",
+                           message: """
+                           A file named AGENTS.md, QWEN.md, CLAUDE.md, DSH.md, or MEMORY.md in the \
+                           project root is loaded into every prompt. Create the memory scaffold to \
+                           get started.
+                           """) {
+                Button("Set Up Memory") { setUpMemory() }
+                    .buttonStyle(.borderedProminent)
+            }
+        } else if let editing, let file = files.first(where: { $0.url == editing }) {
+            editor(for: file)
+        } else {
+            List {
+                ForEach(files) { file in
+                    Button {
+                        buffer = file.text
+                        editing = file.url
+                    } label: {
+                        HStack {
+                            Image(systemName: "doc.text").foregroundStyle(.tint)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(file.label).font(.callout.weight(.medium))
+                                Text("\(file.lineCount) lines")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if file.lineCount > 100 {
+                                Label("long", systemImage: "exclamationmark.triangle")
+                                    .font(.caption).foregroundStyle(Theme.noticeTint)
+                                    .help("This is loaded on every request. Move detail into a skill.")
+                            }
+                            Image(systemName: "chevron.right")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button("Set Up Memory Scaffold") { setUpMemory() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    .font(.callout)
+            }
+        }
+    }
+
+    private func editor(for file: InstructionFile) -> some View {
+        VStack(spacing: 0) {
             HStack {
                 Button {
-                    creating = true
+                    editing = nil
                 } label: {
-                    Label("New Skill", systemImage: "plus")
+                    Label("All files", systemImage: "chevron.left")
                 }
-                .disabled(model.memory == nil)
-
-                Button("Reveal Folder") {
-                    guard let store = model.memory else { return }
-                    model.revealLocally(store.skillsDirectory.path)
-                }
-                .disabled(model.memory == nil)
-
+                .buttonStyle(.plain)
+                .font(.caption)
                 Spacer()
-                Text("\(model.skills.count) available")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button("Refresh") { Task { await model.refreshSkills(force: true) } }
+                Text(file.label).font(.caption.weight(.medium))
+                Spacer()
+                Button("Save") { save(to: file.url) }
+                    .disabled(buffer == file.text)
             }
-            .padding(10)
-        }
-        .task(id: model.selectedID) { await model.refreshSkills() }
-        .sheet(isPresented: $creating) {
-            NewSkillSheet(name: $newName, description: $newDescription) { create() }
+            .padding(8)
+            Divider()
+            TextEditor(text: $buffer)
+                .font(Theme.mono(12))
+                .padding(4)
         }
     }
 
-    /// Write a `SKILL.md` into the project's highest-rank skills root.
-    ///
-    /// The provider watches these directories, so the catalog picks it up
-    /// without a restart.
-    private func create() {
-        guard let store = model.memory else { return }
-        let slug = newName
-            .lowercased()
-            .replacingOccurrences(of: " ", with: "-")
-            .filter { $0.isLetter || $0.isNumber || $0 == "-" }
-        guard !slug.isEmpty else { return }
+    private func save(to url: URL) {
+        try? buffer.write(to: url, atomically: true, encoding: .utf8)
+        model.transport.refreshProjectContext()
+        editing = nil
+    }
 
-        let dir = store.skillsDirectory.appendingPathComponent(slug, isDirectory: true)
-        let body = """
-        ---
-        name: \(slug)
-        description: \(newDescription.isEmpty ? "Use when …" : newDescription)
-        ---
+    private func setUpMemory() {
+        guard let project = model.project else { return }
+        try? ProjectContext.setUpMemory(root: project)
+        model.transport.refreshProjectContext()
+    }
 
-        # \(newName)
+    // MARK: Skills
 
-        Write the procedure here. The description above is what the agent reads
-        when deciding whether to load this skill, so make it say *when* to use it,
-        not just what it is.
-        """
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let file = dir.appendingPathComponent("SKILL.md")
-            try body.write(to: file, atomically: true, encoding: .utf8)
-            newName = ""
-            newDescription = ""
-            model.revealLocally(file.path)
-            Task {
-                // The provider's watcher debounces, so give it a moment.
-                try? await Task.sleep(nanoseconds: 600_000_000)
-                await model.refreshSkills(force: true)
+    @ViewBuilder
+    private var skills: some View {
+        let catalog = context?.skills ?? []
+        VStack(spacing: 0) {
+            if catalog.isEmpty {
+                EmptyStateView(icon: "graduationcap",
+                               title: "No skills yet",
+                               message: """
+                               A skill is a folder with a SKILL.md whose description says when it \
+                               applies. The model sees only that line until it loads the file.
+                               """) {
+                    Button("New Skill…") { showNewSkill = true }
+                        .buttonStyle(.borderedProminent)
+                }
+            } else {
+                List {
+                    ForEach(catalog) { skill in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Image(systemName: "graduationcap.fill").foregroundStyle(.tint)
+                                Text(skill.name).font(.callout.weight(.medium))
+                                Spacer()
+                                Text(rootLabel(skill.rank))
+                                    .font(.system(size: 10))
+                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                    .background(Theme.surfaceStrong, in: Capsule())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(skill.description)
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.vertical, 2)
+                        .contextMenu {
+                            Button("Open in Editor") {
+                                model.mode = .code
+                                model.code.reveal(skill.url)
+                                dismiss()
+                            }
+                            Button("Reveal in Finder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([skill.url])
+                            }
+                        }
+                    }
+                }
+                HStack {
+                    Button("New Skill…") { showNewSkill = true }
+                    Spacer()
+                }
+                .padding(10)
             }
-        } catch {
-            model.note(AppModel.describe(error))
         }
     }
-}
 
-private struct NewSkillSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Binding var name: String
-    @Binding var description: String
-    let create: () -> Void
+    private func rootLabel(_ rank: Int) -> String {
+        switch rank {
+        case 100: ".dsh/skills"
+        case 200: ".agents/skills"
+        case 300: ".qwen/skills"
+        default: "user"
+        }
+    }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private var newSkillSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
             Text("New skill").font(.headline)
-            Form {
-                TextField("Name", text: $name, prompt: Text("release-checklist"))
-                TextField("When to use it", text: $description, prompt: Text("Use when cutting a release…"), axis: .vertical)
-                    .lineLimit(3, reservesSpace: true)
-            }
-            .formStyle(.grouped)
-
-            Text("""
-            The description is the only part the agent sees before loading, so it \
-            should describe the trigger — when this applies — rather than the content.
-            """)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-
-            Spacer()
+            TextField("Name", text: $newSkillName)
+            TextField("When does it apply?", text: $newSkillDescription, axis: .vertical)
+                .lineLimit(2...4)
+            Text("The description is the only thing the model sees before deciding to load the skill, so say when it applies rather than what it contains.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Create") { create(); dismiss() }
+                Button("Cancel") { showNewSkill = false }
+                Button("Create") { createSkill() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(newSkillName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(18)
-        .frame(width: 460, height: 340)
+        .padding(16)
+        .frame(width: 420)
+    }
+
+    private func createSkill() {
+        guard let project = model.project else { return }
+        if let url = try? ProjectContext.createSkill(root: project,
+                                                     name: newSkillName,
+                                                     description: newSkillDescription) {
+            model.transport.refreshProjectContext()
+            model.mode = .code
+            model.code.reveal(url)
+        }
+        newSkillName = ""
+        newSkillDescription = ""
+        showNewSkill = false
+        dismiss()
+    }
+
+    // MARK: Prompt preview
+
+    private var promptPreview: some View {
+        ScrollView {
+            Text(previewText)
+                .font(Theme.mono(11))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+        }
+    }
+
+    private var previewText: String {
+        guard let project = model.project else { return "Open a project to see its prompt." }
+        let modelName = model.config.activeProvider?.model ?? "model"
+        let environment = ProjectContext.environmentBlock(workspace: project,
+                                                          model: modelName,
+                                                          preset: model.config.asPreset)
+        let supplement = context?.promptSupplement(environment: environment) ?? environment
+        return AppTransport.defaultSystemPrompt + "\n\n" + supplement
     }
 }

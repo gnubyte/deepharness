@@ -5,18 +5,16 @@ let package = Package(
     name: "DSHMac",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "DSHKit", targets: ["DSHKit"]),
-        .executable(name: "dshprobe", targets: ["dshprobe"]),
+        .library(name: "DSHCore", targets: ["DSHCore"]),
         .executable(name: "DSHMacApp", targets: ["DSHMacApp"]),
     ],
     targets: [
-        // Transport + contract layer: no UI, no AppKit. Verifiable headlessly.
-        .target(name: "DSHKit"),
-        // CLI smoke test that drives DSHKit against a live harness.
-        .executableTarget(name: "dshprobe", dependencies: ["DSHKit"]),
-        // The native SwiftUI client.
-        .executableTarget(name: "DSHMacApp", dependencies: ["DSHKit"]),
-        // Contract tests over captured wire shapes.
-        .testTarget(name: "DSHKitTests", dependencies: ["DSHKit"]),
+        // Agent engine: LLM clients, tool execution, permissions, sessions.
+        // No UI, no AppKit — verifiable headlessly.
+        .target(name: "DSHCore"),
+        // The native SwiftUI app — it IS the harness.
+        .executableTarget(name: "DSHMacApp", dependencies: ["DSHCore"]),
+        // Engine tests (tools, permissions, Qwen XML parser, loop).
+        .testTarget(name: "DSHCoreTests", dependencies: ["DSHCore"]),
     ]
 )
