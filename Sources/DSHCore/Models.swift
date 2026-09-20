@@ -16,25 +16,64 @@ public struct LLMMessage: Codable, Hashable, Sendable {
     public var toolCallID: String?
     /// For `role == .tool`: the tool that produced it.
     public var name: String?
+    /// User-attached files/images sent alongside the text.
+    public var attachments: [MessageAttachment]?
 
     public init(role: Role,
                 content: String? = nil,
                 toolCalls: [ToolCall]? = nil,
                 toolCallID: String? = nil,
-                name: String? = nil) {
+                name: String? = nil,
+                attachments: [MessageAttachment]? = nil) {
         self.role = role
         self.content = content
         self.toolCalls = toolCalls
         self.toolCallID = toolCallID
         self.name = name
+        self.attachments = attachments
     }
 
-    public static func user(_ text: String) -> LLMMessage { .init(role: .user, content: text) }
+    public static func user(_ text: String, attachments: [MessageAttachment]? = nil) -> LLMMessage {
+        .init(role: .user, content: text, attachments: attachments)
+    }
     public static func assistant(_ text: String, calls: [ToolCall] = []) -> LLMMessage {
         .init(role: .assistant, content: text, toolCalls: calls.isEmpty ? nil : calls)
     }
     public static func toolResult(id: String, name: String, output: String) -> LLMMessage {
         .init(role: .tool, content: output, toolCallID: id, name: name)
+    }
+}
+
+/// A file or image the user attaches to a message.
+public struct MessageAttachment: Codable, Hashable, Sendable {
+    public enum Kind: String, Codable, Hashable, Sendable {
+        case image
+        case file
+    }
+    public var kind: Kind
+    public var name: String
+    /// Raw content (base64-encoded on the wire for images).
+    public var data: Data
+
+    public init(kind: Kind, name: String, data: Data) {
+        self.kind = kind
+        self.name = name
+        self.data = data
+    }
+
+    /// Best-effort MIME type from the filename extension.
+    public var mime: String {
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "bmp": return "image/bmp"
+        case "svg": return "image/svg+xml"
+        case "pdf": return "application/pdf"
+        default: return "application/octet-stream"
+        }
     }
 }
 
@@ -91,9 +130,14 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     public var model: String
     public var temperature: Double?
     public var maxOutputTokens: Int?
+    /// Extra HTTP headers sent with every request (e.g. auth tokens, org IDs).
+    public var customHeaders: [String: String]?
+    /// Reasoning effort for thinking models ("low", "medium", "high").
+    public var reasoningEffort: String?
 
     public init(kind: Kind, name: String, baseURL: String, apiKey: String? = nil,
-                model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil) {
+                model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
+                customHeaders: [String: String]? = nil, reasoningEffort: String? = nil) {
         self.kind = kind
         self.name = name
         self.baseURL = baseURL
@@ -101,6 +145,8 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         self.model = model
         self.temperature = temperature
         self.maxOutputTokens = maxOutputTokens
+        self.customHeaders = customHeaders
+        self.reasoningEffort = reasoningEffort
     }
 
     public static let presets: [ProviderProfile] = [

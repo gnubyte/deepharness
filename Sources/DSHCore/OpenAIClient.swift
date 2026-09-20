@@ -55,7 +55,7 @@ public struct OpenAIClient: LLMClient {
         }
         var req = URLRequest(url: url)
         req.timeoutInterval = 10
-        applyAuth(&req)
+        applyHeaders(&req)
         let (data, response) = try await session.data(for: req)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw LLMError.http(http.statusCode, String(decoding: data, as: UTF8.self))
@@ -84,7 +84,7 @@ public struct OpenAIClient: LLMClient {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        applyAuth(&req)
+        applyHeaders(&req)
         req.httpBody = try makeBody(request)
 
         let (bytes, response) = try await session.bytes(for: req)
@@ -211,7 +211,7 @@ public struct OpenAIClient: LLMClient {
             case .system:
                 messages.append(["role": "system", "content": m.content ?? ""])
             case .user:
-                messages.append(["role": "user", "content": m.content ?? ""])
+                messages.append(["role": "user", "content": userContent(for: m)])
             case .assistant:
                 var msg: [String: Any] = ["role": "assistant"]
                 msg["content"] = m.content ?? ""
@@ -242,6 +242,11 @@ public struct OpenAIClient: LLMClient {
         }
         if let t = request.temperature ?? profile.temperature { body["temperature"] = t }
         if let mt = request.maxTokens ?? profile.maxOutputTokens { body["max_tokens"] = mt }
+        // Reasoning effort for thinking models (OpenAI/OpenRouter/compat).
+        if let effort = profile.reasoningEffort, !effort.isEmpty,
+           profile.kind == .openAI || profile.kind == .openRouter || profile.kind == .openAICompat {
+            body["reasoning_effort"] = effort
+        }
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map { spec -> [String: Any] in
                 var params: Any = "{}"
@@ -259,9 +264,45 @@ public struct OpenAIClient: LLMClient {
         return data
     }
 
-    private func applyAuth(_ req: inout URLRequest) {
+    /// Build the OpenAI `content` value for a user message. Plain text when
+    /// there are no attachments, otherwise a multi-part array mixing text
+    /// with image / file entries (images inline as base64 data-URIs).
+    private func userContent(for m: LLMMessage) -> Any {
+        guard let attachments = m.attachments, !attachments.isEmpty else {
+            return m.content ?? ""
+        }
+        var parts: [[String: Any]] = []
+        if let text = m.content, !text.isEmpty {
+            parts.append(["type": "text", "text": text])
+        }
+        for a in attachments {
+            switch a.kind {
+            case .image:
+                let b64 = a.data.base64EncodedString()
+                parts.append([
+                    "type": "image_url",
+                    "image_url": ["url": "data:\(a.mime);base64,\(b64)"],
+                ])
+            case .file:
+                let b64 = a.data.base64EncodedString()
+                parts.append([
+                    "type": "file",
+                    "file": ["filename": a.name, "file_data": "data:\(a.mime);base64,\(b64)"],
+                ])
+            }
+        }
+        return parts
+    }
+
+    /// Authorization + user-supplied custom headers on every request.
+    private func applyHeaders(_ req: inout URLRequest) {
         if let key = profile.apiKey, !key.isEmpty {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        if let headers = profile.customHeaders {
+            for (k, v) in headers where !k.isEmpty {
+                req.setValue(v, forHTTPHeaderField: k)
+            }
         }
     }
 }

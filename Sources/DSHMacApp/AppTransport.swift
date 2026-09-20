@@ -270,16 +270,17 @@ public final class AppTransport {
 
     // MARK: - Sending
 
-    public func send(_ text: String, sessionID: String) {
+    public func send(_ text: String, sessionID: String,
+                     attachments: [MessageAttachment] = []) {
         guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
         guard !vm.running else {
             vm.note("The agent is still working; send again when it is done.")
             return
         }
-        runTasks[sessionID] = Task { await runTurn(vm, text: text) }
+        runTasks[sessionID] = Task { await runTurn(vm, text: text, attachments: attachments) }
     }
 
-    private func runTurn(_ vm: SessionVM, text: String) async {
+    private func runTurn(_ vm: SessionVM, text: String, attachments: [MessageAttachment] = []) async {
         let sessionID = vm.id
         vm.running = true
         vm.stopping = false
@@ -309,7 +310,8 @@ public final class AppTransport {
             // Engine events arrive on a pool thread; hop to main so the
             // timeline is only ever mutated from one place.
             let sink = self
-            let result = try await engine.run(messages: input, userText: text) { event in
+            let result = try await engine.run(messages: input, userText: text,
+                                              userAttachments: attachments) { event in
                 Task { @MainActor in
                     sink.apply(event, sessionID: sessionID)
                 }

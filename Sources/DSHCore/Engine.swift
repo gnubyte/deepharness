@@ -115,10 +115,12 @@ public struct Engine: Sendable {
     @discardableResult
     public func run(messages input: [LLMMessage],
                     userText: String,
+                    userAttachments: [MessageAttachment] = [],
                     sink: @escaping @Sendable (EngineEvent) -> Void) async throws -> RunResult {
         var messages = input
-        if !userText.isEmpty {
-            messages.append(.user(userText))
+        if !userText.isEmpty || !userAttachments.isEmpty {
+            messages.append(.user(userText,
+                                  attachments: userAttachments.isEmpty ? nil : userAttachments))
         }
         var usage: LLMUsage? = nil
         var denied = 0
