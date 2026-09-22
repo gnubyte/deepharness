@@ -25,6 +25,14 @@ public final class AppTransport {
     @ObservationIgnored private var gates: [String: (cont: CheckedContinuation<Bool, Never>, sessionID: String)] = [:]
     @ObservationIgnored private var runTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private let basePrompt: String
+    /// Route ID → context window (tokens) learned from a server probe.
+    @ObservationIgnored private var probedContext: [String: Int] = [:]
+    /// Route IDs whose probe is already in flight (avoids duplicate requests).
+    @ObservationIgnored private var probingContext: Set<String> = []
+    /// Route ID → the fully-built system prompt (base + project context +
+    /// preset), cached so the context gauge's token estimate reads a string
+    /// instead of re-loading project files on every keystroke.
+    @ObservationIgnored private var systemPrompts: [String: String] = [:]
     /// Called when tools touch files, so the code-mode editor can reload.
     @ObservationIgnored public var onFilesChanged: (([FileChange]) -> Void)?
 
@@ -72,6 +80,7 @@ public final class AppTransport {
         pluginErrors = loaded.errors
         // Sessions pick the new context up on their next turn.
         engines.removeAll()
+        systemPrompts.removeAll()
     }
 
     /// Re-read instructions, skills, and plugins from disk.
@@ -98,6 +107,7 @@ public final class AppTransport {
         runTasks[id] = nil
         engines[id] = nil
         transcripts[id] = nil
+        systemPrompts[id] = nil
         log.delete(id)
         sessions.removeAll { $0.id == id }
         if selectedID == id { selectedID = sessions.first?.id }
@@ -210,6 +220,7 @@ public final class AppTransport {
             Do not modify anything. Research and produce a plan, then call `exit_plan_mode` with it and stop.
             """
         }
+        systemPrompts[sessionID] = prompt
 
         let builtins = ToolRegistry.standard()
         let registry = builtins.adding(
@@ -318,6 +329,12 @@ public final class AppTransport {
             }
             transcripts[sessionID] = result.messages
             vm.lastUsage = result.usage
+            // How full the context is now: server-reported prompt tokens when
+            // available, otherwise a character-based estimate of the whole
+            // request (system prompt + transcript).
+            let systemPrompt = engines[sessionID]?.systemPrompt ?? basePrompt
+            vm.contextUsed = result.lastPromptTokens
+                ?? Self.estimateTokens(systemPrompt: systemPrompt, messages: result.messages)
             if result.deniedCount > 0 {
                 vm.note("\(result.deniedCount) tool call(s) were denied.")
             }
@@ -396,6 +413,100 @@ public final class AppTransport {
     }
 
     public func note(_ message: String) { banner = message }
+
+    // MARK: - Context window
+
+    /// The active model's context budget, in tokens.
+    ///
+    /// Precedence: a user-set override in the provider config wins, then a
+    /// value learned by probing the server, then the well-known model tables,
+    /// then a conservative default. Read-only — the view calls this; side
+    /// effects (the probe) live in `ensureContextProbe`, called from the
+    /// session lifecycle, so evaluating a SwiftUI body never fires a request.
+    @MainActor
+    public func contextLimit() -> Int {
+        guard let provider = config.activeProvider else { return FallbackContextWindow.defaultLimit }
+        if let override = provider.contextWindow, override > 0 { return override }
+        if let probed = probedContext[provider.routeID] { return probed }
+        return FallbackContextWindow.limit(for: provider.model) ?? FallbackContextWindow.defaultLimit
+    }
+
+    /// Fire (once) the server probe for the active route so `contextLimit`
+    /// fills in a learned value. Safe to call repeatedly; it's a no-op when a
+    /// probe is in flight or already answered.
+    @MainActor
+    public func ensureContextProbe() {
+        guard let provider = config.activeProvider else { return }
+        probeContext(provider: provider)
+    }
+
+    @MainActor
+    private func probeContext(provider: ProviderProfile) {
+        let routeID = provider.routeID
+        guard !probingContext.contains(routeID), probedContext[routeID] == nil else { return }
+        probingContext.insert(routeID)
+        Task { [weak self] in
+            let limit = await OpenAIClient(profile: provider).modelInfo()?.contextWindow
+            guard let self, let limit, limit > 0 else {
+                self?.probingContext.remove(routeID)
+                return
+            }
+            // Fill the cache only if we don't already have a value; a server
+            // that echoes a default back is not worth overriding with.
+            if self.probedContext[routeID] == nil { self.probedContext[routeID] = limit }
+            self.probingContext.remove(routeID)
+        }
+    }
+
+    /// How much of the context a session is using right now, in tokens.
+    ///
+    /// After any real turn this is the figure recorded at the end of that turn
+    /// (server-reported prompt tokens when the model gives them, otherwise the
+    /// character estimate of system prompt + transcript). The live draft adds
+    /// on top, so the gauge tracks typing before the next send.
+    @MainActor
+    public func contextUsed(for sessionID: String, draft: String) -> Int {
+        let recorded = sessions.first { $0.id == sessionID }?.contextUsed
+        var used: Int
+        if let recorded {
+            used = recorded
+        } else {
+            // Fresh session: no turn has run, so estimate from the (empty)
+            // transcript plus whatever the user is about to send. Use the
+            // cached system prompt when the engine has been built; otherwise
+            // the base prompt (project context is added at first turn).
+            let prompt = systemPrompts[sessionID] ?? basePrompt
+            used = Self.estimateTokens(systemPrompt: prompt,
+                                       messages: transcripts[sessionID] ?? [])
+        }
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            used += max(1, trimmed.count / 4)
+        }
+        return used
+    }
+
+    /// Rough token count for a system prompt + message list.
+    ///
+    /// Character-based (≈ 4 chars/token) is the standard heuristic when the
+    /// server won't report prompt tokens. It's a lower-ish bound for code and
+    /// a good enough gauge for "how full is the context", which is all the UI
+    /// needs — the exact figure arrives the moment a real turn runs.
+    nonisolated static func estimateTokens(systemPrompt: String, messages: [LLMMessage]) -> Int {
+        var chars = systemPrompt.count
+        for m in messages {
+            chars += (m.content?.count ?? 0)
+            for call in m.toolCalls ?? [] {
+                chars += call.name.count + call.arguments.raw.count
+            }
+            for att in m.attachments ?? [] {
+                // Images are counted by their base64 payload, which is what the
+                // model actually pays for.
+                chars += att.data.base64EncodedString().count
+            }
+        }
+        return max(0, chars / 4)
+    }
 
     public static func describe(_ error: Error) -> String {
         if let llm = error as? LLMError {

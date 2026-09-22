@@ -98,6 +98,9 @@ public final class SessionVM: Identifiable {
     public var pendingGates: [GateVM] = []
     public var todos: [TodoItem] = []
     public var lastUsage: LLMUsage?
+    /// Best-known size of the current context, in tokens. Server-reported when
+    /// the model gives prompt tokens, otherwise a character-based estimate.
+    public var contextUsed: Int?
     /// Files this session's tools touched, newest first — shown as chips.
     public var changedFiles: [FileChange] = []
 

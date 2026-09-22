@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import DSHCore
 
 /// The conversation: transcript, permission prompts, and the composer.
@@ -10,6 +11,8 @@ struct ChatView: View {
     @State private var draft = ""
     /// Grows with the draft, between one line and a sensible ceiling.
     @State private var composerHeight: CGFloat = 32
+    /// Attachments queued to go out with the next message.
+    @State private var attachments: [MessageAttachment] = []
 
     private var transport: AppTransport { model.transport }
 
@@ -117,7 +120,23 @@ struct ChatView: View {
                 }
             }
 
+            if !attachments.isEmpty {
+                attachChips
+            }
+
             HStack(alignment: .bottom, spacing: 8) {
+                Menu {
+                    Button("Attach Image…") { attachImage() }
+                    Button("Attach File…") { attachFile() }
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .frame(width: 22, height: 22)
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 28)
+                .help("Attach an image or file")
+                .disabled(session.running)
+
                 ComposerField(text: $draft, height: $composerHeight,
                               isEnabled: !session.running, onSubmit: send)
                     .frame(height: composerHeight)
@@ -144,7 +163,7 @@ struct ChatView: View {
                             .frame(width: 22, height: 22)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
                     .help("Send (↩)")
                 }
             }
@@ -157,6 +176,7 @@ struct ChatView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                ContextGaugeView(session: session, draft: draft)
                 if let usage = session.lastUsage {
                     Text("\(usage.promptTokens.formatted()) in · \(usage.completionTokens.formatted()) out")
                         .foregroundStyle(.secondary)
@@ -173,9 +193,81 @@ struct ChatView: View {
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !session.running else { return }
+        guard !text.isEmpty || !attachments.isEmpty, !session.running else { return }
+        let payload = attachments
         draft = ""
-        model.send(text, in: session)
+        attachments = []
+        model.send(text, in: session, attachments: payload)
+    }
+
+    /// The queued attachments as removable chips.
+    private var attachChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(attachments, id: \.self) { attachment in
+                    HStack(spacing: 5) {
+                        Image(systemName: attachment.kind == .image ? "photo" : "doc")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(attachment.name)
+                            .font(Theme.mono(11))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Theme.surface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+                    .help(attachment.name)
+                    Button {
+                        attachments.removeAll { $0 == attachment }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove attachment")
+                }
+            }
+            .padding(.bottom, 2)
+        }
+    }
+
+    /// Pick an image from disk and stage it as an attachment.
+    private func attachImage() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.image]
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { stage(url, kind: .image) }
+    }
+
+    /// Pick a file (or folder) from disk and stage it as an attachment.
+    private func attachFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { stage(url, kind: .file) }
+    }
+
+    /// Read the file and, for images, re-encode to PNG so any model can see it.
+    private func stage(_ url: URL, kind: MessageAttachment.Kind) {
+        guard let data = try? Data(contentsOf: url) else { return }
+        let name = url.lastPathComponent
+        guard !attachments.contains(where: { $0.name == name && $0.data == data }) else { return }
+        if kind == .image,
+           let image = NSImage(data: data),
+           let png = image.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: png),
+           let out = rep.representation(using: .png, properties: [:]) {
+            attachments.append(MessageAttachment(kind: .image, name: name, data: out))
+        } else {
+            attachments.append(MessageAttachment(kind: kind, name: name, data: data))
+        }
     }
 
     private func insertMention(_ path: String) {
@@ -558,6 +650,46 @@ private struct ProducedFilesRow: View {
             return url.lastPathComponent
         }
         return String(url.path.dropFirst(root.path.count).drop(while: { $0 == "/" }))
+    }
+}
+
+/// A live gauge of how much of the model's context window the conversation
+/// is using. The limit comes from the active provider (user override → server
+/// probe → well-known tables → default); the used figure is the server's
+/// prompt-token count after the last turn, with the in-flight draft added on,
+/// or a character estimate when the server hasn't reported yet.
+private struct ContextGaugeView: View {
+    @Environment(AppModel.self) private var model
+    let session: SessionVM
+    let draft: String
+
+    var body: some View {
+        let limit = model.transport.contextLimit()
+        let used = model.transport.contextUsed(for: session.id, draft: draft)
+        let fraction = limit > 0 ? Double(used) / Double(limit) : 0
+        return HStack(spacing: 6) {
+            Image(systemName: "gauge.with.dots.needle.50percent")
+                .font(.system(size: 11))
+                .foregroundStyle(tint(fraction))
+            Gauge(value: min(fraction, 1.0), in: 0...1) {
+                EmptyView()
+            } currentValueLabel: {
+                EmptyView()
+            }
+            .gaugeStyle(.accessoryLinearCapacity)
+            .tint(tint(fraction))
+            .frame(width: 64)
+            Text("\(used.formatted()) / \(limit.formatted()) ctx")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .help("Context window in use for \(model.config.activeProvider?.model ?? "this model"): \(used.formatted()) of \(limit.formatted()) tokens.")
+    }
+
+    private func tint(_ fraction: Double) -> Color {
+        if fraction >= 0.9 { return Theme.errorTint }
+        if fraction >= 0.7 { return Theme.noticeTint }
+        return .secondary
     }
 }
 

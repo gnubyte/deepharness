@@ -99,6 +99,8 @@ final class AppModel {
         transport.selectedID = id
         if let session = transport.selected {
             transport.hydrate(session)
+            // Make sure the context gauge has a number before the user asks.
+            transport.ensureContextProbe()
             // Following a chat into its project keeps both modes in step.
             if let cwd = session.cwd, cwd != project?.path {
                 openProject(URL(fileURLWithPath: cwd), activateSession: false)
@@ -109,11 +111,12 @@ final class AppModel {
     @discardableResult
     func newChat() -> SessionVM {
         let session = transport.newSession(cwd: project?.path)
+        transport.ensureContextProbe()
         return session
     }
 
-    func send(_ text: String, in session: SessionVM) {
-        transport.send(text, sessionID: session.id)
+    func send(_ text: String, in session: SessionVM, attachments: [MessageAttachment] = []) {
+        transport.send(text, sessionID: session.id, attachments: attachments)
     }
 
     // MARK: - Stopping

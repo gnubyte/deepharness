@@ -130,6 +130,10 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     public var model: String
     public var temperature: Double?
     public var maxOutputTokens: Int?
+    /// Explicit context-window override in tokens. When set, it wins over the
+    /// server probe and the well-known fallback tables. Optional properties
+    /// decode from saved profiles that predate this field (missing → nil).
+    public var contextWindow: Int?
     /// Extra HTTP headers sent with every request (e.g. auth tokens, org IDs).
     public var customHeaders: [String: String]?
     /// Reasoning effort for thinking models ("low", "medium", "high").
@@ -137,6 +141,7 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
 
     public init(kind: Kind, name: String, baseURL: String, apiKey: String? = nil,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
+                contextWindow: Int? = nil,
                 customHeaders: [String: String]? = nil, reasoningEffort: String? = nil) {
         self.kind = kind
         self.name = name
@@ -145,6 +150,7 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         self.model = model
         self.temperature = temperature
         self.maxOutputTokens = maxOutputTokens
+        self.contextWindow = contextWindow
         self.customHeaders = customHeaders
         self.reasoningEffort = reasoningEffort
     }
@@ -159,6 +165,24 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
 
     public func endpoint(path: String) -> String {
         baseURL.hasSuffix("/") ? "\(baseURL)\(path)" : "\(baseURL)/\(path)"
+    }
+}
+
+/// Metadata about a model, used to size the context gauge in the UI.
+///
+/// `contextWindow` is the model's total input+output token budget. Servers that
+/// expose it (Ollama, LM Studio, OpenRouter, some vLLM builds) report it on
+/// `GET /v1/models`; for the rest we fall back to the well-known tables below
+/// or a conservative default.
+public struct ModelInfo: Codable, Hashable, Sendable {
+    public var id: String
+    public var contextWindow: Int?
+    public var maxTokens: Int?
+
+    public init(id: String, contextWindow: Int? = nil, maxTokens: Int? = nil) {
+        self.id = id
+        self.contextWindow = contextWindow
+        self.maxTokens = maxTokens
     }
 }
 

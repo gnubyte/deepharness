@@ -171,36 +171,80 @@ private struct ProviderEditor: View {
     @State private var apiKey: String = ""
     @State private var status: String?
     @State private var models: [String] = []
+    @State private var headerRows: [HeaderRow] = []
+    @State private var reasoning: String = ""
     private let original: ProviderProfile
 
     init(profile: ProviderProfile) {
         _draft = State(initialValue: profile)
         original = profile
+        _headerRows = State(initialValue:
+            (profile.customHeaders ?? [:]).map { HeaderRow(key: $0.key, value: $0.value) })
+        _reasoning = State(initialValue: profile.reasoningEffort ?? "")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
-                Picker("Kind", selection: $draft.kind) {
-                    ForEach(ProviderProfile.Kind.allCases, id: \.self) { kind in
-                        Text(kind.label).tag(kind)
+                Section("API") {
+                    Picker("Kind", selection: $draft.kind) {
+                        ForEach(ProviderProfile.Kind.allCases, id: \.self) { kind in
+                            Text(kind.label).tag(kind)
+                        }
+                    }
+                    TextField("Name", text: $draft.name)
+                    TextField("Base URL", text: $draft.baseURL)
+                        .font(Theme.mono(11))
+                    if draft.needsAPIKey {
+                        SecureField("API key", text: $apiKey)
+                        Text("Stored locally and only used to make API requests from this app.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                TextField("Name", text: $draft.name)
-                TextField("Base URL", text: $draft.baseURL)
-                    .font(Theme.mono(11))
-                TextField("Model", text: $draft.model)
-                    .font(Theme.mono(11))
-                if draft.needsAPIKey {
-                    SecureField("API key", text: $apiKey)
+                Section("Model") {
+                    TextField("Model", text: $draft.model)
+                        .font(Theme.mono(11))
+                    if !models.isEmpty {
+                        Picker("Discovered", selection: $draft.model) {
+                            ForEach(models, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                    LabeledContent("Temperature") {
+                        TextField("default", value: $draft.temperature, format: .number)
+                            .frame(width: 80)
+                    }
+                    LabeledContent("Max output tokens") {
+                        TextField("default", value: $draft.maxOutputTokens, format: .number)
+                            .frame(width: 100)
+                    }
+                    LabeledContent("Context window") {
+                        TextField("auto", value: $draft.contextWindow, format: .number)
+                            .frame(width: 100)
+                    }
+                    Text("Leave blank to auto-detect from the server and well-known model tables.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Picker("Reasoning effort", selection: $reasoning) {
+                        Text("Default").tag("")
+                        Text("Low").tag("low")
+                        Text("Medium").tag("medium")
+                        Text("High").tag("high")
+                    }
                 }
-                LabeledContent("Temperature") {
-                    TextField("default", value: $draft.temperature, format: .number)
-                        .frame(width: 80)
-                }
-                if !models.isEmpty {
-                    Picker("Discovered", selection: $draft.model) {
-                        ForEach(models, id: \.self) { Text($0).tag($0) }
+                Section("Custom Headers") {
+                    ForEach($headerRows) { $row in
+                        HStack(spacing: 8) {
+                            TextField("name", text: $row.key)
+                                .font(Theme.mono(11))
+                            TextField("value", text: $row.value)
+                                .font(Theme.mono(11))
+                        }
+                    }
+                    .onDelete { headerRows.remove(atOffsets: $0) }
+                    Button("Add Header") { headerRows.append(HeaderRow()) }
+                    if !headerRows.isEmpty {
+                        Text("Extra HTTP headers sent with every request.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -241,12 +285,28 @@ private struct ProviderEditor: View {
     private func save() {
         var profile = draft
         profile.apiKey = nil
+        let headers = headerRows
+            .filter { !$0.key.trimmingCharacters(in: .whitespaces).isEmpty }
+            .reduce(into: [String: String]()) { $0[$1.key] = $1.value }
+        profile.customHeaders = headers.isEmpty ? nil : headers
+        profile.reasoningEffort = reasoning.isEmpty ? nil : reasoning
         if original.routeID != profile.routeID {
             model.config.removeProvider(original)
         }
         model.config.activate(profile)
         model.config.setAPIKey(apiKey, for: profile)
         dismiss()
+    }
+}
+
+/// One editable custom HTTP header.
+private struct HeaderRow: Identifiable {
+    var id = UUID()
+    var key: String
+    var value: String
+    init(key: String = "", value: String = "") {
+        self.key = key
+        self.value = value
     }
 }
 

@@ -67,6 +67,57 @@ public struct OpenAIClient: LLMClient {
         return arr.compactMap { $0["id"] as? String }
     }
 
+    /// Probe the server for the active model's metadata (context window, etc.).
+    /// Returns `nil` rather than throwing so the caller can fall back to the
+    /// well-known tables — a `/models` miss (wrong name, server that omits the
+    /// field, or a 404) is not an error worth surfacing.
+    public func modelInfo(_ model: String? = nil) async -> ModelInfo? {
+        let id = model?.isEmpty == false ? model! : profile.model
+        var limit: Int? = nil
+        var maxOut: Int? = nil
+        if let url = URL(string: profile.endpoint(path: "models")) {
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 10
+            applyHeaders(&req)
+            do {
+                let (data, response) = try await session.data(for: req)
+                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                   let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let arr = obj["data"] as? [[String: Any]] {
+                    for entry in arr {
+                        guard let eid = entry["id"] as? String, Self.matchesModel(eid, id) else { continue }
+                        limit = Self.contextWindow(from: entry)
+                        maxOut = (entry["max_tokens"] as? Int) ?? (entry["top_k"] as? Int)
+                        // Ollama's full list can contain a "name" alias; prefer the exact hit.
+                        if eid == id { break }
+                    }
+                }
+            } catch {
+                // Network down / 404 / unsupported route: fall through to tables.
+            }
+        }
+        limit = limit ?? FallbackContextWindow.limit(for: id)
+        return ModelInfo(id: id, contextWindow: limit, maxTokens: maxOut)
+    }
+
+    /// Match the active model name against a `/models` entry id, tolerating the
+    /// common shapes: exact, "vendor/model" vs "model", and Ollama tags.
+    static func matchesModel(_ entryID: String, _ requested: String) -> Bool {
+        if entryID == requested { return true }
+        let base = requested.components(separatedBy: "/").last ?? requested
+        let entryBase = entryID.components(separatedBy: "/").last ?? entryID
+        return entryID == base || entryBase == base
+    }
+
+    /// Pull a context-window figure out of the assorted field names servers use.
+    static func contextWindow(from entry: [String: Any]) -> Int? {
+        if let v = entry["context"] as? Int, v > 0 { return v }                 // Ollama
+        if let v = entry["context_length"] as? Int, v > 0 { return v }          // some vLLM
+        if let v = entry["max_context_length"] as? Int, v > 0 { return v }      // LM Studio
+        if let v = entry["context_window"] as? Int, v > 0 { return v }          // OpenRouter
+        return nil
+    }
+
     // MARK: One streaming turn
 
     struct TurnResult: Sendable {
@@ -304,5 +355,56 @@ public struct OpenAIClient: LLMClient {
                 req.setValue(v, forHTTPHeaderField: k)
             }
         }
+    }
+}
+
+// MARK: - Fallback context windows
+//
+// Servers that don't expose their limits (most vLLM/llama.cpp builds, older
+// Ollama) fall back to these tables. Keyed on the last path component of the
+// model name, so "meta-llama/Llama-3.3-70B-Instruct" and "Llama-3.3-70B-Instruct"
+// both match, and an Ollama "qwen3:8b" tag resolves through its base name.
+
+public enum FallbackContextWindow {
+    /// Default when nothing else matches: 32k keeps the gauge honest without
+    /// promising more than the model actually has.
+    public static let defaultLimit = 32_768
+
+    /// Exact id (last path component, Ollama tag stripped).
+    private static let exact: [String: Int] = [
+        "gpt-4o": 128_000, "gpt-4o-mini": 128_000, "gpt-4.1": 1_048_576,
+        "gpt-4.1-mini": 1_048_576, "gpt-4.1-nano": 1_048_576, "o1": 200_000,
+        "o3": 200_000, "o4-mini": 200_000, "o3-mini": 200_000,
+        "qwen3:8b": 32_768, "qwen3:14b": 32_768, "qwen3:32b": 32_768,
+        "qwen2.5:7b": 32_768, "qwen2.5:14b": 32_768, "qwen2.5:32b": 32_768,
+        "qwen2.5-coder:7b": 32_768, "qwen2.5-coder:32b": 32_768,
+        "llama3.1:8b": 131_072, "llama3.1:70b": 131_072, "llama3.2:8b": 131_072,
+        "deepseek-r1:14b": 65_536, "deepseek-r1:32b": 65_536,
+        "deepseek-r1:70b": 131_072, "mistral:7b": 32_768, "mixtral:8x7b": 32_768,
+    ]
+
+    /// Prefix rules on the base name, checked after the exact table.
+    private static let prefixes: [(String, Int)] = [
+        ("llama-3.3-", 131_072), ("llama-3.1-", 131_072), ("llama-3.2-", 131_072),
+        ("llama-4-", 1_048_576), ("llama4-", 1_048_576),
+        ("qwen3", 32_768), ("qwen2.5", 32_768), ("qwen2-72b", 131_072),
+        ("deepseek-r1", 65_536), ("deepseek-v3", 131_072), ("deepseek", 65_536),
+        ("gpt-4o", 128_000), ("gpt-4.1", 1_048_576), ("gpt-4", 128_000),
+        ("claude-3.5", 200_000), ("claude-3", 100_000), ("claude-", 200_000),
+        ("mistral-large", 131_072), ("mistral-small", 131_072),
+        ("mixtral", 32_768), ("llama", 131_072), ("smollm", 131_072),
+    ]
+
+    /// Look up a context window for a model name, or nil if unknown.
+    public static func limit(for modelID: String) -> Int? {
+        // "meta-llama/Llama-3.3-70B-Instruct" → "Llama-3.3-70B-Instruct" → "llama-3.3-70b-instruct"
+        let base = (modelID.components(separatedBy: "/").last ?? modelID).lowercased()
+        if let hit = exact[base] { return hit }
+        // Ollama tags: "qwen3:8b" → try "qwen3" prefix rules, base name "qwen3".
+        let noTag = (base.components(separatedBy: ":").first ?? base)
+        for (prefix, limit) in prefixes where noTag.hasPrefix(prefix) { return limit }
+        // Bare base without the family prefix, e.g. "8b" models already caught above;
+        // last resort: the full id in the exact table.
+        return exact[modelID.lowercased()]
     }
 }

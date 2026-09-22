@@ -33,12 +33,17 @@ public struct RunResult: Sendable {
     public let deniedCount: Int
     /// The assistant text of the final turn (empty if the run was cut off mid-tools).
     public let finalText: String
+    /// Prompt tokens on the final model call — a good measure of how full the
+    /// context is now. Nil when the server didn't report per-request usage.
+    public let lastPromptTokens: Int?
 
-    public init(messages: [LLMMessage], usage: LLMUsage?, deniedCount: Int, finalText: String) {
+    public init(messages: [LLMMessage], usage: LLMUsage?, deniedCount: Int,
+                finalText: String, lastPromptTokens: Int? = nil) {
         self.messages = messages
         self.usage = usage
         self.deniedCount = deniedCount
         self.finalText = finalText
+        self.lastPromptTokens = lastPromptTokens
     }
 }
 
@@ -125,6 +130,7 @@ public struct Engine: Sendable {
         var usage: LLMUsage? = nil
         var denied = 0
         var finalText = ""
+        var lastPromptTokens: Int? = nil
 
         for iteration in 0..<config.maxIterations {
             if Task.isCancelled { throw CancellationError() }
@@ -163,6 +169,7 @@ public struct Engine: Sendable {
                              completionTokens: $0.completionTokens + u.completionTokens)
                 } ?? u
             }
+            if let u = turnUsage { lastPromptTokens = u.promptTokens }
             finalText = text
 
             let assistantID = "m\(iteration)"
@@ -171,7 +178,8 @@ public struct Engine: Sendable {
 
             if calls.isEmpty {
                 sink(.finished(usage: usage))
-                return RunResult(messages: messages, usage: usage, deniedCount: denied, finalText: finalText)
+                return RunResult(messages: messages, usage: usage, deniedCount: denied,
+                                 finalText: finalText, lastPromptTokens: lastPromptTokens)
             }
 
             // -- Tool turns --
@@ -221,7 +229,8 @@ public struct Engine: Sendable {
 
         // Iteration budget exhausted: stop rather than loop forever.
         sink(.finished(usage: usage))
-        return RunResult(messages: messages, usage: usage, deniedCount: denied, finalText: finalText)
+        return RunResult(messages: messages, usage: usage, deniedCount: denied,
+                         finalText: finalText, lastPromptTokens: lastPromptTokens)
     }
 
     // MARK: - Permission
