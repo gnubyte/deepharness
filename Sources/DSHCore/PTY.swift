@@ -136,6 +136,182 @@ public final class PTY: @unchecked Sendable {
         if pid > 0 { kill(pid, SIGWINCH) }
     }
 
+    // MARK: - One-shot command capture
+
+    /// Run a bash command on a pty and capture its output.
+    ///
+    /// The command gets a real controlling terminal (cooked mode, like a
+    /// normal terminal), so programs that need one (`ssh`, `sudo`, `vim`,
+    /// pagers, keychain helpers) behave instead of failing on a pipe. Nothing
+    /// is ever written back to the pty, so a program that prompts for input
+    /// prints the prompt and then blocks — the prompt lands in the captured
+    /// output, and once it has been silent long enough the whole process
+    /// group is killed and `timedOut` is set. A command that has never
+    /// printed anything (a slow, quiet build) is left alone until the full
+    /// `timeout` passes. That turns "hangs with no visible reason" into
+    /// "fails with the prompt in the output".
+    ///
+    /// Output is kept as a tail, up to `maxCapture` bytes.
+    @discardableResult
+    public static func runCommand(_ command: String,
+                                  cwd: URL,
+                                  cols: UInt16 = 220, rows: UInt16 = 50,
+                                  timeout: TimeInterval,
+                                  maxCapture: Int = 200_000,
+                                  onOutput: (@Sendable (Data) -> Void)? = nil)
+                                  async -> (output: Data, exitStatus: Int32, timedOut: Bool) {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: Self.runCommandBlocking(
+                    command, cwd: cwd, cols: cols, rows: rows,
+                    timeout: timeout, maxCapture: maxCapture, onOutput: onOutput))
+            }
+        }
+    }
+
+    private static func runCommandBlocking(_ command: String, cwd: URL,
+                                           cols: UInt16, rows: UInt16,
+                                           timeout: TimeInterval,
+                                           maxCapture: Int,
+                                           onOutput: (@Sendable (Data) -> Void)?)
+                                           -> (output: Data, exitStatus: Int32, timedOut: Bool) {
+        // Everything the child touches between fork and exec must be allocated
+        // beforehand: no Swift allocation is safe on the child side.
+        let argv = makeCArray(["/bin/bash", "-c", command])
+        var env = ProcessInfo.processInfo.environment
+        env["TERM"] = "xterm-256color"
+        env["COLORTERM"] = "truecolor"
+        env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
+        let envp = makeCArray(env.map { "\($0.key)=\($0.value)" })
+        let cwdPath = strdup(cwd.path)
+
+        var size = winsize(ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0)
+        var masterFD: Int32 = -1
+        let child = forkpty(&masterFD, nil, nil, &size)
+        if child < 0 {
+            freeCArray(argv); freeCArray(envp); free(cwdPath)
+            return (Data(), -1, false)
+        }
+        if child == 0 {
+            // --- child: all it does is exec bash. The pty gives it a real
+            // --- controlling terminal (cooked mode), so ssh/sudo/vim/pagers
+            // --- behave as they would in Terminal.
+            _ = chdir(cwdPath)
+            signal(SIGPIPE, SIG_DFL)
+            signal(SIGINT, SIG_DFL)
+            signal(SIGQUIT, SIG_DFL)
+            execve(argv[0], argv, envp)
+            _exit(127)
+        }
+        freeCArray(argv); freeCArray(envp); free(cwdPath)   // parent's copies
+
+        let master = masterFD
+        let capture = LockedTail(capacity: maxCapture)
+        let queue = DispatchQueue(label: "dsh.pty.runcommand")
+        let lastOutput = DoubleBox(initial: Date().timeIntervalSinceReferenceDate)
+        let sawOutput = BoolBox()
+
+        // Non-blocking reads so the capture never stalls the pty.
+        let flags = fcntl(master, F_GETFL, 0)
+        _ = fcntl(master, F_SETFL, flags | O_NONBLOCK)
+
+        let readSource = DispatchSource.makeReadSource(fileDescriptor: master, queue: queue)
+        readSource.setEventHandler {
+            while true {
+                var chunk = [UInt8](repeating: 0, count: 16_384)
+                let chunkCount = chunk.count
+                let count = chunk.withUnsafeMutableBytes { read(master, $0.baseAddress, chunkCount) }
+                guard count > 0 else { break }   // 0 = EOF, -1 = EAGAIN
+                capture.append(Data(chunk[0..<count]))
+                onOutput?(Data(chunk[0..<count]))
+                lastOutput.set(Date().timeIntervalSinceReferenceDate)
+                sawOutput.set(true)
+                if count < chunkCount { break }
+            }
+        }
+        readSource.setCancelHandler { [master] in close(master) }
+        readSource.resume()
+
+        let exited = DispatchSemaphore(value: 0)
+        let waiter = DispatchSource.makeProcessSource(identifier: child, eventMask: .exit, queue: queue)
+        waiter.setEventHandler { exited.signal() }
+        waiter.resume()
+
+        // Poll for exit. Two limits are enforced:
+        //   • the total `timeout`, always; and
+        //   • an idle limit, but only once we have seen output. A command that
+        //     prints a prompt and then goes silent is waiting for input we
+        //     will never give — that is the hang we catch early. A command
+        //     that has never printed anything is treated as slow, not stuck,
+        //     and is allowed to run until the full timeout.
+        let totalStart = Date()
+        var timedOut = false
+        while true {
+            let now = Date()
+            if now.timeIntervalSince(totalStart) > timeout {
+                killCommandGroup(child); timedOut = true; break
+            }
+            if sawOutput.get(),
+               now.timeIntervalSinceReferenceDate - lastOutput.get() > idleLimit(timeout) {
+                killCommandGroup(child); timedOut = true; break
+            }
+            if exited.wait(timeout: .now() + 0.2) == .success { break }
+        }
+
+        // Give the read source a beat to drain the pty's final bytes, then
+        // reap exactly once, here.
+        Thread.sleep(forTimeInterval: 0.1)
+        readSource.cancel()
+        waiter.cancel()
+        var status: Int32 = 0
+        _ = waitpid(child, &status, 0)
+
+        return (capture.take(), exitCode(status), timedOut)
+    }
+
+    /// Idle limit: fail a command that goes silent this long — it is almost
+    /// certainly waiting at an interactive prompt.
+    public static func idleLimit(_ total: TimeInterval) -> TimeInterval {
+        min(45, total * 0.9)
+    }
+
+    private static func killCommandGroup(_ child: pid_t) {
+        kill(-child, SIGKILL)
+        kill(child, SIGKILL)
+    }
+
+    /// Locked byte tail: the pty's read source and the caller both append.
+    private final class LockedTail: @unchecked Sendable {
+        private let capacity: Int
+        private let lock = NSLock()
+        private var data = Data()
+        init(capacity: Int) { self.capacity = capacity }
+        func append(_ chunk: Data) {
+            lock.lock(); defer { lock.unlock() }
+            data.append(chunk)
+            if data.count > capacity { data = data.suffix(capacity) }
+        }
+        func take() -> Data { lock.lock(); defer { lock.unlock() }; return data }
+    }
+
+    /// A Double the read source can update and the poller can read.
+    private final class DoubleBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Double
+        init(initial: Double) { value = initial }
+        func set(_ v: Double) { lock.lock(); value = v; lock.unlock() }
+        func get() -> Double { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    /// A Bool the read source can set and the poller can read.
+    private final class BoolBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set(_ v: Bool) { lock.lock(); value = v; lock.unlock() }
+        func get() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+
     public func terminate() {
         guard isRunning else { return }
         isRunning = false

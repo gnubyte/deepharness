@@ -124,6 +124,57 @@ final class PTYTests: XCTestCase {
     func testDefaultShellIsExecutable() {
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: PTY.defaultShell))
     }
+
+    // MARK: - runCommand (pty-backed capture used by run_shell_command)
+
+    func testRunCommandCapturesOutputAndExitStatus() async {
+        let (output, status, timedOut) = await PTY.runCommand(
+            "echo hi-pty-run; exit 0", cwd: URL(fileURLWithPath: "/tmp"), timeout: 10)
+        XCTAssertFalse(timedOut)
+        XCTAssertEqual(status, 0)
+        let text = String(decoding: output, as: UTF8.self)
+        XCTAssertTrue(text.contains("hi-pty-run"), "expected marker in output, got: \(text)")
+    }
+
+    func testRunCommandReportsNonZeroExit() async {
+        let (_, status, timedOut) = await PTY.runCommand("exit 7", cwd: URL(fileURLWithPath: "/tmp"), timeout: 10)
+        XCTAssertFalse(timedOut)
+        XCTAssertEqual(status, 7)
+    }
+
+    /// The regression this whole fix targets: a command that prints a prompt
+    /// and then waits for interactive input used to block for the entire
+    /// timeout with no signal. It must now be stopped early — by the idle
+    /// limit, well under the total timeout — with the prompt in the output.
+    func testRunCommandStopsOnInteractivePrompt() async {
+        let start = Date()
+        let (output, status, timedOut) = await PTY.runCommand(
+            "printf 'need-a-password: '; read -r secret",
+            cwd: URL(fileURLWithPath: "/tmp"), timeout: 6)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertTrue(timedOut, "a prompt-waiting command must be flagged as stopped")
+        XCTAssertGreaterThan(status, 0, "it should have been killed, not exited cleanly")
+        let text = String(decoding: output, as: UTF8.self)
+        XCTAssertTrue(text.contains("need-a-password:"),
+                      "the prompt should be in the captured output, got: \(text)")
+        // Idle limit for a 6s total is 5.4s, so it should stop well before 6.
+        XCTAssertLessThan(elapsed, 6.0,
+                          "should stop on the idle limit, not the full timeout (\(elapsed)s)")
+    }
+
+    /// A quiet-but-legitimately-slow command (no output) must NOT be killed on
+    /// the idle limit — only on the full timeout. This is the "don't kill my
+    /// slow build" guarantee.
+    func testRunCommandAllowsQuietSlowCommandUntilFullTimeout() async {
+        // Sleeps 2.5s with no output, then prints. Total timeout 6s is plenty.
+        let (output, status, timedOut) = await PTY.runCommand(
+            "sleep 2.5; echo finished-quietly", cwd: URL(fileURLWithPath: "/tmp"), timeout: 6)
+        XCTAssertFalse(timedOut, "a quiet command that finishes in time must not be stopped")
+        XCTAssertEqual(status, 0)
+        let text = String(decoding: output, as: UTF8.self)
+        XCTAssertTrue(text.contains("finished-quietly"), "got: \(text)")
+    }
 }
 
 /// The emulator is main-actor-confined in the app (`PTY.onOutput` hops before

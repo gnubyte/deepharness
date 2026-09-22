@@ -1,12 +1,19 @@
 import Foundation
 
-// MARK: - run_shell_command (async, streaming output)
+// MARK: - run_shell_command (async, pty-backed output capture)
 
 public struct RunShellCommandTool: ToolExecutor {
     public static let name = "run_shell_command"
     public static let spec = ToolSpec(
         name: name,
-        description: "Run a shell command in the project folder. Long-running commands get a timeout (default 120s, max 600s). Output is captured and returned (truncated to ~16 KB).",
+        description: """
+            Run a shell command in the project folder on a real terminal (pty), so tty-aware \
+            programs (ssh, sudo, vim, pagers) behave normally. Long-running commands get a \
+            timeout (default 120s, max 600s). A command that prints a prompt and then waits \
+            for interactive input is stopped after ~45s of silence, and its output includes \
+            the prompt it was stuck on. Quiet long-running builds run to the full timeout. \
+            Output is captured and returned (truncated to ~16 KB).
+            """,
         parameters: """
         {"type":"object","properties":{"command":{"type":"string","description":"The command to run"},"timeout":{"type":"integer","description":"Timeout in seconds (default 120)"},"description":{"type":"string","description":"Short summary of what the command does"}},"required":["command"]}
         """
@@ -18,101 +25,37 @@ public struct RunShellCommandTool: ToolExecutor {
         }
         let timeoutSec = min(600, max(5, Self.int(args, "timeout", default: 120)))
 
-        // Spawn bash -c in the project folder, inherit env.
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = ["-c", command]
-        p.currentDirectoryURL = context.workspace
+        // The pty is the controlling terminal; output streams straight into a
+        // bounded tail. A prompt-block (no output for ~45s) or the total
+        // deadline stops the run and `timedOut` is set.
+        let result = await PTY.runCommand(command, cwd: context.workspace,
+                                          timeout: TimeInterval(timeoutSec))
+        let text = String(decoding: result.output, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = pipe
-
-        let outputBox = OutputBuffer()
-        let readTask = Task.detached {
-            var data = Data()
-            do {
-                for try await byte in pipe.fileHandleForReading.bytes {
-                    data.append(byte)
-                    if data.count >= 4096 {
-                        outputBox.append(data)
-                        data.removeAll(keepingCapacity: true)
-                    }
-                }
-            } catch {
-                // Stream ended (EOF or error) — whatever we have is what we keep.
+        if result.timedOut {
+            let idle = Int(PTY.idleLimit(TimeInterval(timeoutSec)))
+            let note: String
+            if text.isEmpty {
+                note = "Command timed out after \(timeoutSec)s (it produced no output)."
+            } else {
+                note = "Stopped after \(timeoutSec)s limit — the command appears to be waiting for interactive input (silent for ~\(idle)s). Rerun with flags that answer the prompt, or tell the user what input it needs."
             }
-            if !data.isEmpty { outputBox.append(data) }
+            return .init(output: "\(note)\n\(Self.terminalText(text))")
         }
-
-        do {
-            try p.run()
-        } catch {
-            return .init(output: "Error: could not start shell: \(error.localizedDescription)")
+        if result.exitStatus == -1 {
+            return .init(output: "Error: could not start the shell.")
         }
-
-        // Wait with a deadline.
-        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSec))
-        while p.isRunning {
-            if Date() > deadline {
-                p.terminate()
-                try? await Task.sleep(nanoseconds: 100_000_000)
-                if p.isRunning { p.interrupt() }
-                await p.waitUntilExitAsync()
-                readTask.cancel()
-                return .init(output: "Error: command timed out after \(timeoutSec)s and was killed.\n\(outputBox.terminal(prefix: 4000))")
-            }
-            _ = try? await Task.sleep(nanoseconds: 100_000_000)
+        if result.exitStatus == 0 {
+            return .init(output: text.isEmpty ? "(no output)" : Self.terminalText(text))
         }
-        let status = p.terminationStatus
-        readTask.cancel()
-        await p.waitUntilExitAsync()
-
-        let text = outputBox.terminal(limit: 16_000)
-        if status == 0 {
-            return .init(output: text.isEmpty ? "(no output)" : text)
-        }
-        return .init(output: "Command exited with code \(status).\n\(text)")
-    }
-}
-
-/// Waits for a process to exit without blocking the actor thread.
-extension Process {
-    func waitUntilExitAsync() async {
-        await Task.detached { [weak self] in
-            self?.waitUntilExit()
-        }.value
-    }
-}
-
-/// Thread-safe ring buffer for captured output.
-final class OutputBuffer: @unchecked Sendable {
-    private var buffer = Data()
-    private let cap = 200_000
-    private var lock = NSLock()
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        buffer.append(chunk)
-        if buffer.count > cap {
-            buffer = buffer.suffix(cap)
-        }
+        return .init(output: "Command exited with code \(result.exitStatus).\n\(Self.terminalText(text))")
     }
 
-    /// The tail of the captured output as UTF-8, truncated to `limit`
-    /// characters with an ellipsis header.
-    func terminal(limit: Int = 16_000, prefix: Int = 0) -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        var s = String(decoding: buffer, as: UTF8.self)
-        if s.count > limit {
-            s = "… [truncated \(s.count - limit) chars] …\n" + String(s.suffix(limit))
-        }
-        if prefix > 0 && s.count > prefix {
-            s = String(s.suffix(prefix))
-        }
-        return s.isEmpty ? "" : s
+    /// Keep the tail of long output, capped like before (~16 KB).
+    private static func terminalText(_ s: String, limit: Int = 16_000) -> String {
+        guard s.count > limit else { return s }
+        return "… [truncated \(s.count - limit) chars] …\n" + String(s.suffix(limit))
     }
 }
 
