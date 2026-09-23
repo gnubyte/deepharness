@@ -20,15 +20,13 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    # arm64 runner (matches the Apple Silicon build). The default Xcode 16
+    # toolchain is Swift 6, which is what the package requires
+    # (swift-tools-version 6.0 in Package.swift).
+    runs-on: macos-15
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-
-      - name: Install Swift toolchain
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: '5.10'
 
       - name: Build the app bundle + DMG
         run: bash bundle.sh release
@@ -61,17 +59,17 @@ jobs:
           # which --target below requires).
           gh release delete "${{ steps.meta.outputs.tag }}" --yes 2>/dev/null || true
           cat > /tmp/release-notes.md <<'NOTES'
-          ## Download
+## Download
 
-          - **`DeepHarness.dmg`** — open it and drag **DSH** into **Applications**.
+- **`DeepHarness.dmg`** — open it and drag **DSH** into **Applications**.
 
-          Builds are ad-hoc-signed for Apple Silicon (arm64), macOS 14+. Gatekeeper
-          will prompt on first launch — right-click the app and choose **Open**, or run:
+Builds are ad-hoc-signed for Apple Silicon (arm64), macOS 14+. Gatekeeper
+will prompt on first launch — right-click the app and choose **Open**, or run:
 
-          ```bash
-          xattr -d com.apple.quarantine /Applications/DSH.app
-          ```
-          NOTES
+```bash
+xattr -d com.apple.quarantine /Applications/DSH.app
+```
+NOTES
           gh release create "${{ steps.meta.outputs.tag }}" \
             --title "${{ steps.meta.outputs.title }}" \
             --target "${{ github.ref_name }}" \
