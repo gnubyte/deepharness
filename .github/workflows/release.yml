@@ -36,8 +36,9 @@ jobs:
         run: |
           set -euo pipefail
           SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/DSH.app/Contents/Info.plist)"
-          # Pad a short version ("0.4") up to a full one ("0.4.0").
-          read -r major minor patch <<<"$(awk -F. '{while(NF<3)$0=$0".0"; print $1"."$2"."$3}' <<<"$SHORT")"
+          # Pad a short version ("0.4") up to a full dotted one ("0.4.0").
+          IFS=. read -r major minor patch <<<"$SHORT"
+          major="${major:-0}"; minor="${minor:-0}"; patch="${patch:-0}"
           FULL="$major.$minor.$patch"
           echo "full=$FULL" >> "$GITHUB_OUTPUT"
           echo "tag=v$FULL"   >> "$GITHUB_OUTPUT"
