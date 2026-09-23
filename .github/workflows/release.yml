@@ -40,9 +40,13 @@ jobs:
           IFS=. read -r major minor patch <<<"$SHORT"
           major="${major:-0}"; minor="${minor:-0}"; patch="${patch:-0}"
           FULL="$major.$minor.$patch"
+          # The release API rejects a *tag name* as target_commitish on this
+          # repo, so point it at the peeled commit the tag refers to.
+          TARGET="$(git rev-parse "${GITHUB_REF#refs/tags/}^{}")"
           echo "full=$FULL" >> "$GITHUB_OUTPUT"
           echo "tag=v$FULL"   >> "$GITHUB_OUTPUT"
           echo "title=DSH Mac v$FULL" >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
 
       - name: Keep the DMG as an artifact
         uses: actions/upload-artifact@v4
@@ -61,6 +65,6 @@ jobs:
           gh release delete "${{ steps.meta.outputs.tag }}" --yes 2>/dev/null || true
           gh release create "${{ steps.meta.outputs.tag }}" \
             --title "${{ steps.meta.outputs.title }}" \
-            --target "${{ github.ref_name }}" \
+            --target "${{ steps.meta.outputs.target }}" \
             --notes-file .github/release_notes.md \
             build/DeepHarness.dmg
