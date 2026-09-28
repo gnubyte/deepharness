@@ -190,6 +190,11 @@ public struct ToolRegistry: Sendable {
         ToolRegistry(tools: tools + extra)
     }
 
+    /// A copy without the named tools (subagents lose `agent`).
+    public func removing(_ names: String...) -> ToolRegistry {
+        ToolRegistry(tools: tools.filter { !names.contains($0.name) })
+    }
+
     public static func standard(depth: Int = 0) -> ToolRegistry {
         // `agent` is only offered at the top level: subagents don't spawn
         // subagents (keeps the permission surface and cost predictable).
@@ -200,5 +205,20 @@ public struct ToolRegistry: Sendable {
         ]
         if depth == 0 { tools.append(AgentTool()) }
         return ToolRegistry(tools: tools)
+    }
+
+    /// Background-process tools. Separate from `standard()` so existing test
+    /// registries stay deterministic and the app decides policy; permissions
+    /// ride through Engine.checkPermission (shell gate) and ComputerGrants.
+    public static func processes() -> [any ToolExecutor] {
+        [ProcessStartTool(), ProcessReadTool(), ProcessWriteTool(), ProcessStopTool(), ProcessListTool()]
+    }
+
+    /// See/steer-the-machine tools (screenshots, windows, events). Gated by
+    /// the computerToolsEnabled setting in the app and by the per-chat
+    /// observe/control grants inside the engine.
+    public static func machineTools() -> [any ToolExecutor] {
+        [ScreenshotTool(), ListWindowsTool(), ScreenWatchTool(), UITreeTool(),
+         InspectProcessTool(), MouseTool(), KeyboardTool(), FocusAppTool(), ViewImageTool()]
     }
 }

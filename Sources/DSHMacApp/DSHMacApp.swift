@@ -26,6 +26,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Background processes the agent started (game engines, servers) must
+        // not outlive the app that owns their ptys.
+        ProcessManager.shared.stopAll()
+    }
 }
 
 // MARK: - Menus

@@ -30,8 +30,11 @@ public struct AgentTool: ToolExecutor {
             return ToolResult(output: "Error: nested subagents are not allowed (depth limit).")
         }
 
-        // Same capabilities as the parent, minus `agent` itself.
-        let subRegistry = ToolRegistry.standard(depth: context.depth + 1)
+        // Same capabilities as the parent, minus `agent` itself: start from
+        // the parent's registry and drop agent. That way a process the parent
+        // launched is readable here, and a "debug this game window" task can
+        // screenshot and drive without the parent relaying every observation.
+        let subRegistry = context.registry.removing("agent")
         let config = EngineConfig(
             maxIterations: Self.subagentMaxIterations,
             toolTimeout: 300,

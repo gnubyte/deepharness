@@ -89,6 +89,8 @@ public final class AppTransport {
         self.config = config
         self.log = log
         self.basePrompt = systemPrompt ?? Self.defaultSystemPrompt
+        // Ship-with-the-app skills (godot-debugging, …) refresh on every launch.
+        try? SkillBuiltin.install(into: skillLocations.builtinSkills)
         reload()
         refreshDrafts()
     }
@@ -292,6 +294,15 @@ public final class AppTransport {
         if !skillState.active.isEmpty { extra.append(UseSkillTool(skills: skillState.active)) }
         if vm.preset != .plan {
             extra.append(ProposeSkillTool(projectRoot: vm.workspaceURL, locations: skillLocations))
+        }
+        // Background processes: the model's own long-running programs (game
+        // engines, dev servers, REPLs) that keep running between tool calls.
+        extra.append(contentsOf: ToolRegistry.processes())
+        // Seeing/steering the machine — screenshots, windows, a11y trees,
+        // clicks, keystrokes. Off with the computerToolsEnabled kill switch;
+        // each first use in a chat still asks (Engine.computerGate).
+        if config.computerToolsEnabled {
+            extra.append(contentsOf: ToolRegistry.machineTools())
         }
         let registry = builtins.adding(extra)
 

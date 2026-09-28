@@ -122,7 +122,7 @@ public enum ComputerAccess: String, Sendable, Hashable, CaseIterable {
     /// outside the project.
     public static func forTool(_ name: String) -> ComputerAccess? {
         switch name {
-        case "screenshot", "list_windows", "screen_watch", "ui_tree", "inspect_process": .observe
+        case "screenshot", "list_windows", "screen_watch", "ui_tree", "inspect_process", "view_image": .observe
         case "mouse", "keyboard", "focus_app": .control
         default: nil
         }

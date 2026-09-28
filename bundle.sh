@@ -30,8 +30,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key>            <string>DSH</string>
   <key>CFBundleDisplayName</key>     <string>DSH</string>
   <key>CFBundleIdentifier</key>      <string>dev.local.dsh.mac</string>
-  <key>CFBundleVersion</key>         <string>8</string>
-  <key>CFBundleShortVersionString</key> <string>0.7.0</string>
+  <key>CFBundleVersion</key>         <string>9</string>
+  <key>CFBundleShortVersionString</key> <string>0.8.0</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleExecutable</key>      <string>DSH</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
@@ -52,6 +52,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <string>DSH opens project folders you choose so the agent can read and edit them.</string>
   <key>NSDownloadsFolderUsageDescription</key>
   <string>DSH opens project folders you choose so the agent can read and edit them.</string>
+  <!-- The computer-use tools (screenshot, ui_tree, keyboard) talk to the
+       window server and System Events. These strings appear in the one-time
+       macOS prompts; grants live in System Settings → Privacy & Security. -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>DSH lets the agent inspect and control apps you approve — window titles, accessibility trees, and keyboard input — to debug what you are building.</string>
 </dict>
 </plist>
 PLIST

@@ -55,6 +55,13 @@ public final class PTY: @unchecked Sendable {
         if child < 0 { return false }
         if child == 0 {
             // --- child ---
+            // Clear the inherited signal mask: a launcher that blocks SIGINT/
+            // SIGTERM (GUI harnesses, dispatch-heavy runtimes) would otherwise
+            // leave those signals pending forever across exec — ctrl-C would
+            // echo but never kill. sigprocmask here is async-signal-safe.
+            var empty = sigset_t()
+            sigemptyset(&empty)
+            sigprocmask(SIG_SETMASK, &empty, nil)
             if let cwdPath { _ = chdir(cwdPath) }
             signal(SIGPIPE, SIG_DFL)
             signal(SIGINT, SIG_DFL)
@@ -196,6 +203,9 @@ public final class PTY: @unchecked Sendable {
             // --- child: all it does is exec bash. The pty gives it a real
             // --- controlling terminal (cooked mode), so ssh/sudo/vim/pagers
             // --- behave as they would in Terminal.
+            var empty = sigset_t()
+            sigemptyset(&empty)
+            sigprocmask(SIG_SETMASK, &empty, nil)   // see start(): don't inherit a blocked mask
             _ = chdir(cwdPath)
             signal(SIGPIPE, SIG_DFL)
             signal(SIGINT, SIG_DFL)
