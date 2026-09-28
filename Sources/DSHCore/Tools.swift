@@ -73,11 +73,17 @@ public struct ToolResult: Sendable {
     public let output: String
     public var files: [FileChange]
     public var todos: [TodoItem]?   // nil = this call did not manage todos
+    /// Images the tool produced (screenshots, frames, viewed files). The engine
+    /// hands them to the model in a follow-up message: chat-completion tool
+    /// messages are text-only, so images ride on an attached user message.
+    public var images: [MessageAttachment]
 
-    public init(output: String, files: [FileChange] = [], todos: [TodoItem]? = nil) {
+    public init(output: String, files: [FileChange] = [], todos: [TodoItem]? = nil,
+                images: [MessageAttachment] = []) {
         self.output = output
         self.files = files
         self.todos = todos
+        self.images = images
     }
 }
 

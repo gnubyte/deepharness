@@ -632,6 +632,9 @@ public final class AppTransport {
                            argSummary: vm.entries.last(where: { $0.id == id })?.tool?.preview,
                            output: output, isError: !ok)
 
+        case .toolImages(let id, let images):
+            vm.attachImages(id: id, images.map(\.data))
+
         case .filesChanged(let changes):
             vm.recordFileChanges(changes)
             onFilesChanged?(changes)

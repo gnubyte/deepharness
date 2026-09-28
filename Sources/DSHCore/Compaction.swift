@@ -13,12 +13,18 @@ public enum TokenEstimate {
         for call in m.toolCalls ?? [] {
             chars += call.name.count + call.arguments.raw.count
         }
+        var tokens = 0
         for att in m.attachments ?? [] {
-            // Images are counted by their base64 payload, which is what the
-            // model actually pays for.
-            chars += att.data.base64EncodedString().count
+            switch att.kind {
+            case .image:
+                // A vision model pays per patch, not per byte: a 1400x900
+                // screenshot is ~1.6K tokens although its base64 is ~1M chars.
+                tokens += ImageSize.tokens(for: att.data)
+            case .file:
+                chars += att.data.count * 4 / 3   // base64 payload
+            }
         }
-        return max(0, chars / 4)
+        return max(0, chars / 4) + tokens
     }
 
     /// Rough token count for a full request: system prompt + messages.
@@ -241,5 +247,74 @@ public enum Compaction {
     public static func stripThinking(_ text: String) -> String {
         guard let close = text.range(of: "</think>") else { return text }
         return String(text[close.upperBound...])
+    }
+}
+
+// MARK: - Image size
+
+/// Dimensions of an encoded image, read from its header (no decoding), and the
+/// vision-token cost that implies.
+public enum ImageSize {
+    /// Pixels per side of one vision patch after merging (Qwen-VL family: 28).
+    public static let patch = 28
+
+    public static func dimensions(of data: Data) -> (width: Int, height: Int)? {
+        let b = [UInt8](data.prefix(64 * 1024))
+        // PNG: 8-byte signature, IHDR width/height at 16..23 (big endian).
+        if b.count >= 24, b[0] == 0x89, b[1] == 0x50, b[2] == 0x4E, b[3] == 0x47 {
+            let w = Int(b[16]) << 24 | Int(b[17]) << 16 | Int(b[18]) << 8 | Int(b[19])
+            let h = Int(b[20]) << 24 | Int(b[21]) << 16 | Int(b[22]) << 8 | Int(b[23])
+            return w > 0 && h > 0 ? (w, h) : nil
+        }
+        // GIF: "GIF8", little-endian width/height at 6..9.
+        if b.count >= 10, b[0] == 0x47, b[1] == 0x49, b[2] == 0x46 {
+            let w = Int(b[6]) | Int(b[7]) << 8
+            let h = Int(b[8]) | Int(b[9]) << 8
+            return w > 0 && h > 0 ? (w, h) : nil
+        }
+        // JPEG: walk segments to the first start-of-frame marker.
+        if b.count >= 4, b[0] == 0xFF, b[1] == 0xD8 {
+            var i = 2
+            while i + 9 < b.count {
+                guard b[i] == 0xFF else { i += 1; continue }
+                let marker = b[i + 1]
+                if marker == 0xFF { i += 1; continue }
+                if marker == 0xD8 || marker == 0x01 || (0xD0...0xD7).contains(marker) { i += 2; continue }
+                let length = Int(b[i + 2]) << 8 | Int(b[i + 3])
+                if (0xC0...0xCF).contains(marker), marker != 0xC4, marker != 0xC8, marker != 0xCC {
+                    let h = Int(b[i + 5]) << 8 | Int(b[i + 6])
+                    let w = Int(b[i + 7]) << 8 | Int(b[i + 8])
+                    return w > 0 && h > 0 ? (w, h) : nil
+                }
+                i += 2 + max(2, length)
+            }
+            return nil
+        }
+        // WebP: RIFF....WEBP then VP8X / VP8L / VP8 chunk.
+        if b.count >= 30, b[0] == 0x52, b[1] == 0x49, b[8] == 0x57, b[9] == 0x45 {
+            let fourCC = String(decoding: b[12..<16], as: UTF8.self)
+            if fourCC == "VP8X" {
+                let w = 1 + (Int(b[24]) | Int(b[25]) << 8 | Int(b[26]) << 16)
+                let h = 1 + (Int(b[27]) | Int(b[28]) << 8 | Int(b[29]) << 16)
+                return (w, h)
+            }
+            if fourCC == "VP8L" {
+                let bits = UInt32(b[21]) | UInt32(b[22]) << 8 | UInt32(b[23]) << 16 | UInt32(b[24]) << 24
+                return (Int(bits & 0x3FFF) + 1, Int((bits >> 14) & 0x3FFF) + 1)
+            }
+            if fourCC == "VP8 ", b.count >= 30 {
+                return (Int(b[26]) | Int(b[27]) << 8) & 0x3FFF > 0
+                    ? ((Int(b[26]) | Int(b[27]) << 8) & 0x3FFF, (Int(b[28]) | Int(b[29]) << 8) & 0x3FFF) : nil
+            }
+        }
+        return nil
+    }
+
+    /// Estimated vision tokens for an encoded image (1,500 when the header
+    /// can't be read).
+    public static func tokens(for data: Data) -> Int {
+        guard let (w, h) = dimensions(of: data) else { return 1_500 }
+        let cost = ((w + patch - 1) / patch) * ((h + patch - 1) / patch)
+        return min(8_192, max(64, cost))
     }
 }

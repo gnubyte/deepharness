@@ -18,19 +18,25 @@ public struct LLMMessage: Codable, Hashable, Sendable {
     public var name: String?
     /// User-attached files/images sent alongside the text.
     public var attachments: [MessageAttachment]?
+    /// Set on the synthetic user message that carries images a tool produced
+    /// (names of the tools). Such messages are pruned to the newest few so a
+    /// long debugging session doesn't fill the window with old screenshots.
+    public var imageSource: String?
 
     public init(role: Role,
                 content: String? = nil,
                 toolCalls: [ToolCall]? = nil,
                 toolCallID: String? = nil,
                 name: String? = nil,
-                attachments: [MessageAttachment]? = nil) {
+                attachments: [MessageAttachment]? = nil,
+                imageSource: String? = nil) {
         self.role = role
         self.content = content
         self.toolCalls = toolCalls
         self.toolCallID = toolCallID
         self.name = name
         self.attachments = attachments
+        self.imageSource = imageSource
     }
 
     public static func user(_ text: String, attachments: [MessageAttachment]? = nil) -> LLMMessage {

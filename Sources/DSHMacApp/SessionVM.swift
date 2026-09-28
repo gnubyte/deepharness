@@ -25,16 +25,20 @@ public struct ToolActivity: Hashable, Sendable {
     public var output: String?
     /// nil while the call is still running.
     public var isOk: Bool?
+    /// What the tool captured (screenshots, frames), as encoded images. Kept
+    /// in memory for the live session only — logs store just the text.
+    public var images: [Data]
 
     public var isFinished: Bool { isOk != nil }
 
     public init(name: String, preview: String, summary: String? = nil,
-                output: String? = nil, isOk: Bool? = nil) {
+                output: String? = nil, isOk: Bool? = nil, images: [Data] = []) {
         self.name = name
         self.preview = preview
         self.summary = summary
         self.output = output
         self.isOk = isOk
+        self.images = images
     }
 }
 
@@ -238,6 +242,15 @@ public final class SessionVM: Identifiable {
         activity.isOk = ok
         activity.summary = summary
         activity.output = output
+        entries[index].kind = .tool(activity)
+        updatedAt = .now
+    }
+
+    /// Show what a tool captured on its card.
+    public func attachImages(id: String, _ images: [Data]) {
+        guard let index = entries.lastIndex(where: { $0.id == id }),
+              case .tool(var activity) = entries[index].kind else { return }
+        activity.images = images
         entries[index].kind = .tool(activity)
         updatedAt = .now
     }

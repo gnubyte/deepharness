@@ -14,6 +14,8 @@ public enum EngineEvent: Sendable {
     /// A tool call finished. `summary` is a one-line headline; `output` is the
     /// full (already length-capped) result the UI reveals on demand.
     case toolFinished(id: String, name: String, ok: Bool, summary: String, output: String)
+    /// Images a tool produced (screenshots, frames); the UI shows them on the tool card.
+    case toolImages(id: String, images: [MessageAttachment])
     /// Files a tool created, modified, or deleted — the editor reloads on these.
     case filesChanged([FileChange])
     /// The whole run finished cleanly.
@@ -67,11 +69,19 @@ public struct EngineConfig: Sendable {
     public var maxCompactions: Int
     /// Thinking level sent with every model call; nil = the provider default.
     public var thinking: ThinkingLevel?
+    /// How many tool-image messages (screenshots, frames) stay in the request;
+    /// older ones are replaced by a short note so a long debugging session
+    /// doesn't fill the window with stale pictures.
+    public var maxToolImageMessages: Int
+    /// False when the model can't take images: tool images are dropped and the
+    /// tool result says so, so the agent falls back to text (logs, ui_tree).
+    public var visionEnabled: Bool
 
     public init(maxIterations: Int = 30, toolTimeout: TimeInterval = 300,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
                 contextWindow: Int? = nil, maxCompactions: Int = 4,
-                thinking: ThinkingLevel? = nil) {
+                thinking: ThinkingLevel? = nil,
+                maxToolImageMessages: Int = 3, visionEnabled: Bool = true) {
         self.maxIterations = maxIterations
         self.toolTimeout = toolTimeout
         self.model = model
@@ -80,6 +90,8 @@ public struct EngineConfig: Sendable {
         self.contextWindow = contextWindow
         self.maxCompactions = maxCompactions
         self.thinking = thinking
+        self.maxToolImageMessages = maxToolImageMessages
+        self.visionEnabled = visionEnabled
     }
 }
 
@@ -106,6 +118,8 @@ public struct Engine: Sendable {
     /// summary) when it is over budget. When nil, or when it throws/returns the
     /// input unchanged, the run proceeds as-is.
     public let compaction: (@Sendable (_ used: Int, _ transcript: [LLMMessage]) async throws -> [LLMMessage])?
+    /// Screen/computer approvals for this chat (persist across engine rebuilds).
+    public let computerGrants: ComputerGrants
 
     public init(client: any LLMClient,
                 registry: ToolRegistry,
@@ -115,7 +129,8 @@ public struct Engine: Sendable {
                 policy: PermissionPolicy,
                 permissionGate: @escaping @Sendable (String, String, String) async -> Bool,
                 onTodos: @escaping @Sendable ([TodoItem]) -> Void = { _ in },
-                compaction: (@Sendable (Int, [LLMMessage]) async throws -> [LLMMessage])? = nil) {
+                compaction: (@Sendable (Int, [LLMMessage]) async throws -> [LLMMessage])? = nil,
+                computerGrants: ComputerGrants = ComputerGrants()) {
         self.client = client
         self.registry = registry
         self.systemPrompt = systemPrompt
@@ -125,6 +140,7 @@ public struct Engine: Sendable {
         self.permissionGate = permissionGate
         self.onTodos = onTodos
         self.compaction = compaction
+        self.computerGrants = computerGrants
     }
 
     /// Convenience for tests / subagents with auto-approval.
@@ -179,6 +195,8 @@ public struct Engine: Sendable {
                     }
                 }
             }
+
+            Self.pruneToolImages(&messages, keep: config.maxToolImageMessages)
 
             let request = LLMRequest(
                 systemPrompt: systemPrompt,
@@ -251,6 +269,7 @@ public struct Engine: Sendable {
             }
 
             // -- Tool turns --
+            var toolImages: [(tool: String, images: [MessageAttachment])] = []
             for call in calls {
                 if Task.isCancelled { throw CancellationError() }
                 let preview = Self.preview(of: call)
@@ -283,17 +302,39 @@ public struct Engine: Sendable {
                 if let todos = result.todos {
                     onTodos(todos)
                 }
+                var resultOutput = result.output
+                if !result.images.isEmpty {
+                    if config.visionEnabled {
+                        toolImages.append((call.name, result.images))
+                        sink(.toolImages(id: call.id, images: result.images))
+                    } else {
+                        resultOutput += "\n(\(result.images.count) image(s) not shown: the selected model can't take images. Use text tools — ui_tree, process_read, logs — instead.)"
+                    }
+                }
                 if !result.files.isEmpty {
                     sink(.filesChanged(result.files))
                 }
-                let truncated = result.output.count > 40_000
-                    ? String(result.output.suffix(40_000)) + "\n[result truncated]"
-                    : result.output
+                let truncated = resultOutput.count > 40_000
+                    ? String(resultOutput.suffix(40_000)) + "\n[result truncated]"
+                    : resultOutput
                 messages.append(.toolResult(id: call.id, name: call.name, output: truncated))
                 sink(.toolFinished(id: call.id, name: call.name,
                                    ok: !result.output.hasPrefix("Error:"),
                                    summary: Self.summary(of: result.output),
                                    output: truncated))
+            }
+
+            // Chat-completion tool messages are text-only, so what the tools
+            // captured goes back on one attached user message, after every
+            // tool result of this turn (tool answers must stay contiguous).
+            if !toolImages.isEmpty {
+                let all = toolImages.flatMap(\.images)
+                let names = Array(Set(toolImages.map(\.tool))).sorted().joined(separator: ", ")
+                messages.append(LLMMessage(
+                    role: .user,
+                    content: "[Automatic message: \(all.count) image(s) captured by \(names). Not from the user — this is what the tool saw.]",
+                    attachments: all,
+                    imageSource: names))
             }
         }
 
@@ -322,12 +363,56 @@ public struct Engine: Sendable {
             let detail = "Run command: \(cmd)"
             let approved = await permissionGate(call.id, call.name, detail)
             return (approved, approved ? "" : "user declined")
+        case "process_start":
+            // Starting a background process is running a shell command.
+            let cmd = JSONArgs.string(call.arguments, "command") ?? ""
+            return await shellGate(call: call, command: cmd, detailPrefix: "Start background process")
+        case "process_write":
+            // Input to a running process can be a command to its shell.
+            let input = JSONArgs.string(call.arguments, "input") ?? ""
+            return await shellGate(call: call, command: input, detailPrefix: "Send to background process")
         default:
+            if let access = ComputerAccess.forTool(call.name) {
+                return await computerGate(access, call: call)
+            }
             return (true, "")
         }
     }
 
+    private func shellGate(call: ToolCall, command: String, detailPrefix: String) async -> (ok: Bool, reason: String) {
+        if case .proceed = policy.checkShell(command: command) { return (true, "") }
+        if case .deny(let r) = policy.checkShell(command: command) { return (false, r) }
+        let approved = await permissionGate(call.id, call.name, "\(detailPrefix): \(command)")
+        return (approved, approved ? "" : "user declined")
+    }
+
+    private func computerGate(_ access: ComputerAccess, call: ToolCall) async -> (ok: Bool, reason: String) {
+        switch policy.checkComputer(access) {
+        case .proceed: return (true, "")
+        case .deny(let r): return (false, r)
+        case .ask:
+            if computerGrants.has(access) { return (true, "") }
+            let approved = await permissionGate(call.id, call.name, access.prompt)
+            if approved { computerGrants.grant(access) }
+            return (approved, approved ? "" : "user declined")
+        }
+    }
+
     // MARK: - Helpers
+
+    /// Replace all but the newest `keep` tool-image messages with a short
+    /// note. Images the user attached themselves are never touched.
+    static func pruneToolImages(_ messages: inout [LLMMessage], keep: Int) {
+        var seen = 0
+        for index in messages.indices.reversed() {
+            guard messages[index].imageSource != nil, let atts = messages[index].attachments, !atts.isEmpty else { continue }
+            seen += 1
+            if seen > max(0, keep) {
+                messages[index].attachments = nil
+                messages[index].content = "[\(atts.count) earlier image(s) from \(messages[index].imageSource ?? "a tool") removed to save context — capture again if you need to see it.]"
+            }
+        }
+    }
 
     private func executeWithTimeout(_ executor: any ToolExecutor,
                                     args: JSONString,

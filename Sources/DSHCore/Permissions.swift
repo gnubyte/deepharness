@@ -93,4 +93,69 @@ public struct PermissionPolicy: Sendable {
 
     /// Web fetch: read-only; only `fullAccess` restrictions matter (none).
     public func checkFetch() -> PermissionDecision { .proceed }
+
+    /// Seeing or driving the rest of the machine. Screenshots can capture
+    /// anything on screen (and are sent to the model), and mouse/keyboard
+    /// control acts as the user in any app, so neither is implicit: the first
+    /// use in a chat asks, and an approval holds for that chat (see
+    /// `ComputerGrants`). Plan mode never drives the machine.
+    public func checkComputer(_ access: ComputerAccess) -> PermissionDecision {
+        switch preset {
+        case .fullAccess: return .proceed
+        case .plan:
+            return access == .control
+                ? .deny(reason: "Plan mode is read-only: no mouse or keyboard control.")
+                : .ask
+        case .workspaceWrite: return .ask
+        }
+    }
+}
+
+/// What a computer-use tool needs from the machine.
+public enum ComputerAccess: String, Sendable, Hashable, CaseIterable {
+    /// Read-only: screenshots, window lists, accessibility trees, inspecting processes.
+    case observe
+    /// Acts as the user: mouse, keyboard, bringing apps to the front.
+    case control
+
+    /// The access a tool needs, or nil for tools that don't touch the machine
+    /// outside the project.
+    public static func forTool(_ name: String) -> ComputerAccess? {
+        switch name {
+        case "screenshot", "list_windows", "screen_watch", "ui_tree", "inspect_process": .observe
+        case "mouse", "keyboard", "focus_app": .control
+        default: nil
+        }
+    }
+
+    public var prompt: String {
+        switch self {
+        case .observe:
+            "Screen access — the agent wants to look at your screen: screenshots of apps and windows, window titles, and process details. What it captures is sent to the model. Allowing covers the rest of this chat."
+        case .control:
+            "Computer control — the agent wants to move the mouse, click, type, and bring apps to the front, acting as you. Allowing covers the rest of this chat. Press ⌘. to stop it at any time."
+        }
+    }
+}
+
+/// Approvals the user has given in one chat. A class so it survives the
+/// engine being rebuilt between turns.
+public final class ComputerGrants: @unchecked Sendable {
+    private let lock = NSLock()
+    private var granted: Set<ComputerAccess> = []
+    public init() {}
+
+    public func has(_ access: ComputerAccess) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        // Control implies the ability to see what you are controlling.
+        return granted.contains(access) || (access == .observe && granted.contains(.control))
+    }
+
+    public func grant(_ access: ComputerAccess) {
+        lock.lock(); granted.insert(access); lock.unlock()
+    }
+
+    public func revokeAll() {
+        lock.lock(); granted.removeAll(); lock.unlock()
+    }
 }
