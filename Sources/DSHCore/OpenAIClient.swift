@@ -49,21 +49,6 @@ public struct OpenAIClient: LLMClient {
         }
     }
 
-    /// A plain (no tools, no system prompt) streaming completion, used for
-    /// one-shot tasks like writing a conversation summary. Returns the full text.
-    public func streamPlain(_ text: String, maxTokens: Int? = 2048) async throws -> String {
-        let request = LLMRequest(systemPrompt: "", messages: [.user(text)], tools: [],
-                                 model: profile.model, temperature: nil, maxTokens: maxTokens)
-        var out = ""
-        for try await event in stream(request) {
-            switch event {
-            case .text(let d): out += d
-            case .done: break
-            }
-        }
-        return out
-    }
-
     public func listModels() async throws -> [String] {
         guard let url = URL(string: profile.endpoint(path: "models")) else {
             throw LLMError.unsupported("bad base URL: \(profile.baseURL)")

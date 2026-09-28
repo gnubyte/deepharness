@@ -35,10 +35,12 @@ public struct AgentTool: ToolExecutor {
         let config = EngineConfig(
             maxIterations: Self.subagentMaxIterations,
             toolTimeout: 300,
-            model: context.model
+            model: context.model,
+            contextWindow: context.contextWindow
         )
+        let client = context.client
         let engine = Engine(
-            client: context.client,
+            client: client,
             registry: subRegistry,
             systemPrompt: Self.subagentPrompt(workspace: context.workspace,
                                               permissionPreset: context.policy.preset),
@@ -46,7 +48,26 @@ public struct AgentTool: ToolExecutor {
             workspace: context.workspace,
             policy: context.policy,
             permissionGate: context.requestPermission,
-            onTodos: { _ in }
+            onTodos: { _ in },
+            compaction: { used, messages in
+                // Same window the parent resolved (server probe, override, or
+                // fallback) — without this, a long subagent task runs
+                // uncompacted until it hits the server's hard limit.
+                // A subagent's run is one `.user` message followed by many
+                // tool round-trips, never a second one — the default
+                // user-only boundary would never find a cut, so it opts into
+                // the assistant-boundary rule (still never orphans a call
+                // from its own result).
+                guard let limit = context.contextWindow,
+                      let plan = Compaction.plan(usedTokens: used, limit: limit, transcript: messages,
+                                                 allowAssistantBoundary: true) else {
+                    return messages
+                }
+                guard let summary = await Compaction.summarize(client: client, plan: plan) else {
+                    return messages
+                }
+                return [LLMMessage(role: .system, content: Compaction.summaryHeader + summary)] + plan.toKeep
+            }
         )
 
         do {

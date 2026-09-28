@@ -256,6 +256,7 @@ public struct Engine: Sendable {
                 let context = ToolContext(workspace: workspace, policy: policy,
                                           client: client, registry: registry,
                                           depth: 0, model: config.model,
+                                          contextWindow: config.contextWindow,
                                           requestPermission: permissionGate)
                 let executor = registry.tool(named: call.name)
                 let result: ToolResult

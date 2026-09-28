@@ -69,7 +69,16 @@ public enum Compaction {
     /// The split lands on a user-message boundary: everything before it is a
     /// finished conversation (each assistant tool-call answered by its tool
     /// result), and the kept tail begins where the user spoke again.
-    public static func plan(usedTokens: Int, limit: Int, transcript: [LLMMessage]) -> Plan? {
+    ///
+    /// Pass `allowAssistantBoundary: true` to also allow the cut to land on an
+    /// assistant message (kept together with whatever tool results follow it,
+    /// which are always contiguous — never orphaned). A subagent's entire run
+    /// is one `.user` message followed by many tool round-trips, so the
+    /// default (user-only) rule can never compact it at all; the app's own
+    /// session compaction keeps the default so a compacted transcript still
+    /// starts exactly where the display's "Compacted N messages" divider goes.
+    public static func plan(usedTokens: Int, limit: Int, transcript: [LLMMessage],
+                            allowAssistantBoundary: Bool = false) -> Plan? {
         guard limit > 0, !transcript.isEmpty else { return nil }
         let threshold = Int(Double(limit) * triggerFraction)
         guard usedTokens >= threshold else { return nil }
@@ -81,7 +90,7 @@ public enum Compaction {
         while i >= 0 {
             let m = transcript[i]
             tokens += TokenEstimate.message(m)
-            if m.role == .user { boundary = i }
+            if m.role == .user || (allowAssistantBoundary && m.role == .assistant) { boundary = i }
             if tokens >= keepBudget { break }
             i -= 1
         }
@@ -136,5 +145,33 @@ public enum Compaction {
 
     private static func clip(_ s: String, _ maxChars: Int) -> String {
         s.count <= maxChars ? s : String(s.suffix(maxChars)) + " …[truncated]"
+    }
+
+    /// Ask any `LLMClient` for a continuity summary of a compaction plan's
+    /// older half. Generic over the protocol (no app-layer transport needed),
+    /// so this is what both the main session and subagents compact with.
+    ///
+    /// The request is budgeted at a fraction of the plan's window so the
+    /// summarization call itself — clipped transcript in, summary out — stays
+    /// well clear of the very limit it exists to protect. Returns `nil` on any
+    /// failure (network, empty result) so the caller can keep the transcript
+    /// as-is rather than lose it.
+    public static func summarize(client: any LLMClient, plan: Plan,
+                                 budgetFraction: Double = 0.4,
+                                 maxOutputTokens: Int = 2048) async -> String? {
+        let budget = Int(Double(plan.limit) * budgetFraction)
+        let prompt = summaryPrompt(for: plan.toSummarize, budgetTokens: budget)
+        let request = LLMRequest(systemPrompt: "", messages: [.user(prompt)], tools: [],
+                                 model: "", temperature: nil, maxTokens: maxOutputTokens)
+        var text = ""
+        do {
+            for try await event in client.stream(request) {
+                if case .text(let delta) = event { text += delta }
+            }
+        } catch {
+            return nil
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

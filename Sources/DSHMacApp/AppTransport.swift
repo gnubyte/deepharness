@@ -563,21 +563,15 @@ public final class AppTransport {
     }
 
     /// Ask the model for a continuity summary of the older part of the conversation.
+    ///
+    /// The summary request must fit comfortably inside the same window it is
+    /// meant to protect — `Compaction.summarize` budgets it at ~40% of the
+    /// limit so the input (clipped transcript) + the summary output stay well
+    /// under the trigger.
     @MainActor
     private func summarize(sessionID: String, plan: Compaction.Plan) async -> String? {
-        guard let client = try? config.makeClient() as? OpenAIClient else { return nil }
-        // The summary request must fit comfortably inside the same window it is
-        // meant to protect — budget it at ~40% of the limit so the input (clipped
-        // transcript) + the summary output stay well under the trigger.
-        let budget = Int(Double(plan.limit) * 0.4)
-        let prompt = Compaction.summaryPrompt(for: plan.toSummarize, budgetTokens: budget)
-        do {
-            let text = try await client.streamPlain(prompt, maxTokens: 2048)
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        } catch {
-            return nil
-        }
+        guard let client = try? config.makeClient() else { return nil }
+        return await Compaction.summarize(client: client, plan: plan)
     }
 
     /// Rewrite the session's display + persisted log so the summarized part is
