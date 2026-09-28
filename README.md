@@ -177,36 +177,68 @@ straight to the editor.
 | `/compact [focus]` | Summarizes the conversation now, keeping a short recent tail. Earlier messages stay visible above the divider; the model carries the summary. |
 | `/think off\|low\|medium\|high\|max\|default` | Thinking level for this chat. |
 | `/context` | Window size, usage, and where the window figure came from. |
+| `/swap [model]` | Lists the Spark's models, or switches what it serves. |
+| `/skills` · `/skill <name>` · `/skill new <what>` · `/<name> args` | Skills: list, select for this chat, have the model write one, or run one. |
 | `/help` | Lists these. |
 
 Long chats also compact automatically at 75% of the window (keeping up to ~96K recent tokens verbatim),
 including in the middle of one long tool-heavy turn.
 
-## Memory and skills
-
-**Session ▸ Memory & Skills… (⇧⌘M)**.
+## Memory and knowledge files
 
 Because this app assembles the prompt itself, instruction files are simply read and injected — no
 mirroring into `AGENTS.md`, no managed marker blocks. Any of these in the project root is loaded on
 every turn, in order:
 
-`AGENTS.md` · `QWEN.md` · `CLAUDE.md` · `DSH.md` · `MEMORY.md` · `memory/YYYY-MM-DD.md`
+`AGENTS.md` · `QWEN.md` · `CLAUDE.md` · `.claude/CLAUDE.md` · `CLAUDE.local.md` · `.cursorrules` ·
+`DSH.md` · `MEMORY.md` · `memory/YYYY-MM-DD.md`
 
-**Set Up Memory** scaffolds `MEMORY.md` plus today's daily log. The editor warns past ~100 lines,
-because that file costs tokens on every request — detail belongs in a skill.
+**Session ▸ Memory & Skills… (⇧⌘M)** edits them and shows the **System prompt** tab — exactly what
+gets sent. **Set Up Memory** scaffolds `MEMORY.md` plus today's daily log. The editor warns past ~100
+lines, because that file costs tokens on every request — detail belongs in a skill.
 
-Skills are a folder with a `SKILL.md` whose frontmatter says *when* it applies. Discovery roots, in
-precedence order:
+## Skills
 
-| Rank | Path |
+A skill is packaged instructions the agent loads when a task matches: a folder with a `SKILL.md`
+(frontmatter `name` + `description` saying *when* to use it, then Markdown) and optional bundled files.
+The format is shared by Claude Code, Cursor and the Agent Skills convention, so DSH **reads their
+folders in place** and can **import from and export to** any of them.
+
+| Read in place | Where |
 |---|---|
-| 100 | `<project>/.dsh/skills` |
-| 200 | `<project>/.agents/skills` |
-| 300 | `<project>/.qwen/skills` |
-| 400 | `~/Library/Application Support/DSHMac/skills` |
+| DSH | `<project>/.dsh/skills`, `~/Library/Application Support/DSHMac/skills` |
+| Agent Skills / Qwen Code | `.agents/skills`, `~/.agents/skills`, `.qwen/skills` |
+| Claude Code | `.claude/skills`, `.claude/commands/*.md` (slash commands), `.claude/rules/*.md`, and the `~/.claude` equivalents |
+| Cursor | `.cursor/skills`, `.cursor/rules/*.mdc` (`alwaysApply`, `globs`, `description`), `~/.cursor/skills`; `.cursorrules` is loaded as project instructions |
 
-Only the name and description reach the model up front; it reads the file with `read_file` when a
-task matches. The **System prompt** tab shows exactly what gets sent.
+Same-named skills resolve by precedence (project DSH first, then the other project folders, then
+yours); the loser is shown as *Overridden*. Rules with `alwaysApply` are always in the prompt;
+rules with `globs` are offered with the files they apply to; Claude commands run when you type `/name`.
+
+**In a chat** — the **Skills** button under the composer lists every skill with search. Tick the ones
+this chat should use: their full instructions go into the prompt. Untick **Let the model choose
+skills** to make it use only what you ticked; leave it on and the model sees each skill's description
+and loads the right one itself (`use_skill`). `/skills` lists them, `/skill <name>` toggles one, and
+`/<name> args` runs a skill or command directly (`$ARGUMENTS`, `$1`…`$9` are filled in).
+
+**Settings ▸ Skills** manages them all: switch any skill on or off, edit your own (Claude/Cursor files
+are copied into DSH before editing, so nothing of theirs is changed), move to Trash, and choose which
+foreign layouts to read.
+
+- **Generate.** *New ▸ Write with AI* (or `/skill new <what it should do>` in a chat, which can distil
+  the conversation itself into a skill) has the model write a `SKILL.md`, which you review and edit.
+  The agent can also propose a skill mid-task with `propose_skill`.
+- **Approve.** Nothing generated or proposed is active until you approve it. Drafts wait under
+  *Awaiting your approval* — review, edit, choose project or everywhere, then Approve or Reject. A
+  linter flags a missing description, an over-long body, and anything that looks like a secret.
+- **Import.** From a folder (a skills folder, `.claude`, `.cursor`, or a whole project), a `.zip`, a
+  `.md`/`.mdc` file, or an https link (GitHub repository or `…/tree/<branch>/<folder>`). You see what
+  was found — skills, rules, commands, `CLAUDE.md`/`AGENTS.md`/`.cursorrules` — tick what to import,
+  and choose activate-now or send-to-review. Scripts are flagged and never run by importing;
+  symlinks are never followed; archives with unsafe paths are refused; size limits apply.
+- **Export.** As a zip or written into a folder, as portable skill folders, Claude Code
+  (`.claude/skills`), Cursor (`.cursor/rules/*.mdc`, skills with files as `.cursor/skills`), Agent
+  Skills, or DSH's layout.
 
 ## Plugins
 

@@ -19,6 +19,11 @@ public final class AppTransport {
     public private(set) var pluginErrors: [String] = []
     /// Instruction files and skills the active project contributes.
     public private(set) var projectContext: ProjectContext?
+    /// AI-generated, agent-proposed and imported skills waiting for approval.
+    public private(set) var pendingDrafts: [SkillDraft] = []
+    /// Bumped whenever skills change on disk through the app, so open views reload.
+    public private(set) var skillsRevision = 0
+    @ObservationIgnored public let skillLocations = SkillLocations.standard
 
     @ObservationIgnored private var engines: [String: Engine] = [:]
     /// What each session's engine was built with; a mismatch rebuilds it
@@ -48,6 +53,18 @@ public final class AppTransport {
         var window: Int
         var thinking: ThinkingLevel?
         var preset: PermissionPreset
+        /// Hash of the skills in the prompt and the tools they enable.
+        var skills: Int
+        var computerTools: Bool
+        var vision: Bool
+    }
+
+    /// Everything about skills one turn needs: what exists, what's on, and the prompt text.
+    struct SkillState {
+        let all: [Skill]
+        let active: [Skill]
+        let result: SkillPromptResult
+        let signature: Int
     }
     /// Route ID → the fully-built system prompt (base + project context +
     /// preset), cached so the context gauge's token estimate reads a string
@@ -73,6 +90,7 @@ public final class AppTransport {
         self.log = log
         self.basePrompt = systemPrompt ?? Self.defaultSystemPrompt
         reload()
+        refreshDrafts()
     }
 
     public var selected: SessionVM? {
@@ -139,6 +157,7 @@ public final class AppTransport {
         runTasks[id] = nil
         engines[id] = nil
         engineKeys[id] = nil
+        config.sessionSkills[id] = nil
         transcripts[id] = nil
         systemPrompts[id] = nil
         log.delete(id)
@@ -240,7 +259,7 @@ public final class AppTransport {
     // MARK: - Engine
 
     private func engine(for sessionID: String, vm: SessionVM, client: any LLMClient,
-                        window: Int, thinking: ThinkingLevel?) -> Engine {
+                        window: Int, thinking: ThinkingLevel?, skillState: SkillState) -> Engine {
         let workspace = vm.workspaceURL ?? FileManager.default.homeDirectoryForCurrentUser
         let policy = PermissionPolicy(preset: vm.preset, workspaceRoot: workspace)
         let model = (client as? OpenAIClient)?.profile.model ?? "model"
@@ -251,10 +270,13 @@ public final class AppTransport {
         let environment = ProjectContext.environmentBlock(workspace: workspace, model: model, preset: vm.preset)
         var prompt = basePrompt
         if let context {
-            prompt += "\n\n" + context.promptSupplement(environment: environment)
+            prompt += "\n\n" + context.promptSupplement(environment: environment, includeSkills: false)
         } else {
             prompt += "\n\n" + environment
         }
+        // Skills: always-on rules, the ones the user selected for this chat,
+        // and a catalog the model can load from with `use_skill`.
+        if !skillState.result.text.isEmpty { prompt += "\n\n" + skillState.result.text }
         if vm.preset == .plan {
             prompt += """
 
@@ -266,9 +288,12 @@ public final class AppTransport {
         systemPrompts[sessionID] = prompt
 
         let builtins = ToolRegistry.standard()
-        let registry = builtins.adding(
-            PluginLoader.tools(from: plugins, reserved: Set(builtins.names))
-        )
+        var extra: [any ToolExecutor] = PluginLoader.tools(from: plugins, reserved: Set(builtins.names))
+        if !skillState.active.isEmpty { extra.append(UseSkillTool(skills: skillState.active)) }
+        if vm.preset != .plan {
+            extra.append(ProposeSkillTool(projectRoot: vm.workspaceURL, locations: skillLocations))
+        }
+        let registry = builtins.adding(extra)
 
         let engine = Engine(
             client: client,
@@ -278,7 +303,8 @@ public final class AppTransport {
                           temperature: (client as? OpenAIClient)?.profile.temperature,
                           maxOutputTokens: (client as? OpenAIClient)?.profile.maxOutputTokens,
                           contextWindow: window,
-                          thinking: thinking),
+                          thinking: thinking,
+                          visionEnabled: visionOn(for: (client as? OpenAIClient)?.profile)),
             workspace: workspace,
             policy: policy,
             permissionGate: { [weak self] id, name, detail in
@@ -341,6 +367,17 @@ public final class AppTransport {
             runCommand(command, vm: vm)
             return
         }
+        // "/deploy staging": a skill or command invoked by name.
+        if attachments.isEmpty, let (skill, args) = matchSkillCommand(text, vm: vm),
+           let expanded = invocationText(skill, arguments: args) {
+            if isServerSwitching?() == true {
+                vm.note("The Spark is switching models right now — send again once it says it's ready.")
+                return
+            }
+            let display = "/\(skill.slug)" + (args.isEmpty ? "" : " \(args)")
+            runTasks[sessionID] = Task { await runTurn(vm, text: display, modelText: expanded) }
+            return
+        }
         if isServerSwitching?() == true {
             vm.note("The Spark is switching models right now — send again once it says it's ready (usually a few minutes).")
             return
@@ -394,6 +431,12 @@ public final class AppTransport {
             } else {
                 vm.note("Model switching isn't available.", role: .error)
             }
+
+        case .skills:
+            vm.note(skillsSummary(for: vm))
+
+        case .skill(let arg):
+            handleSkillCommand(arg, vm: vm)
 
         case .compact(let focus):
             runTasks[vm.id] = Task { await compactNow(vm, focus: focus) }
@@ -453,7 +496,7 @@ public final class AppTransport {
     // MARK: - Turns
 
     private func runTurn(_ vm: SessionVM, text: String, attachments: [MessageAttachment] = [],
-                         goal: String? = nil) async {
+                         goal: String? = nil, modelText: String? = nil) async {
         let sessionID = vm.id
         vm.running = true
         vm.stopping = false
@@ -474,7 +517,7 @@ public final class AppTransport {
             if let goal {
                 try await runGoal(vm, goal: goal)
             } else {
-                _ = try await turn(vm, modelText: text, displayText: text, attachments: attachments)
+                _ = try await turn(vm, modelText: modelText ?? text, displayText: text, attachments: attachments)
             }
         } catch is CancellationError {
             vm.endStreaming()
@@ -560,7 +603,10 @@ public final class AppTransport {
         guard let profile = await resolveRoute() else { throw LLMError.noModel }
         let window = contextLimit()
         let thinking = vm.thinking
-        let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset)
+        let skillState = self.skillState(for: vm)
+        let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset,
+                            skills: skillState.signature, computerTools: config.computerToolsEnabled,
+                            vision: visionOn(for: profile))
         if let previous = engineKeys[sessionID], previous.profile.model != profile.model {
             vm.note("The server is now serving `\(profile.model)` (was `\(previous.profile.model)`) — switched to it, \(window.formatted())-token window.")
         }
@@ -569,7 +615,7 @@ public final class AppTransport {
             engine = existing
         } else {
             engine = self.engine(for: sessionID, vm: vm, client: OpenAIClient(profile: profile),
-                                 window: window, thinking: thinking)
+                                 window: window, thinking: thinking, skillState: skillState)
             engineKeys[sessionID] = key
         }
         let input = transcripts[sessionID] ?? []
@@ -628,12 +674,16 @@ public final class AppTransport {
 
         case .toolFinished(let id, let name, let ok, let summary, let output):
             vm.finishTool(id: id, ok: ok, summary: summary, output: output)
+            if name == "propose_skill", ok, output.contains("Saved draft") {
+                refreshDrafts()
+                vm.note("📝 The agent drafted a skill. It is not active until you approve it — open **Skills** under the composer (or Settings ▸ Skills) to review it.")
+            }
             log.recordItem(sessionID, kind: "tool", text: summary, toolName: name,
                            argSummary: vm.entries.last(where: { $0.id == id })?.tool?.preview,
                            output: output, isError: !ok)
 
         case .toolImages(let id, let images):
-            vm.attachImages(id: id, images.map(\.data))
+            vm.attachImages(id: id, images.compactMap { ImageThumbnails.make(from: $0.data) ?? $0.data })
 
         case .filesChanged(let changes):
             vm.recordFileChanges(changes)
@@ -654,6 +704,186 @@ public final class AppTransport {
         case .failed(let message):
             vm.note(message, role: .error)
             banner = message
+        }
+    }
+
+    // MARK: - Images
+
+    /// Routes whose server rejected an image (learned at runtime).
+    @ObservationIgnored private var noVisionRoutes: Set<String> = []
+
+    fileprivate func visionOn(for profile: ProviderProfile?) -> Bool {
+        guard let profile else { return true }
+        if noVisionRoutes.contains(profile.routeID) { return false }
+        return profile.vision ?? true
+    }
+
+    // MARK: - Skills
+
+    /// Reload the approval queue (and tell open views to reload).
+    public func refreshDrafts() {
+        pendingDrafts = SkillDrafts.list(locations: skillLocations)
+        skillsRevision += 1
+    }
+
+    /// Every skill visible from a chat's project (shadowed ones included).
+    public func skills(for vm: SessionVM?) -> [Skill] {
+        SkillCatalog.loadAll(project: vm?.workspaceURL ?? projectContext?.root,
+                             locations: skillLocations, sources: config.skillSources)
+    }
+
+    public func selection(for sessionID: String) -> SkillSelection {
+        let chosen = config.sessionSkills[sessionID]
+        return SkillSelection(pinned: Set(chosen?.pinned ?? []), auto: chosen?.auto ?? true,
+                              disabled: config.disabledSkills)
+    }
+
+    fileprivate func skillState(for vm: SessionVM) -> SkillState {
+        let all = skills(for: vm)
+        let selection = selection(for: vm.id)
+        let result = SkillPrompt.build(skills: all, selection: selection)
+        let active = SkillPrompt.active(all, selection)
+        var hasher = Hasher()
+        hasher.combine(result.text)
+        hasher.combine(active.map(\.id))
+        return SkillState(all: all, active: active, result: result, signature: hasher.finalize())
+    }
+
+    public func isPinned(_ skill: Skill, in vm: SessionVM) -> Bool {
+        config.sessionSkills[vm.id]?.pinned.contains(skill.id) ?? false
+    }
+
+    public func setPinned(_ skill: Skill, _ on: Bool, in vm: SessionVM) {
+        var chosen = config.sessionSkills[vm.id] ?? SessionSkillSelection()
+        chosen.pinned.removeAll { $0 == skill.id }
+        if on { chosen.pinned.append(skill.id) }
+        config.sessionSkills[vm.id] = chosen
+    }
+
+    public func setAutoSkills(_ on: Bool, in vm: SessionVM) {
+        var chosen = config.sessionSkills[vm.id] ?? SessionSkillSelection()
+        chosen.auto = on
+        config.sessionSkills[vm.id] = chosen
+    }
+
+    public func clearPinnedSkills(in vm: SessionVM) {
+        var chosen = config.sessionSkills[vm.id] ?? SessionSkillSelection()
+        chosen.pinned = []
+        config.sessionSkills[vm.id] = chosen
+    }
+
+    /// `/skills`: what exists and what this chat uses.
+    private func skillsSummary(for vm: SessionVM) -> String {
+        let all = skills(for: vm).filter { !$0.shadowed }
+        guard !all.isEmpty else {
+            return "No skills yet. Create one in Settings ▸ Skills, import from Claude/Cursor, or try `/skill new <what it should do>`."
+        }
+        let sel = selection(for: vm.id)
+        let lines = all.prefix(40).map { s -> String in
+            let mark = sel.pinned.contains(s.id) ? "📌" : (sel.disabled.contains(s.id) ? "○ off" : "•")
+            let tags = [s.origin.label, s.kind == .skill ? nil : s.kind.label.lowercased(), s.alwaysApply ? "always" : nil]
+                .compactMap { $0 }.joined(separator: ", ")
+            return "\(mark) **\(s.name)** (\(tags)) — \(String(s.description.prefix(90)))"
+        }
+        var text = "Skills (\(all.count)):\n" + lines.joined(separator: "\n")
+        if all.count > 40 { text += "\n… and \(all.count - 40) more (see the Skills button)." }
+        text += "\n\nAuto-pick by the model: **\(sel.auto ? "on" : "off")**. `/skill <name>` selects one for this chat, `/<name>` runs it, `/skill new <what>` writes a new one."
+        if !pendingDrafts.isEmpty { text += "\n📝 \(pendingDrafts.count) draft\(pendingDrafts.count == 1 ? "" : "s") awaiting your approval." }
+        return text
+    }
+
+    private func handleSkillCommand(_ arg: String?, vm: SessionVM) {
+        guard let arg, !arg.isEmpty else {
+            vm.note(skillsSummary(for: vm))
+            return
+        }
+        let lower = arg.lowercased()
+        for verb in ["new ", "generate ", "create "] where lower.hasPrefix(verb) {
+            let goal = String(arg.dropFirst(verb.count)).trimmingCharacters(in: .whitespaces)
+            guard !goal.isEmpty else { break }
+            runTasks[vm.id] = Task { await generateSkillFromChat(vm, goal: goal) }
+            return
+        }
+        if ["off", "clear", "none"].contains(lower) {
+            clearPinnedSkills(in: vm)
+            vm.note("Cleared the skills selected for this chat.")
+            return
+        }
+        if lower == "auto on" || lower == "auto off" {
+            setAutoSkills(lower == "auto on", in: vm)
+            vm.note("The model \(lower == "auto on" ? "can" : "can no longer") choose skills on its own in this chat.")
+            return
+        }
+        let live = SkillPrompt.active(skills(for: vm), selection(for: vm.id))
+        let key = SkillNaming.slug(arg)
+        guard let skill = live.first(where: { $0.slug == key }) ?? live.first(where: { $0.slug.contains(key) && !key.isEmpty }) else {
+            vm.note("No active skill matches “\(arg)”. `/skills` lists them.", role: .error)
+            return
+        }
+        let now = !isPinned(skill, in: vm)
+        setPinned(skill, now, in: vm)
+        vm.note(now ? "📌 **\(skill.name)** is selected for this chat — its instructions are included from the next message."
+                    : "**\(skill.name)** is no longer selected for this chat.")
+    }
+
+    /// `/name args`: the skill or command being run, if the text names one.
+    private func matchSkillCommand(_ text: String, vm: SessionVM) -> (Skill, String)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/") else { return nil }
+        let head = trimmed.prefix { !$0.isWhitespace }
+        let word = String(head.dropFirst())
+        guard !word.isEmpty else { return nil }
+        let args = trimmed.dropFirst(head.count).trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = SkillNaming.slug(word)
+        let live = SkillPrompt.active(skills(for: vm), selection(for: vm.id))
+        guard let skill = live.first(where: { $0.userInvocable && ($0.slug == key || $0.name.lowercased() == word.lowercased()) })
+        else { return nil }
+        return (skill, args)
+    }
+
+    /// The message the model sees when the user runs a skill.
+    private func invocationText(_ skill: Skill, arguments: String) -> String? {
+        guard let doc = skill.document() else { return nil }
+        var body = SkillArguments.expand(doc.body, arguments: arguments).trimmingCharacters(in: .whitespacesAndNewlines)
+        if body.count > SkillPrompt.perSkillCap { body = String(body.prefix(SkillPrompt.perSkillCap)) + "\n[… truncated]" }
+        let withArgs = arguments.isEmpty ? "" : " with: \(arguments)"
+        return """
+        The user ran the skill “\(skill.name)”\(withArgs). Follow it now.
+
+        <skill name="\(skill.name)" directory="\(skill.directory.path)">
+        \(body)
+        </skill>
+        """
+    }
+
+    /// Ask the model to write a skill (optionally from a chat, or improving one).
+    public func generateSkill(goal: String, from vm: SessionVM?, improving: String? = nil) async throws -> GeneratedSkill {
+        guard let profile = await resolveRoute() else { throw LLMError.noModel }
+        if let vm, transcripts[vm.id] == nil { hydrate(vm) }
+        let conversation = vm.flatMap { transcripts[$0.id] } ?? []
+        let request = SkillGenerationRequest(goal: goal, conversation: conversation,
+                                             existingNames: skills(for: vm).map(\.name), improving: improving)
+        return try await SkillGenerator.generate(client: OpenAIClient(profile: profile),
+                                                 model: profile.model, request: request)
+    }
+
+    /// `/skill new …`: write a skill from this chat and queue it for approval.
+    private func generateSkillFromChat(_ vm: SessionVM, goal: String) async {
+        vm.running = true
+        vm.activity = "Writing a skill…"
+        defer { vm.running = false; vm.activity = nil; runTasks[vm.id] = nil }
+        do {
+            let generated = try await generateSkill(goal: goal, from: vm)
+            if Task.isCancelled { return }
+            let scope: SkillScope = vm.workspaceURL != nil ? .project : .user
+            let draft = try SkillDrafts.create(text: generated.text, scope: scope, projectRoot: vm.workspaceURL,
+                                               source: "chat", locations: skillLocations)
+            refreshDrafts()
+            let warn = generated.issues.filter { $0.severity >= .warning }.map(\.message)
+            vm.note("📝 Drafted skill **\(draft.name)** — \(draft.description)\nIt is not active yet: open **Skills** under the composer to review, edit and approve it."
+                    + (warn.isEmpty ? "" : "\nNotes: " + warn.joined(separator: " ")))
+        } catch {
+            vm.note("Couldn't write the skill: \(Self.describe(error))", role: .error)
         }
     }
 

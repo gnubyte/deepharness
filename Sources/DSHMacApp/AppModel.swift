@@ -11,6 +11,9 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
     var icon: String { self == .chat ? "bubble.left.and.bubble.right" : "chevron.left.forwardslash.chevron.right" }
 }
 
+enum SettingsTab: Hashable { case general, models, spark, skills, computer, plugins, editor }
+enum SkillsAction: Equatable { case generate, importSkills, newManual }
+
 /// Root-level state: the config, the transport that drives sessions, the
 /// current project folder, and the code-mode workspace.
 @MainActor
@@ -30,6 +33,10 @@ final class AppModel {
     var showWizard = false
     var showSettings = false
     var showMemoryAndSkills = false
+    /// Which Settings tab is showing; set before `showSettings` to deep-link.
+    var settingsTab: SettingsTab = .general
+    /// A skills action a caller wants the Skills tab to start with.
+    var skillsAction: SkillsAction?
     /// The folder both modes operate in.
     private(set) var project: URL?
 

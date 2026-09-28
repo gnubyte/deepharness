@@ -17,23 +17,6 @@ public struct InstructionFile: Identifiable, Hashable, Sendable {
     public var lineCount: Int { text.isEmpty ? 0 : text.components(separatedBy: "\n").count }
 }
 
-/// A discovered skill: a `SKILL.md` with frontmatter naming when it applies.
-public struct Skill: Identifiable, Hashable, Sendable {
-    public var id: String { url.path }
-    public let url: URL
-    public let name: String
-    public let description: String
-    /// Lower sorts first; matches the precedence of the root it came from.
-    public let rank: Int
-
-    public init(url: URL, name: String, description: String, rank: Int) {
-        self.url = url
-        self.name = name
-        self.description = description
-        self.rank = rank
-    }
-}
-
 /// Everything the app knows about a project folder that shapes the system
 /// prompt: instruction/memory files and the skill catalog.
 ///
@@ -54,25 +37,16 @@ public struct ProjectContext: Sendable {
     /// Instruction files are looked for in this order; every one that exists
     /// is loaded. `AGENTS.md` and `QWEN.md` keep us compatible with projects
     /// already set up for other agents.
-    public static let instructionNames = ["AGENTS.md", "QWEN.md", "CLAUDE.md", "DSH.md", "MEMORY.md"]
+    /// `.cursorrules`, `.claude/CLAUDE.md` and `CLAUDE.local.md` are the same
+    /// idea in Cursor's and Claude Code's layouts.
+    public static let instructionNames = ["AGENTS.md", "QWEN.md", "CLAUDE.md", ".claude/CLAUDE.md",
+                                          "CLAUDE.local.md", ".cursorrules", "DSH.md", "MEMORY.md"]
 
-    /// Skill roots, highest precedence (lowest rank) first.
-    public static func skillRoots(project: URL) -> [(url: URL, rank: Int)] {
-        [
-            (project.appendingPathComponent(".dsh/skills"), 100),
-            (project.appendingPathComponent(".agents/skills"), 200),
-            (project.appendingPathComponent(".qwen/skills"), 300),
-            (Self.userSkillsDirectory, 400),
-        ]
-    }
-
-    public static var userSkillsDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("DSHMac/skills", isDirectory: true)
-    }
+    public static var userSkillsDirectory: URL { SkillLocations.standard.userSkills }
 
     /// Read the project's instruction files and skill catalog from disk.
-    public static func load(root: URL) -> ProjectContext {
+    public static func load(root: URL, locations: SkillLocations = .standard,
+                            sources: SkillSources = .all) -> ProjectContext {
         var instructions: [InstructionFile] = []
         for name in instructionNames {
             let url = root.appendingPathComponent(name)
@@ -88,15 +62,7 @@ public struct ProjectContext: Sendable {
             instructions.append(InstructionFile(url: daily, text: text, label: "memory/\(today).md"))
         }
 
-        var skills: [Skill] = []
-        var seen = Set<String>()
-        for (dir, rank) in skillRoots(project: root) {
-            for skill in scanSkills(in: dir, rank: rank) where !seen.contains(skill.name) {
-                seen.insert(skill.name)
-                skills.append(skill)
-            }
-        }
-        skills.sort { ($0.rank, $0.name) < ($1.rank, $1.name) }
+        let skills = SkillCatalog.load(project: root, locations: locations, sources: sources)
         return ProjectContext(root: root, instructions: instructions, skills: skills)
     }
 
@@ -106,43 +72,11 @@ public struct ProjectContext: Sendable {
         return f.string(from: date)
     }
 
-    /// A skill is a directory holding a `SKILL.md`.
-    private static func scanSkills(in dir: URL, rank: Int) -> [Skill] {
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey]) else {
-            return []
-        }
-        var out: [Skill] = []
-        for entry in entries {
-            let manifest = entry.appendingPathComponent("SKILL.md")
-            guard let text = try? String(contentsOf: manifest, encoding: .utf8) else { continue }
-            let front = frontmatter(text)
-            let name = front["name"] ?? entry.lastPathComponent
-            let description = front["description"] ?? firstParagraph(text)
-            out.append(Skill(url: manifest, name: name, description: description, rank: rank))
-        }
-        return out
-    }
-
-    /// Minimal `key: value` frontmatter reader — enough for `name` and
-    /// `description`, which is all the catalog shows.
+    /// Frontmatter as flat `key: value` pairs (list values joined by ", ").
     public static func frontmatter(_ text: String) -> [String: String] {
-        var lines = text.components(separatedBy: "\n")[...]
-        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return [:] }
-        lines = lines.dropFirst()
-        var out: [String: String] = [:]
-        while let line = lines.first {
-            lines = lines.dropFirst()
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed == "---" { break }
-            guard let colon = trimmed.firstIndex(of: ":") else { continue }
-            let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces)
-            var value = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-            if value.hasPrefix("\""), value.hasSuffix("\""), value.count > 1 {
-                value = String(value.dropFirst().dropLast())
-            }
-            if !key.isEmpty { out[key] = value }
-        }
+        let doc = SkillDocument.parse(text)
+        var out = doc.fields
+        for (key, list) in doc.lists { out[key] = list.joined(separator: ", ") }
         return out
     }
 
@@ -163,7 +97,7 @@ public struct ProjectContext: Sendable {
     /// Skills are advertised by name + description only; the model reads the
     /// `SKILL.md` with `read_file` when one applies. That keeps the per-turn
     /// cost of a large catalog to a couple of lines each.
-    public func promptSupplement(environment: String) -> String {
+    public func promptSupplement(environment: String, includeSkills: Bool = true) -> String {
         var parts: [String] = [environment]
 
         for file in instructions {
@@ -173,8 +107,9 @@ public struct ProjectContext: Sendable {
             """)
         }
 
-        if !skills.isEmpty {
-            let catalog = skills.map { "- \($0.name): \($0.description) [\($0.url.path)]" }
+        if includeSkills, !skills.isEmpty {
+            let catalog = skills.filter { $0.modelInvocable && !$0.alwaysApply }
+                .map { "- \($0.name): \($0.description) [\($0.url.path)]" }
                 .joined(separator: "\n")
             parts.append("""
             --- Available skills ---
@@ -186,7 +121,8 @@ public struct ProjectContext: Sendable {
     }
 
     /// Machine facts the model would otherwise guess at.
-    public static func environmentBlock(workspace: URL, model: String, preset: PermissionPreset) -> String {
+    public static func environmentBlock(workspace: URL, model: String, preset: PermissionPreset,
+                                        extraLines: [String] = []) -> String {
         var lines = [
             "--- Environment ---",
             "Project folder: \(workspace.path)",
@@ -198,6 +134,7 @@ public struct ProjectContext: Sendable {
         if let branch = gitBranch(at: workspace) {
             lines.append("Git branch: \(branch)")
         }
+        lines += extraLines
         return lines.joined(separator: "\n")
     }
 

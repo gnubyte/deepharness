@@ -13,6 +13,9 @@ struct ChatView: View {
     @State private var composerHeight: CGFloat = 32
     /// Attachments queued to go out with the next message.
     @State private var attachments: [MessageAttachment] = []
+    /// Skills offered in the "/" autocomplete, loaded when the user starts typing a command.
+    @State private var slashSkills: [Skill] = []
+    @State private var slashSkillsRevision = -1
 
     private var transport: AppTransport { model.transport }
 
@@ -40,6 +43,11 @@ struct ChatView: View {
             composer
         }
         .background(.background)
+        .onChange(of: draft) { _, text in
+            guard text.hasPrefix("/"), slashSkillsRevision != transport.skillsRevision || slashSkills.isEmpty else { return }
+            slashSkillsRevision = transport.skillsRevision
+            slashSkills = transport.skills(for: session)
+        }
         .alert(sparkConfirmTitle, isPresented: sparkConfirmShown) {
             Button("Switch") {
                 if let target = model.spark.confirmTarget {
@@ -206,15 +214,22 @@ struct ChatView: View {
             }
 
             HStack(spacing: 10) {
-                Label(session.preset.label, systemImage: session.preset.icon)
-                    .foregroundStyle(session.preset == .fullAccess ? Theme.errorTint : .secondary)
-                ModelMenu(session: session)
-                ThinkingMenu(session: session)
-                if let name = session.projectName {
-                    Label(name, systemImage: "folder")
-                        .foregroundStyle(.secondary)
+                // The controls scroll rather than truncate when the window is narrow.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        Label(session.preset.label, systemImage: session.preset.icon)
+                            .foregroundStyle(session.preset == .fullAccess ? Theme.errorTint : .secondary)
+                        ModelMenu(session: session)
+                        ThinkingMenu(session: session)
+                        SkillsButton(session: session)
+                        if let name = session.projectName {
+                            Label(name, systemImage: "folder")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .fixedSize()
                 }
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
                 ContextGaugeView(session: session, draft: draft)
                 if let usage = session.lastUsage {
                     Text("\(usage.promptTokens.formatted()) in · \(usage.completionTokens.formatted()) out")
@@ -230,11 +245,18 @@ struct ChatView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Commands matching what's typed, while the draft is a bare "/word".
+    /// Commands and skills matching what's typed, while the draft is a bare "/word".
     private var slashMatches: [SlashCommand.Info] {
-        let t = draft.trimmingCharacters(in: .whitespaces)
-        guard t.hasPrefix("/"), !t.contains(" "), !t.contains("\n"), t.count < 12 else { return [] }
-        return SlashCommand.catalog.filter { $0.usage.hasPrefix(t.lowercased()) }
+        let t = draft.trimmingCharacters(in: .whitespaces).lowercased()
+        guard t.hasPrefix("/"), !t.contains(" "), !t.contains("\n"), t.count < 24 else { return [] }
+        let builtin = SlashCommand.catalog.filter { $0.usage.hasPrefix(t) }
+        let disabled = model.config.disabledSkills
+        let named = slashSkills
+            .filter { $0.userInvocable && !$0.shadowed && !disabled.contains($0.id) && "/\($0.slug)".hasPrefix(t) }
+            .prefix(8)
+            .map { SlashCommand.Info(usage: "/\($0.slug)" + ($0.argumentHint.map { " \($0)" } ?? ""),
+                                     summary: "\($0.kind == .skill ? "Skill" : $0.kind.label): \(String($0.description.prefix(70)))") }
+        return builtin + named
     }
 
     private func send() {
@@ -521,6 +543,10 @@ private struct ToolCard: View {
                 header
             }
             .buttonStyle(.plain)
+
+            if !activity.images.isEmpty {
+                ToolImageStrip(images: activity.images)
+            }
 
             if expanded, let output = activity.output, !output.isEmpty {
                 Divider().padding(.vertical, 6)

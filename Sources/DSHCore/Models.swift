@@ -150,11 +150,15 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     /// default. (Older builds stored "low"/"medium"/"high" here, which decode
     /// unchanged.) Sessions can override it — see `ThinkingLevel`.
     public var reasoningEffort: String?
+    /// Whether the model can take images (screenshots from the screen tools).
+    /// nil = assume yes; false makes tools return text only.
+    public var vision: Bool?
 
     public init(kind: Kind, name: String, baseURL: String, apiKey: String? = nil,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
                 contextWindow: Int? = nil,
-                customHeaders: [String: String]? = nil, reasoningEffort: String? = nil) {
+                customHeaders: [String: String]? = nil, reasoningEffort: String? = nil,
+                vision: Bool? = nil) {
         self.kind = kind
         self.name = name
         self.baseURL = baseURL
@@ -165,6 +169,7 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         self.contextWindow = contextWindow
         self.customHeaders = customHeaders
         self.reasoningEffort = reasoningEffort
+        self.vision = vision
     }
 
     public static let presets: [ProviderProfile] = [

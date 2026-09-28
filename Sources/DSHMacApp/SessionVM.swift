@@ -252,6 +252,13 @@ public final class SessionVM: Identifiable {
               case .tool(var activity) = entries[index].kind else { return }
         activity.images = images
         entries[index].kind = .tool(activity)
+        // Bound memory: only the newest cards keep their pictures.
+        var kept = 0
+        for i in entries.indices.reversed() {
+            guard case .tool(var a) = entries[i].kind, !a.images.isEmpty else { continue }
+            kept += 1
+            if kept > 30 { a.images = []; entries[i].kind = .tool(a) }
+        }
         updatedAt = .now
     }
 

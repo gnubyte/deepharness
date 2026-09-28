@@ -152,11 +152,15 @@ final class PluginTests: XCTestCase {
 
 final class ProjectContextTests: XCTestCase {
     private var root: URL!
+    /// Never read the developer's real ~/.claude, ~/.cursor or app-support skills.
+    private var isolated: SkillLocations!
 
     override func setUpWithError() throws {
         root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("dsh-ctx-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        isolated = SkillLocations(home: root.appendingPathComponent("fake-home"),
+                                  appSupport: root.appendingPathComponent("fake-support"))
     }
 
     override func tearDownWithError() throws {
@@ -168,7 +172,7 @@ final class ProjectContextTests: XCTestCase {
                                             atomically: true, encoding: .utf8)
         try "Remember the port is 8002.".write(to: root.appendingPathComponent("MEMORY.md"),
                                                atomically: true, encoding: .utf8)
-        let context = ProjectContext.load(root: root)
+        let context = ProjectContext.load(root: root, locations: isolated)
         XCTAssertEqual(context.instructions.map(\.label), ["AGENTS.md", "MEMORY.md"])
 
         let prompt = context.promptSupplement(environment: "ENV")
@@ -179,7 +183,7 @@ final class ProjectContextTests: XCTestCase {
 
     func testEmptyInstructionFileIsIgnored() throws {
         try "   \n".write(to: root.appendingPathComponent("QWEN.md"), atomically: true, encoding: .utf8)
-        XCTAssertTrue(ProjectContext.load(root: root).instructions.isEmpty)
+        XCTAssertTrue(ProjectContext.load(root: root, locations: isolated).instructions.isEmpty)
     }
 
     func testSkillCatalogListsNameAndDescriptionOnly() throws {
@@ -195,7 +199,7 @@ final class ProjectContextTests: XCTestCase {
         Secret detail that should not be in the catalog line.
         """.write(to: dir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
 
-        let context = ProjectContext.load(root: root)
+        let context = ProjectContext.load(root: root, locations: isolated)
         XCTAssertEqual(context.skills.map(\.name), ["deploy"])
         let prompt = context.promptSupplement(environment: "")
         XCTAssertTrue(prompt.contains("Use when shipping a release build."))
@@ -209,7 +213,7 @@ final class ProjectContextTests: XCTestCase {
             try "---\nname: x\ndescription: \(rankLabel)\n---\n"
                 .write(to: dir.appendingPathComponent("SKILL.md"), atomically: true, encoding: .utf8)
         }
-        let context = ProjectContext.load(root: root)
+        let context = ProjectContext.load(root: root, locations: isolated)
         XCTAssertEqual(context.skills.count, 1)
         XCTAssertEqual(context.skills[0].description, "high")
     }

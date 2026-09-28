@@ -26,6 +26,10 @@ public final class AppConfig {
         static let terminalFontSize = "terminal.fontSize"
         static let terminalShell = "terminal.shell"
         static let lastMode = "workspace.mode"
+        static let disabledSkills = "skills.disabled.v1"
+        static let skillSources = "skills.sources.v1"
+        static let sessionSkills = "skills.session.v1"
+        static let computerTools = "computer.tools.v1"
     }
 
     private let defaults: UserDefaults
@@ -58,6 +62,17 @@ public final class AppConfig {
     public var terminalShell: String = "" { didSet { persist() } }
     /// "chat" or "code" — the workspace reopens where you left it.
     public var lastMode: String = "chat" { didSet { persist() } }
+
+    // Skills.
+    /// Skill ids (file paths) switched off everywhere.
+    public var disabledSkills: Set<String> = [] { didSet { persist() } }
+    /// Which foreign layouts are read in place (.claude, .cursor, .agents, .qwen).
+    public var skillSources: SkillSources = .all { didSet { persist() } }
+    /// Per-chat skill choices: what's selected by hand, and whether the model may pick.
+    public var sessionSkills: [String: SessionSkillSelection] = [:] { didSet { persist() } }
+
+    /// Screen, mouse/keyboard and background-process tools offered to the agent.
+    public var computerToolsEnabled: Bool = true { didSet { persist() } }
 
     // MARK: - Active route
 
@@ -180,6 +195,13 @@ public final class AppConfig {
         terminalFontSize = defaults.object(forKey: Keys.terminalFontSize) as? Double ?? 12
         terminalShell = defaults.string(forKey: Keys.terminalShell) ?? ""
         lastMode = defaults.string(forKey: Keys.lastMode) ?? "chat"
+        disabledSkills = Set(defaults.stringArray(forKey: Keys.disabledSkills) ?? [])
+        skillSources = SkillSources(rawValue: defaults.object(forKey: Keys.skillSources) as? Int ?? SkillSources.all.rawValue)
+        if let data = defaults.data(forKey: Keys.sessionSkills),
+           let decoded = try? JSONDecoder().decode([String: SessionSkillSelection].self, from: data) {
+            sessionSkills = decoded
+        }
+        computerToolsEnabled = defaults.object(forKey: Keys.computerTools) as? Bool ?? true
     }
 
     private func persist() {
@@ -196,6 +218,21 @@ public final class AppConfig {
         defaults.set(terminalFontSize, forKey: Keys.terminalFontSize)
         defaults.set(terminalShell, forKey: Keys.terminalShell)
         defaults.set(lastMode, forKey: Keys.lastMode)
+        defaults.set(Array(disabledSkills).sorted(), forKey: Keys.disabledSkills)
+        defaults.set(skillSources.rawValue, forKey: Keys.skillSources)
+        if let data = try? JSONEncoder().encode(sessionSkills) { defaults.set(data, forKey: Keys.sessionSkills) }
+        defaults.set(computerToolsEnabled, forKey: Keys.computerTools)
+    }
+}
+
+/// What the user chose for one chat: skills selected by hand, and whether the
+/// model may also pick skills itself.
+public struct SessionSkillSelection: Codable, Hashable, Sendable {
+    public var pinned: [String] = []
+    public var auto: Bool = true
+    public init(pinned: [String] = [], auto: Bool = true) {
+        self.pinned = pinned
+        self.auto = auto
     }
 }
 

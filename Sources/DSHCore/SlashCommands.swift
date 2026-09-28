@@ -16,11 +16,19 @@ public enum SlashCommand: Equatable, Sendable {
     case context
     /// Show the Spark's models, or switch the Spark to one ("/swap flash").
     case swap(String?)
+    /// List skills and what is selected for this chat.
+    case skills
+    /// "/skill <name>" toggles a skill for this chat; "/skill new <what it should do>" writes one.
+    case skill(String?)
     case help
 
     public struct Info: Sendable {
         public let usage: String
         public let summary: String
+        public init(usage: String, summary: String) {
+            self.usage = usage
+            self.summary = summary
+        }
     }
 
     public static let catalog: [Info] = [
@@ -29,6 +37,8 @@ public enum SlashCommand: Equatable, Sendable {
         .init(usage: "/think off|low|medium|high|max|default", summary: "Set how hard the model thinks in this chat"),
         .init(usage: "/context", summary: "Show the model's context window and how much is used"),
         .init(usage: "/swap [model]", summary: "Show the Spark's models, or switch what it serves (e.g. /swap flash)"),
+        .init(usage: "/skills", summary: "List skills and what is selected for this chat"),
+        .init(usage: "/skill <name>|new <what>", summary: "Select/deselect a skill for this chat, or have the model write a new one"),
         .init(usage: "/help", summary: "List commands"),
     ]
 
@@ -44,6 +54,8 @@ public enum SlashCommand: Equatable, Sendable {
         case "/think", "/thinking", "/effort", "/reasoning": return .think(arg)
         case "/context", "/ctx": return .context
         case "/swap", "/model", "/models", "/serve": return .swap(arg)
+        case "/skills": return .skills
+        case "/skill": return .skill(arg)
         case "/help", "/?", "/commands": return .help
         default: return nil
         }

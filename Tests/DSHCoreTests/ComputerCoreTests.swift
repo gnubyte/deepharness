@@ -167,3 +167,17 @@ final class LockedList: @unchecked Sendable {
     func add(_ s: String) { lock.lock(); storage.append(s); lock.unlock() }
     var items: [String] { lock.lock(); defer { lock.unlock() }; return storage }
 }
+
+final class TerminalGuardTests: XCTestCase {
+    func testTerminalsAndDSHAreBlockedOthersAreNot() {
+        XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"))
+        XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/Applications/iTerm.app/Contents/MacOS/iTerm2"))
+        XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/Applications/Ghostty.app/Contents/MacOS/ghostty"))
+        XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/Applications/DSH.app/Contents/MacOS/DSH"))
+        XCTAssertFalse(TerminalGuard.isBlocked(executablePath: "/Applications/Godot.app/Contents/MacOS/Godot"))
+        XCTAssertFalse(TerminalGuard.isBlocked(executablePath: "/Applications/Safari.app/Contents/MacOS/Safari"))
+        XCTAssertFalse(TerminalGuard.isBlocked(executablePath: "/Users/me/Terminal.txt/bin/godot"), "only whole path components match")
+        XCTAssertNotNil(TerminalGuard.executablePath(pid: getpid()), "resolves this test process")
+        XCTAssertFalse(TerminalGuard.isBlocked(pid: getpid()))
+    }
+}

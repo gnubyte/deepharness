@@ -9,19 +9,28 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        TabView {
+        @Bindable var model = model
+        TabView(selection: $model.settingsTab) {
             GeneralSettings()
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
             ProviderSettings()
                 .tabItem { Label("Models", systemImage: "cpu") }
+                .tag(SettingsTab.models)
             SparkSettings()
                 .tabItem { Label("Spark", systemImage: "bolt.horizontal.circle") }
+                .tag(SettingsTab.spark)
+            SkillsManagerView()
+                .tabItem { Label("Skills", systemImage: "graduationcap") }
+                .tag(SettingsTab.skills)
             PluginSettings()
                 .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
+                .tag(SettingsTab.plugins)
             EditorSettings()
                 .tabItem { Label("Editor", systemImage: "text.cursor") }
+                .tag(SettingsTab.editor)
         }
-        .frame(width: 620, height: 460)
+        .frame(width: 780, height: 600)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") { dismiss() }
@@ -239,6 +248,7 @@ private struct ProviderEditor: View {
                     Text("Sent as enable_thinking / reasoning_effort. Each chat can override it from the composer or with /think.")
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+
                 }
                 Section("Custom Headers") {
                     ForEach($headerRows) { $row in

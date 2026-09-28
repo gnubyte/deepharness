@@ -402,7 +402,7 @@ public struct Engine: Sendable {
 
     /// Replace all but the newest `keep` tool-image messages with a short
     /// note. Images the user attached themselves are never touched.
-    static func pruneToolImages(_ messages: inout [LLMMessage], keep: Int) {
+    public static func pruneToolImages(_ messages: inout [LLMMessage], keep: Int) {
         var seen = 0
         for index in messages.indices.reversed() {
             guard messages[index].imageSource != nil, let atts = messages[index].attachments, !atts.isEmpty else { continue }

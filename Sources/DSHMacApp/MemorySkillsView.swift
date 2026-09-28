@@ -14,9 +14,6 @@ struct MemorySkillsView: View {
     @State private var selection: Selection = .instructions
     @State private var editing: URL?
     @State private var buffer = ""
-    @State private var newSkillName = ""
-    @State private var newSkillDescription = ""
-    @State private var showNewSkill = false
 
     enum Selection: Hashable { case instructions, skills, prompt }
 
@@ -47,7 +44,7 @@ struct MemorySkillsView: View {
                 Group {
                     switch selection {
                     case .instructions: instructions
-                    case .skills: skills
+                    case .skills: SkillsManagerView()
                     case .prompt: promptPreview
                     }
                 }
@@ -56,8 +53,7 @@ struct MemorySkillsView: View {
             Divider()
             footer
         }
-        .frame(width: 680, height: 540)
-        .sheet(isPresented: $showNewSkill) { newSkillSheet }
+        .frame(width: 780, height: 600)
     }
 
     private var header: some View {
@@ -170,107 +166,6 @@ struct MemorySkillsView: View {
         guard let project = model.project else { return }
         try? ProjectContext.setUpMemory(root: project)
         model.transport.refreshProjectContext()
-    }
-
-    // MARK: Skills
-
-    @ViewBuilder
-    private var skills: some View {
-        let catalog = context?.skills ?? []
-        VStack(spacing: 0) {
-            if catalog.isEmpty {
-                EmptyStateView(icon: "graduationcap",
-                               title: "No skills yet",
-                               message: """
-                               A skill is a folder with a SKILL.md whose description says when it \
-                               applies. The model sees only that line until it loads the file.
-                               """) {
-                    Button("New Skill…") { showNewSkill = true }
-                        .buttonStyle(.borderedProminent)
-                }
-            } else {
-                List {
-                    ForEach(catalog) { skill in
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Image(systemName: "graduationcap.fill").foregroundStyle(.tint)
-                                Text(skill.name).font(.callout.weight(.medium))
-                                Spacer()
-                                Text(rootLabel(skill.rank))
-                                    .font(.system(size: 10))
-                                    .padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(Theme.surfaceStrong, in: Capsule())
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(skill.description)
-                                .font(.caption).foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(.vertical, 2)
-                        .contextMenu {
-                            Button("Open in Editor") {
-                                model.mode = .code
-                                model.code.reveal(skill.url)
-                                dismiss()
-                            }
-                            Button("Reveal in Finder") {
-                                NSWorkspace.shared.activateFileViewerSelecting([skill.url])
-                            }
-                        }
-                    }
-                }
-                HStack {
-                    Button("New Skill…") { showNewSkill = true }
-                    Spacer()
-                }
-                .padding(10)
-            }
-        }
-    }
-
-    private func rootLabel(_ rank: Int) -> String {
-        switch rank {
-        case 100: ".dsh/skills"
-        case 200: ".agents/skills"
-        case 300: ".qwen/skills"
-        default: "user"
-        }
-    }
-
-    private var newSkillSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("New skill").font(.headline)
-            TextField("Name", text: $newSkillName)
-            TextField("When does it apply?", text: $newSkillDescription, axis: .vertical)
-                .lineLimit(2...4)
-            Text("The description is the only thing the model sees before deciding to load the skill, so say when it applies rather than what it contains.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Cancel") { showNewSkill = false }
-                Button("Create") { createSkill() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(newSkillName.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }
-        .padding(16)
-        .frame(width: 420)
-    }
-
-    private func createSkill() {
-        guard let project = model.project else { return }
-        if let url = try? ProjectContext.createSkill(root: project,
-                                                     name: newSkillName,
-                                                     description: newSkillDescription) {
-            model.transport.refreshProjectContext()
-            model.mode = .code
-            model.code.reveal(url)
-        }
-        newSkillName = ""
-        newSkillDescription = ""
-        showNewSkill = false
-        dismiss()
     }
 
     // MARK: Prompt preview
