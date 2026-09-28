@@ -40,6 +40,11 @@ final class ContextWindowTests: XCTestCase {
         XCTAssertEqual(OpenAIClient.contextWindow(from: ["context_length": 32768]), 32_768)
         XCTAssertEqual(OpenAIClient.contextWindow(from: ["max_context_length": 128000]), 128_000)
         XCTAssertEqual(OpenAIClient.contextWindow(from: ["context_window": 200000]), 200_000)
+        // SGLang's `/v1/models` reports this field (not `/get_model_info`'s
+        // `context_len`) when the model was served behind a proxy that only
+        // forwards the `/v1/*` surface.
+        XCTAssertEqual(OpenAIClient.contextWindow(from: ["max_model_len": 1_000_000]), 1_000_000)
+        XCTAssertEqual(OpenAIClient.contextWindow(from: ["max_total_tokens": 262_144]), 262_144)
         XCTAssertNil(OpenAIClient.contextWindow(from: ["id": "gpt-4o"]))
         // Zero / negative should be ignored, so a bogus 0 doesn't win.
         XCTAssertNil(OpenAIClient.contextWindow(from: ["context": 0]))

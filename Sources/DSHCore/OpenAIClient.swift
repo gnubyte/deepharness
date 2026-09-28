@@ -68,15 +68,21 @@ public struct OpenAIClient: LLMClient {
     }
 
     /// Probe the server for the active model's metadata (context window, etc.).
-    /// Returns `nil` rather than throwing so the caller can fall back to the
-    /// well-known tables — a `/models` miss (wrong name, server that omits the
-    /// field, or a 404) is not an error worth surfacing.
+    /// `ModelInfo.contextWindow` is `nil` when neither live source answered —
+    /// deliberately: the caller (`AppTransport.probeContext`) caches whatever
+    /// this returns as a *learned* value and never probes that route again, so
+    /// this must NOT paper over a failed probe with the static fallback table
+    /// itself, or a transient miss (server briefly unauthenticated, a
+    /// `/get_model_info` route that 404s or is swallowed by an unrelated
+    /// service on the same host) would lock in a guessed window forever
+    /// instead of the real one the next successful probe would have found.
+    /// The fallback tables are applied by the caller, fresh, every time
+    /// there's no cached probe — see `AppTransport.contextLimit`.
     ///
     /// SGLang servers (the DGX Spark case) expose the *live* `context_len` on
     /// `GET /get_model_info`, which is the authoritative figure — e.g. 262144
     /// for a 256K window, or 1048576 when the model was served with YaRN for
-    /// 1M. We read that first, then the assorted `/models` fields, then the
-    /// fallback tables.
+    /// 1M. We read that first, then the assorted `/models` fields.
     public func modelInfo(_ model: String? = nil) async -> ModelInfo? {
         let id = model?.isEmpty == false ? model! : profile.model
         var limit: Int? = nil
@@ -108,7 +114,6 @@ public struct OpenAIClient: LLMClient {
             }
         }
 
-        limit = limit ?? FallbackContextWindow.limit(for: id)
         return ModelInfo(id: id, contextWindow: limit, maxTokens: maxOut)
     }
 
