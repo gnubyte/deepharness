@@ -15,12 +15,16 @@ public struct ToolContext: Sendable {
     public let depth: Int
     /// Model id subagents should use (same as the parent session).
     public let model: String
+    /// The parent's resolved context window (server probe, override, or
+    /// fallback), so a subagent budgets auto-compaction against the real
+    /// window instead of running uncompacted until it hits a hard wall.
+    public let contextWindow: Int?
     /// Asks the user for permission; subagents inherit the parent's hook.
     public let requestPermission: @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool
 
     public init(workspace: URL, policy: PermissionPolicy,
                 client: any LLMClient, registry: ToolRegistry, depth: Int = 0,
-                model: String = "",
+                model: String = "", contextWindow: Int? = nil,
                 requestPermission: @escaping @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool = { _, _, _ in true }) {
         self.workspace = workspace
         self.policy = policy
@@ -28,6 +32,7 @@ public struct ToolContext: Sendable {
         self.registry = registry
         self.depth = depth
         self.model = model
+        self.contextWindow = contextWindow
         self.requestPermission = requestPermission
     }
 }
