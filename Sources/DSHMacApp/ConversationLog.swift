@@ -125,6 +125,14 @@ public final class ConversationLog {
         try? FileManager.default.removeItem(at: fileURL(id))
     }
 
+    /// Replace a session's stored items wholesale. Used after a turn so the
+    /// persisted log tracks the (possibly compacted) model transcript exactly
+    /// — summarized messages are dropped, and a "compaction" row stands in.
+    public func resync(_ id: String, rows newRows: [LogItemRow]) {
+        items[id] = newRows
+        persist(id)
+    }
+
     public func touch(_ id: String) {
         guard var row = rows[id] else { return }
         row.updatedAt = .now

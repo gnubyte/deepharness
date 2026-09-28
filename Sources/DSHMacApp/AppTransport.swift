@@ -148,6 +148,10 @@ public final class AppTransport {
                 vm.addFinishedTool(id: "log-\(row.seq)", name: row.toolName ?? "tool",
                                    preview: row.argSummary ?? "", summary: row.text,
                                    output: row.output, ok: !row.isError, at: row.at)
+            case "compaction":
+                let removed = Int(row.argSummary ?? "") ?? 0
+                vm.entries.append(ChatEntry(at: row.at, kind: .compaction(
+                    .init(removed: removed, summary: row.text ?? "", at: row.at))))
             default: break
             }
         }
@@ -189,6 +193,10 @@ public final class AppTransport {
                 pendingTools.append("- \(head) → \(activity.summary ?? (activity.isOk == false ? "failed" : "ok"))")
             case .todos:
                 continue
+            case .compaction(let note):
+                // A compacted transcript must start from its summary, or the
+                // model would lose everything that was folded away.
+                out.append(.system(Compaction.summaryHeader + note.summary))
             }
         }
         flushTools()
@@ -233,7 +241,8 @@ public final class AppTransport {
             systemPrompt: prompt,
             config: .init(model: model,
                           temperature: (client as? OpenAIClient)?.profile.temperature,
-                          maxOutputTokens: (client as? OpenAIClient)?.profile.maxOutputTokens),
+                          maxOutputTokens: (client as? OpenAIClient)?.profile.maxOutputTokens,
+                          contextWindow: contextLimit()),
             workspace: workspace,
             policy: policy,
             permissionGate: { [weak self] id, name, detail in
@@ -244,6 +253,10 @@ public final class AppTransport {
                 Task { @MainActor [weak self] in
                     self?.sessions.first { $0.id == sessionID }?.setTodos(todos)
                 }
+            },
+            compaction: { [weak self] used, messages in
+                await self?.compactTranscript(sessionID: sessionID, used: used, messages: messages)
+                    ?? messages
             }
         )
         engines[sessionID] = engine
@@ -342,6 +355,25 @@ public final class AppTransport {
             vm.endStreaming()
             vm.note("Stopped.")
             log.recordItem(sessionID, kind: "notice", text: "Stopped.", toolName: nil, argSummary: nil, output: nil, isError: false)
+        } catch let error as LLMError {
+            // A server overflow that still surfaced tells us the real window is
+            // smaller than we budgeted — learn it so the gauge and future
+            // compaction use the true number.
+            if case .overflow(let limit, _) = error, limit > 0,
+               let provider = config.activeProvider {
+                let routeID = provider.routeID
+                if let current = probedContext[routeID] {
+                    if limit < current { probedContext[routeID] = limit }
+                } else {
+                    probedContext[routeID] = limit
+                    engines.removeAll()
+                }
+            }
+            let message = Self.describe(error)
+            vm.endStreaming()
+            vm.note(message, role: .error)
+            log.recordItem(sessionID, kind: "error", text: message, toolName: nil, argSummary: nil, output: nil, isError: true)
+            banner = message
         } catch {
             let message = Self.describe(error)
             vm.endStreaming()
@@ -453,7 +485,13 @@ public final class AppTransport {
             }
             // Fill the cache only if we don't already have a value; a server
             // that echoes a default back is not worth overriding with.
-            if self.probedContext[routeID] == nil { self.probedContext[routeID] = limit }
+            if self.probedContext[routeID] == nil {
+                self.probedContext[routeID] = limit
+                // Engines capture the context window at build time; a learned
+                // value means they must be rebuilt so in-run compaction budgets
+                // against the real window.
+                self.engines.removeAll()
+            }
             self.probingContext.remove(routeID)
         }
     }
@@ -493,19 +531,122 @@ public final class AppTransport {
     /// a good enough gauge for "how full is the context", which is all the UI
     /// needs — the exact figure arrives the moment a real turn runs.
     nonisolated static func estimateTokens(systemPrompt: String, messages: [LLMMessage]) -> Int {
-        var chars = systemPrompt.count
-        for m in messages {
-            chars += (m.content?.count ?? 0)
-            for call in m.toolCalls ?? [] {
-                chars += call.name.count + call.arguments.raw.count
-            }
-            for att in m.attachments ?? [] {
-                // Images are counted by their base64 payload, which is what the
-                // model actually pays for.
-                chars += att.data.base64EncodedString().count
+        TokenEstimate.request(systemPrompt: systemPrompt, messages: messages)
+    }
+
+    // MARK: - Compaction
+    //
+    // When the model transcript grows toward the context window, the older
+    // messages are replaced by a summary the model writes, and the recent tail
+    // is kept verbatim. The engine calls this on every model call (in-loop), so
+    // it also fires mid-run when tool output accumulates, and again on a server
+    // overflow as a second line of defence.
+
+    /// The engine's compaction hook: given the current request size and the full
+    /// transcript, return a smaller transcript (older part summarized). No-op
+    /// when under the trigger or when there's nothing old enough to fold.
+    @MainActor
+    public func compactTranscript(sessionID: String, used: Int, messages: [LLMMessage]) async -> [LLMMessage] {
+        let limit = contextLimit()
+        guard let plan = Compaction.plan(usedTokens: used, limit: limit, transcript: messages) else {
+            return messages
+        }
+        guard let summary = await summarize(sessionID: sessionID, plan: plan) else {
+            // No summarizer available (no client, or it failed): keep the
+            // transcript as-is; the server may still accept it, and an overflow
+            // is surfaced rather than silently dropped.
+            return messages
+        }
+        let newMessages = [LLMMessage(role: .system, content: Compaction.summaryHeader + summary)] + plan.toKeep
+        applyCompaction(sessionID: sessionID, plan: plan, summary: summary, newMessages: newMessages)
+        return newMessages
+    }
+
+    /// Ask the model for a continuity summary of the older part of the conversation.
+    @MainActor
+    private func summarize(sessionID: String, plan: Compaction.Plan) async -> String? {
+        guard let client = try? config.makeClient() as? OpenAIClient else { return nil }
+        // The summary request must fit comfortably inside the same window it is
+        // meant to protect — budget it at ~40% of the limit so the input (clipped
+        // transcript) + the summary output stay well under the trigger.
+        let budget = Int(Double(plan.limit) * 0.4)
+        let prompt = Compaction.summaryPrompt(for: plan.toSummarize, budgetTokens: budget)
+        do {
+            let text = try await client.streamPlain(prompt, maxTokens: 2048)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } catch {
+            return nil
+        }
+    }
+
+    /// Rewrite the session's display + persisted log so the summarized part is
+    /// replaced by a compaction divider, and point the model transcript at the
+    /// new (shorter) list.
+    @MainActor
+    private func applyCompaction(sessionID: String, plan: Compaction.Plan,
+                                 summary: String, newMessages: [LLMMessage]) {
+        guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
+        transcripts[sessionID] = newMessages
+        // Reset the gauge: the model now carries a small context.
+        let prompt = systemPrompts[sessionID] ?? basePrompt
+        vm.contextUsed = TokenEstimate.request(systemPrompt: prompt, messages: newMessages)
+
+        // The transcript user-message count maps 1:1 onto the display user
+        // entries, so the cut is "the Nth+1 user entry", where N is how many
+        // user messages were summarized. Counting (instead of matching text)
+        // keeps duplicates like repeated "hi" from cutting at the wrong spot.
+        let summarizedUsers = plan.toSummarize.count(where: { $0.role == .user })
+        let note = CompactionNote(removed: plan.toSummarize.count, summary: summary)
+        var seenUsers = 0
+        var cut: Int? = nil
+        for (i, entry) in vm.entries.enumerated() {
+            if case .message(let body) = entry.kind, body.role == .user {
+                if seenUsers == summarizedUsers { cut = i; break }
+                seenUsers += 1
             }
         }
-        return max(0, chars / 4)
+        let marker = ChatEntry(kind: .compaction(note))
+        vm.entries = cut.map { [marker] + vm.entries[$0...] } ?? [marker] + vm.entries
+        // Re-sync the persisted log so a restart reloads the compacted conversation.
+        log.resync(sessionID, rows: Self.logRows(for: vm.entries, sessionID: sessionID))
+    }
+
+    /// Rebuild persisted log rows from the current display entries. This is the
+    /// single place that turns a (possibly compacted) session into storage.
+    static func logRows(for entries: [ChatEntry], sessionID: String) -> [LogItemRow] {
+        var out: [LogItemRow] = []
+        var seq = 0
+        for entry in entries {
+            let (kind, text, toolName, argSummary, output, isError) = logRowFields(for: entry)
+            out.append(LogItemRow(sessionID: sessionID, seq: seq, kind: kind, text: text,
+                                  toolName: toolName, argSummary: argSummary, output: output,
+                                  isError: isError, at: entry.at))
+            seq += 1
+        }
+        return out
+    }
+
+    /// Map one display entry to its persisted-row fields.
+    private static func logRowFields(for entry: ChatEntry)
+        -> (kind: String, text: String?, toolName: String?, argSummary: String?, output: String?, isError: Bool) {
+        switch entry.kind {
+        case .message(let body):
+            switch body.role {
+            case .user: return ("user", body.text, nil, nil, nil, false)
+            case .assistant: return ("assistant", body.text, nil, nil, nil, false)
+            case .notice: return ("notice", body.text, nil, nil, nil, false)
+            case .error: return ("error", body.text, nil, nil, nil, true)
+            }
+        case .tool(let a):
+            return ("tool", a.summary, a.name, a.preview, a.output, a.isOk == false)
+        case .todos:
+            return ("todos", nil, nil, nil, nil, false)
+        case .compaction(let note):
+            // The removed count rides in argSummary so a reloaded divider still
+            // says how much was folded away.
+            return ("compaction", note.summary, "compaction", String(note.removed), nil, false)
+        }
     }
 
     public static func describe(_ error: Error) -> String {

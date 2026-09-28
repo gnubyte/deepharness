@@ -36,6 +36,9 @@ public struct LLMMessage: Codable, Hashable, Sendable {
     public static func user(_ text: String, attachments: [MessageAttachment]? = nil) -> LLMMessage {
         .init(role: .user, content: text, attachments: attachments)
     }
+    public static func system(_ text: String) -> LLMMessage {
+        .init(role: .system, content: text)
+    }
     public static func assistant(_ text: String, calls: [ToolCall] = []) -> LLMMessage {
         .init(role: .assistant, content: text, toolCalls: calls.isEmpty ? nil : calls)
     }
@@ -232,6 +235,11 @@ public enum LLMError: LocalizedError, Sendable {
     case noModel
     case connection(String)
     case http(Int, String)
+    /// The server refused the request because it would exceed the model's
+    /// context window, and told us the limit in the error body (SGLang/vLLM do:
+    /// "maximum context length is 262144 tokens"). The caller should compact
+    /// the transcript and retry once.
+    case overflow(limit: Int, detail: String)
     case sse(String)
     case unsupported(String)
 
@@ -241,6 +249,8 @@ public enum LLMError: LocalizedError, Sendable {
         case .connection(let why):
             "Could not reach the model server (\(why)). Is it running and is the address right?"
         case .http(let code, let body): "The model server replied \(code): \(String(body.prefix(300)))"
+        case .overflow(let limit, let detail):
+            "Conversation is too long for the \(limit.formatted())-token window (\(detail.prefix(120)))."
         case .sse(let why): "The model stream ended unexpectedly (\(why))."
         case .unsupported(let what): "\(what) is not supported yet."
         }

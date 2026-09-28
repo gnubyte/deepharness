@@ -38,16 +38,33 @@ public struct ToolActivity: Hashable, Sendable {
     }
 }
 
+/// A record that the older part of a conversation was summarized to fit the
+/// model's context window. Rendered as a divider in the transcript.
+public struct CompactionNote: Hashable, Sendable {
+    /// How many earlier messages were folded into this summary.
+    public var removed: Int
+    /// The summary the model now carries in place of those messages.
+    public var summary: String
+    public var at: Date
+
+    public init(removed: Int, summary: String, at: Date = .now) {
+        self.removed = removed
+        self.summary = summary
+        self.at = at
+    }
+}
+
 /// One row of the transcript.
 ///
-/// Messages, tool calls, and todo snapshots share one ordered list so a tool
-/// call renders exactly where it happened — between the assistant text that
-/// preceded it and the text that followed.
+/// Messages, tool calls, todo snapshots, and compaction markers share one
+/// ordered list so a tool call renders exactly where it happened — between the
+/// assistant text that preceded it and the text that followed.
 public struct ChatEntry: Identifiable, Hashable, Sendable {
     public enum Kind: Hashable, Sendable {
         case message(MessageBody)
         case tool(ToolActivity)
         case todos([TodoItem])
+        case compaction(CompactionNote)
     }
 
     public let id: String
@@ -67,6 +84,11 @@ public struct ChatEntry: Identifiable, Hashable, Sendable {
 
     public var tool: ToolActivity? {
         if case .tool(let activity) = kind { return activity }
+        return nil
+    }
+
+    public var compaction: CompactionNote? {
+        if case .compaction(let note) = kind { return note }
         return nil
     }
 }

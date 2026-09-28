@@ -49,6 +49,21 @@ public struct OpenAIClient: LLMClient {
         }
     }
 
+    /// A plain (no tools, no system prompt) streaming completion, used for
+    /// one-shot tasks like writing a conversation summary. Returns the full text.
+    public func streamPlain(_ text: String, maxTokens: Int? = 2048) async throws -> String {
+        let request = LLMRequest(systemPrompt: "", messages: [.user(text)], tools: [],
+                                 model: profile.model, temperature: nil, maxTokens: maxTokens)
+        var out = ""
+        for try await event in stream(request) {
+            switch event {
+            case .text(let d): out += d
+            case .done: break
+            }
+        }
+        return out
+    }
+
     public func listModels() async throws -> [String] {
         guard let url = URL(string: profile.endpoint(path: "models")) else {
             throw LLMError.unsupported("bad base URL: \(profile.baseURL)")
@@ -71,10 +86,21 @@ public struct OpenAIClient: LLMClient {
     /// Returns `nil` rather than throwing so the caller can fall back to the
     /// well-known tables — a `/models` miss (wrong name, server that omits the
     /// field, or a 404) is not an error worth surfacing.
+    ///
+    /// SGLang servers (the DGX Spark case) expose the *live* `context_len` on
+    /// `GET /get_model_info`, which is the authoritative figure — e.g. 262144
+    /// for a 256K window, or 1048576 when the model was served with YaRN for
+    /// 1M. We read that first, then the assorted `/models` fields, then the
+    /// fallback tables.
     public func modelInfo(_ model: String? = nil) async -> ModelInfo? {
         let id = model?.isEmpty == false ? model! : profile.model
         var limit: Int? = nil
         var maxOut: Int? = nil
+
+        // 1) SGLang's authoritative /get_model_info (has "context_len" + "max_total_tokens").
+        if let sglang = await sglangContextLength() { limit = sglang }
+
+        // 2) /v1/models fields (Ollama, LM Studio, OpenRouter, some vLLM builds).
         if let url = URL(string: profile.endpoint(path: "models")) {
             var req = URLRequest(url: url)
             req.timeoutInterval = 10
@@ -86,7 +112,7 @@ public struct OpenAIClient: LLMClient {
                    let arr = obj["data"] as? [[String: Any]] {
                     for entry in arr {
                         guard let eid = entry["id"] as? String, Self.matchesModel(eid, id) else { continue }
-                        limit = Self.contextWindow(from: entry)
+                        limit = limit ?? Self.contextWindow(from: entry)
                         maxOut = (entry["max_tokens"] as? Int) ?? (entry["top_k"] as? Int)
                         // Ollama's full list can contain a "name" alias; prefer the exact hit.
                         if eid == id { break }
@@ -96,8 +122,45 @@ public struct OpenAIClient: LLMClient {
                 // Network down / 404 / unsupported route: fall through to tables.
             }
         }
+
         limit = limit ?? FallbackContextWindow.limit(for: id)
         return ModelInfo(id: id, contextWindow: limit, maxTokens: maxOut)
+    }
+
+    /// SGLang-specific: `GET /get_model_info` returns a single object with the
+    /// live `context_len` (the authoritative window — 262144 for a 256K serve,
+    /// 1048576 for a YaRN 1M serve). The route lives at the server root, but the
+    /// provider's base URL often ends in `/v1`, so we try both. Some builds also
+    /// echo the figure on `/v1/models`.
+    private func sglangContextLength() async -> Int? {
+        let candidates: [String] = [
+            profile.endpoint(path: "get_model_info"),                 // …/v1/get_model_info
+            Self.strippingV1(profile.baseURL) + "/get_model_info",    // …/get_model_info
+        ]
+        for url in candidates.compactMap(URL.init) {
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 10
+            applyHeaders(&req)
+            do {
+                let (data, response) = try await session.data(for: req)
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { continue }
+                guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                if let v = obj["context_len"] as? Int, v > 0 { return v }
+                if let v = obj["max_total_tokens"] as? Int, v > 0 { return v }
+            } catch {
+                continue // not SGLang / route missing: try the next candidate
+            }
+        }
+        return nil
+    }
+
+    /// A base URL with a trailing "/v1" removed, so we can hit root-level SGLang
+    /// routes even when the provider was configured with the OpenAI path.
+    static func strippingV1(_ baseURL: String) -> String {
+        var s = baseURL
+        while s.hasSuffix("/") { s.removeLast() }
+        if s.hasSuffix("/v1") { s = String(s.dropLast(3)) }
+        return s
     }
 
     /// Match the active model name against a `/models` entry id, tolerating the
@@ -109,12 +172,39 @@ public struct OpenAIClient: LLMClient {
         return entryID == base || entryBase == base
     }
 
+    /// Parse the real context limit out of an overflow error body, e.g. SGLang's
+    /// "This model's maximum context length is 262144 tokens; however, you
+    /// requested 270000 tokens". Returns nil when the body carries no limit.
+    static func overflowLimit(in body: String) -> Int? {
+        let patterns = [
+            "maximum context length is (\\d+)",
+            "context length is (\\d+)",
+            "exceed the maximum context length of (\\d+)",
+            "max context length of (\\d+)",
+            "maximum context tokens: (\\d+)",
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            let range = NSRange(body.startIndex..., in: body)
+            if let m = regex.firstMatch(in: body, options: [], range: range),
+               let r = Range(m.range(at: 1), in: body),
+               let n = Int(body[r]), n > 0 {
+                return n
+            }
+        }
+        return nil
+    }
+
     /// Pull a context-window figure out of the assorted field names servers use.
     static func contextWindow(from entry: [String: Any]) -> Int? {
         if let v = entry["context"] as? Int, v > 0 { return v }                 // Ollama
         if let v = entry["context_length"] as? Int, v > 0 { return v }          // some vLLM
         if let v = entry["max_context_length"] as? Int, v > 0 { return v }      // LM Studio
         if let v = entry["context_window"] as? Int, v > 0 { return v }          // OpenRouter
+        if let v = entry["context_len"] as? Int, v > 0 { return v }             // SGLang (echoed on /models)
+        if let v = entry["max_context_len"] as? Int, v > 0 { return v }         // SGLang
+        if let v = entry["max_model_len"] as? Int, v > 0 { return v }           // vLLM / llama.cpp
+        if let v = entry["max_total_tokens"] as? Int, v > 0 { return v }        // SGLang
         return nil
     }
 
@@ -146,6 +236,11 @@ public struct OpenAIClient: LLMClient {
                 if errData.count > 8_000 { break }
             }
             let body = String(decoding: errData, as: UTF8.self)
+            // SGLang / vLLM report a context-overflow 400 as
+            // "This model's maximum context length is N tokens; however, you requested M ...".
+            if let limit = Self.overflowLimit(in: body) {
+                throw LLMError.overflow(limit: limit, detail: body)
+            }
             throw LLMError.http(http.statusCode, body)
         }
 
@@ -381,6 +476,12 @@ public enum FallbackContextWindow {
         "llama3.1:8b": 131_072, "llama3.1:70b": 131_072, "llama3.2:8b": 131_072,
         "deepseek-r1:14b": 65_536, "deepseek-r1:32b": 65_536,
         "deepseek-r1:70b": 131_072, "mistral:7b": 32_768, "mixtral:8x7b": 32_768,
+        // SGLang on a DGX Spark typically serves these (native windows; the
+        // live /get_model_info probe corrects them when YaRN or an extended
+        // context_len is configured).
+        "qwen3-30b-a3b": 32_768, "qwen3-32b": 32_768, "qwen3-235b-a22b": 32_768,
+        "llama3.3-70b-instruct": 131_072, "llama3.1-8b-instruct": 131_072,
+        "glm-4.5": 131_072, "glm-4.5-air": 131_072, "glm-4.6": 131_072,
     ]
 
     /// Prefix rules on the base name, checked after the exact table.
@@ -393,6 +494,7 @@ public enum FallbackContextWindow {
         ("claude-3.5", 200_000), ("claude-3", 100_000), ("claude-", 200_000),
         ("mistral-large", 131_072), ("mistral-small", 131_072),
         ("mixtral", 32_768), ("llama", 131_072), ("smollm", 131_072),
+        ("glm-4.5", 131_072), ("glm-4.6", 131_072), ("glm-4", 131_072),
     ]
 
     /// Look up a context window for a model name, or nil if unknown.

@@ -53,14 +53,23 @@ public struct EngineConfig: Sendable {
     public var model: String
     public var temperature: Double?
     public var maxOutputTokens: Int?
+    /// The model's context window in tokens. When set, the run auto-compacts
+    /// the transcript as it approaches the limit (see `Engine.compaction`).
+    /// Nil disables in-run compaction.
+    public var contextWindow: Int?
+    /// How many times one run may compact, as a runaway guard (0 = never).
+    public var maxCompactions: Int
 
     public init(maxIterations: Int = 30, toolTimeout: TimeInterval = 300,
-                model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil) {
+                model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
+                contextWindow: Int? = nil, maxCompactions: Int = 4) {
         self.maxIterations = maxIterations
         self.toolTimeout = toolTimeout
         self.model = model
         self.temperature = temperature
         self.maxOutputTokens = maxOutputTokens
+        self.contextWindow = contextWindow
+        self.maxCompactions = maxCompactions
     }
 }
 
@@ -82,6 +91,11 @@ public struct Engine: Sendable {
     public let permissionGate: @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool
     /// Where structured todos are pushed for UI rendering.
     public let onTodos: @Sendable ([TodoItem]) -> Void
+    /// Optional auto-compaction hook: given the current request size and the
+    /// transcript, returns a smaller transcript (older messages replaced by a
+    /// summary) when it is over budget. When nil, or when it throws/returns the
+    /// input unchanged, the run proceeds as-is.
+    public let compaction: (@Sendable (_ used: Int, _ transcript: [LLMMessage]) async throws -> [LLMMessage])?
 
     public init(client: any LLMClient,
                 registry: ToolRegistry,
@@ -90,7 +104,8 @@ public struct Engine: Sendable {
                 workspace: URL,
                 policy: PermissionPolicy,
                 permissionGate: @escaping @Sendable (String, String, String) async -> Bool,
-                onTodos: @escaping @Sendable ([TodoItem]) -> Void = { _ in }) {
+                onTodos: @escaping @Sendable ([TodoItem]) -> Void = { _ in },
+                compaction: (@Sendable (Int, [LLMMessage]) async throws -> [LLMMessage])? = nil) {
         self.client = client
         self.registry = registry
         self.systemPrompt = systemPrompt
@@ -99,6 +114,7 @@ public struct Engine: Sendable {
         self.policy = policy
         self.permissionGate = permissionGate
         self.onTodos = onTodos
+        self.compaction = compaction
     }
 
     /// Convenience for tests / subagents with auto-approval.
@@ -131,9 +147,28 @@ public struct Engine: Sendable {
         var denied = 0
         var finalText = ""
         var lastPromptTokens: Int? = nil
+        var compacted = 0
 
         for iteration in 0..<config.maxIterations {
             if Task.isCancelled { throw CancellationError() }
+
+            // -- Auto-compaction: keep the request inside the context window. --
+            if let window = config.contextWindow, window > 0,
+               compaction != nil, compacted < config.maxCompactions {
+                let used = TokenEstimate.request(systemPrompt: systemPrompt, messages: messages)
+                if used >= Int(Double(window) * Compaction.triggerFraction) {
+                    do {
+                        let out = try await compaction!(used, messages)
+                        if out.count < messages.count {
+                            messages = out
+                            compacted += 1
+                        }
+                    } catch {
+                        // Compaction failed: proceed as-is; a server overflow is
+                        // the second line of defence below.
+                    }
+                }
+            }
 
             let request = LLMRequest(
                 systemPrompt: systemPrompt,
@@ -162,6 +197,26 @@ public struct Engine: Sendable {
                 }
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as LLMError {
+                // The server said the request overflowed its real window. If we
+                // can still compact, do it once and retry this iteration.
+                if case .overflow = error,
+                   compaction != nil, compacted < config.maxCompactions {
+                    do {
+                        let used = TokenEstimate.request(systemPrompt: systemPrompt, messages: messages)
+                        let out = try await compaction!(used, messages)
+                        if out.count < messages.count {
+                            messages = out
+                            compacted += 1
+                            continue
+                        }
+                    } catch { }
+                }
+                throw error
+            } catch {
+                // Anything else (network, SSE, cancellation races) propagates
+                // unchanged — the transport describes it.
+                throw error
             }
             if let u = turnUsage {
                 usage = usage.map {

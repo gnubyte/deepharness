@@ -377,6 +377,8 @@ private struct EntryRow: View {
             ToolCard(activity: activity, session: session)
         case .todos(let items):
             TodoCard(items: items)
+        case .compaction(let note):
+            CompactionCard(note: note)
         }
     }
 }
@@ -599,6 +601,62 @@ private struct TodoCard: View {
             }
         }
         .padding(.leading, Theme.gutter)
+    }
+}
+
+/// A divider showing the conversation was compacted to fit the context window.
+/// Expands to reveal the summary the model now carries in place of older turns.
+private struct CompactionCard: View {
+    let note: CompactionNote
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.12)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Rectangle().fill(Theme.hairline).frame(width: 16, height: 1)
+                    Image(systemName: "scissors")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.noticeTint)
+                    Text("Compacted \(note.removed.formatted()) earlier messages to fit the context window")
+                        .font(Theme.metaFont)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded, !note.summary.isEmpty {
+                Divider().padding(.vertical, 6)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(note.summary)
+                        .font(Theme.mono(11))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 280)
+                .padding(.bottom, 2)
+            }
+        }
+        .padding(8)
+        .background(Theme.noticeTint.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.corner))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.corner)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
+        )
+        .contextMenu {
+            Button("Copy Summary") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(note.summary, forType: .string)
+            }
+        }
     }
 }
 
