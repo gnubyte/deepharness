@@ -19,9 +19,20 @@ struct SetupWizard: View {
     @State private var discovered: [String] = []
     @State private var probe: ProbeState = .idle
     @State private var preset: PermissionPreset = .workspaceWrite
+    /// Context window choice: nil = auto-detect from the server.
+    @State private var contextChoice: Int? = nil
+    @State private var customContext: String = ""
+    @State private var detectedContext: Int? = nil
+    @State private var detectedModel: String? = nil
+    @State private var detecting = false
+    /// Default thinking level ("" = server default).
+    @State private var thinkingChoice: String = ""
+    /// The profile being edited when the wizard is re-run, so fields the
+    /// wizard doesn't show (headers, temperature, …) survive.
+    @State private var existing: ProviderProfile? = nil
 
     enum Step: Int, CaseIterable {
-        case welcome, backend, connection, models, permissions, project, done
+        case welcome, backend, connection, models, tuning, permissions, project, done
 
         var title: String {
             switch self {
@@ -29,6 +40,7 @@ struct SetupWizard: View {
             case .backend: "Backend"
             case .connection: "Connection"
             case .models: "Model"
+            case .tuning: "Context & thinking"
             case .permissions: "Permissions"
             case .project: "Project"
             case .done: "Ready"
@@ -93,6 +105,7 @@ struct SetupWizard: View {
         case .backend: backendStep
         case .connection: connectionStep
         case .models: modelStep
+        case .tuning: tuningStep
         case .permissions: permissionStep
         case .project: projectStep
         case .done: doneStep
@@ -218,10 +231,10 @@ struct SetupWizard: View {
                             .frame(width: 110)
                     }
                 }
-                if needsKey {
+                if allowsKey {
                     GridRow {
                         Text("API key").frame(width: 70, alignment: .trailing)
-                        SecureField("sk-…", text: $apiKey)
+                        SecureField(needsKey ? "sk-…" : "optional — e.g. vllm-local", text: $apiKey)
                             .textFieldStyle(.roundedBorder)
                     }
                 }
@@ -284,15 +297,20 @@ struct SetupWizard: View {
     }
 
     private var needsKey: Bool { kind == .openAI || kind == .openRouter }
+    /// Your own server may sit behind a key (vLLM/SGLang `--api-key`, an nginx front).
+    private var allowsKey: Bool { needsKey || kind == .openAICompat }
 
     /// The endpoint we will actually call.
     private var baseURL: String {
         let trimmed = host.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return "—" }
         if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
-            return trimmed.hasSuffix("/v1") || trimmed.contains("/v1/")
-                ? trimmed
-                : trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/v1"
+            // A full URL: keep its scheme and path; fill in the port field if the URL has none.
+            var comps = URLComponents(string: trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+            let portPart = port.trimmingCharacters(in: .whitespaces)
+            if comps?.port == nil, let p = Int(portPart), usesPort { comps?.port = p }
+            if (comps?.path ?? "").isEmpty { comps?.path = "/v1" }
+            return comps?.string ?? trimmed
         }
         let portPart = port.trimmingCharacters(in: .whitespaces)
         let hostPart = portPart.isEmpty ? trimmed : "\(trimmed):\(portPart)"
@@ -389,6 +407,83 @@ struct SetupWizard: View {
                 }
             }
         }
+    }
+
+    private static let contextPresets: [(String, Int)] = [
+        ("32K", 32_768), ("128K", 131_072), ("256K", 262_144), ("512K", 524_288), ("1M", 1_000_000),
+    ]
+
+    private var tuningStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Context & thinking").font(.title2.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Context window").font(.headline)
+                HStack(spacing: 8) {
+                    if detecting {
+                        ProgressView().controlSize(.small)
+                        Text("Asking the server…").font(.caption).foregroundStyle(.secondary)
+                    } else if let detectedContext {
+                        Label("The server reports \(detectedContext.formatted()) tokens"
+                              + (detectedModel.map { $0 != modelID ? " for \($0)" : "" } ?? ""),
+                              systemImage: "checkmark.circle.fill")
+                            .font(.caption).foregroundStyle(Theme.successTint)
+                    } else {
+                        Label("The server didn't report a window — pick one below.",
+                              systemImage: "questionmark.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Detect again") { Task { await detectContext() } }.disabled(detecting)
+                }
+                Picker("Window", selection: $contextChoice) {
+                    Text(detectedContext.map { "Auto (\(Self.short($0)), follows the server)" } ?? "Auto-detect").tag(Int?.none)
+                    ForEach(Self.contextPresets, id: \.1) { preset in
+                        Text(preset.0).tag(Int?.some(preset.1))
+                    }
+                    Text("Custom…").tag(Int?.some(-1))
+                }
+                .pickerStyle(.radioGroup)
+                if contextChoice == -1 {
+                    TextField("tokens, e.g. 400000", text: $customContext)
+                        .textFieldStyle(.roundedBorder).frame(width: 200)
+                }
+                Text("Auto is best: it re-reads the window every turn, so a model swap on the server (1M ⇄ 512K) is picked up by itself. Choose a fixed size only to cap it lower. Long chats are summarized automatically at 75%, or any time with /compact.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Default thinking").font(.headline)
+                Picker("Thinking", selection: $thinkingChoice) {
+                    Text("Server default").tag("")
+                    ForEach(ThinkingLevel.allCases, id: \.self) { level in
+                        Text("\(level.label) — \(level.blurb)").tag(level.rawValue)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                Text("For reasoning models (Qwen3.x, DeepSeek, GLM, gpt-oss). Off skips thinking entirely for the fastest replies; Max thinks longest. Qwen3.8's own default is its maximum, which is slow for everyday work — Medium is a good start. Change it per chat from the composer or with /think.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task { if detectedContext == nil { await detectContext() } }
+    }
+
+    private static func short(_ n: Int) -> String {
+        n >= 1_000_000
+            ? String(format: "%.1fM", Double(n) / 1_000_000).replacingOccurrences(of: ".0M", with: "M")
+            : "\(n / 1024)K"
+    }
+
+    private func detectContext() async {
+        detecting = true
+        defer { detecting = false }
+        let info = await OpenAIClient(profile: draftProfile).modelInfo()
+        detectedContext = info?.contextWindow
+        detectedModel = info?.id
     }
 
     /// A hint, not a guarantee — the families that reliably emit tool calls.
@@ -531,6 +626,7 @@ struct SetupWizard: View {
         switch step {
         case .connection: !host.trimmingCharacters(in: .whitespaces).isEmpty
         case .models: !modelID.trimmingCharacters(in: .whitespaces).isEmpty
+        case .tuning: contextChoice != -1 || (Int(customContext.filter(\.isNumber)) ?? 0) > 0
         default: true
         }
     }
@@ -550,6 +646,9 @@ struct SetupWizard: View {
                 step = .models
             }
         case .models:
+            saveProvider()
+            step = .tuning
+        case .tuning:
             saveProvider()
             step = .permissions
         case .permissions:
@@ -574,15 +673,29 @@ struct SetupWizard: View {
 
     private func seedFromConfig() {
         if let active = model.config.activeProvider {
+            existing = active
             kind = active.kind
             modelID = active.model
             preset = model.config.asPreset
+            apiKey = active.apiKey ?? ""
+            thinkingChoice = active.thinking?.rawValue ?? ""
+            if let window = active.contextWindow {
+                if Self.contextPresets.contains(where: { $0.1 == window }) {
+                    contextChoice = window
+                } else {
+                    contextChoice = -1
+                    customContext = String(window)
+                }
+            }
             let components = URLComponents(string: active.baseURL)
-            if let host_ = components?.host {
+            if let host_ = components?.host, components?.scheme == "http",
+               (components?.path ?? "") == "/v1" || (components?.path ?? "").isEmpty {
                 host = host_
                 port = components?.port.map(String.init) ?? ""
             } else {
+                // https, or a non-default path (a proxy): keep the URL whole.
                 host = active.baseURL
+                port = ""
             }
         } else {
             applyDefaults(for: kind)
@@ -607,11 +720,22 @@ struct SetupWizard: View {
     }
 
     private var draftProfile: ProviderProfile {
-        ProviderProfile(kind: kind,
-                        name: kind == .openAICompat ? "DGX Spark / server" : kind.label,
-                        baseURL: baseURL,
-                        apiKey: apiKey.isEmpty ? nil : apiKey,
-                        model: modelID.isEmpty ? "model" : modelID)
+        // Re-running the wizard edits the existing route in place, so settings
+        // it doesn't show (headers, temperature, max tokens) are kept.
+        var p = (existing?.kind == kind ? existing : nil)
+            ?? ProviderProfile(kind: kind,
+                               name: kind == .openAICompat ? "DGX Spark / server" : kind.label,
+                               baseURL: baseURL, model: modelID)
+        p.baseURL = baseURL
+        p.apiKey = apiKey.isEmpty ? nil : apiKey
+        p.model = modelID.isEmpty ? (detectedModel ?? "model") : modelID
+        switch contextChoice {
+        case .none: p.contextWindow = nil
+        case .some(-1): p.contextWindow = Int(customContext.filter(\.isNumber)).flatMap { $0 > 0 ? $0 : nil }
+        case .some(let n): p.contextWindow = n
+        }
+        p.reasoningEffort = thinkingChoice.isEmpty ? nil : thinkingChoice
+        return p
     }
 
     private func runProbe() async {
@@ -632,7 +756,12 @@ struct SetupWizard: View {
         var profile = draftProfile
         let key = apiKey
         profile.apiKey = nil                      // the key lives in the keychain
+        if let existing, existing.routeID != profile.routeID {
+            model.config.removeProvider(existing)
+        }
         model.config.activate(profile)
+        existing = profile
         if !key.isEmpty { model.config.setAPIKey(key, for: profile) }
+        model.transport.resetRouteCache()
     }
 }

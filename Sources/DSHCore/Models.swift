@@ -139,7 +139,10 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     public var contextWindow: Int?
     /// Extra HTTP headers sent with every request (e.g. auth tokens, org IDs).
     public var customHeaders: [String: String]?
-    /// Reasoning effort for thinking models ("low", "medium", "high").
+    /// Default thinking level for this route, stored as a `ThinkingLevel` raw
+    /// value ("off", "low", "medium", "high", "max"); nil = the server's own
+    /// default. (Older builds stored "low"/"medium"/"high" here, which decode
+    /// unchanged.) Sessions can override it — see `ThinkingLevel`.
     public var reasoningEffort: String?
 
     public init(kind: Kind, name: String, baseURL: String, apiKey: String? = nil,
@@ -169,6 +172,95 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     public func endpoint(path: String) -> String {
         baseURL.hasSuffix("/") ? "\(baseURL)\(path)" : "\(baseURL)/\(path)"
     }
+
+    /// The route's default thinking level (nil = leave it to the server).
+    public var thinking: ThinkingLevel? {
+        get { reasoningEffort.flatMap(ThinkingLevel.init(rawValue:)) }
+        set { reasoningEffort = newValue?.rawValue }
+    }
+
+    /// True for a server you run yourself (vLLM, SGLang, llama.cpp, Ollama,
+    /// LM Studio …) as opposed to a hosted API. Decided by host, not `kind`:
+    /// a Spark behind nginx is often configured as kind "OpenAI" because it
+    /// speaks the same protocol, and it still wants `chat_template_kwargs`.
+    public var isSelfHosted: Bool {
+        guard let host = URL(string: baseURL)?.host?.lowercased() else { return true }
+        let hosted = ["openai.com", "openrouter.ai", "anthropic.com", "groq.com", "together.xyz",
+                      "together.ai", "fireworks.ai", "mistral.ai", "deepseek.com", "x.ai",
+                      "googleapis.com", "azure.com", "cerebras.ai", "perplexity.ai"]
+        return !hosted.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+}
+
+// MARK: - Thinking / reasoning effort
+
+/// How hard a reasoning model should think before answering.
+///
+/// On the wire this becomes, for self-hosted OpenAI-compatible servers
+/// (vLLM / SGLang serving Qwen3.x, GLM, DeepSeek, gpt-oss …):
+///   - `chat_template_kwargs.enable_thinking` (false for `.off`), and
+///   - `reasoning_effort` both top-level and inside `chat_template_kwargs`,
+///     which is where Qwen3.8's template reads it.
+/// For hosted APIs only the top-level `reasoning_effort` is sent.
+///
+/// Templates disagree on the vocabulary (Qwen3.8 accepts low/medium/xhigh,
+/// gpt-oss low/medium/high). The client learns the accepted set from the
+/// server's 400 and remaps automatically — see `ReasoningEffortCache`.
+public enum ThinkingLevel: String, Codable, CaseIterable, Sendable, Hashable {
+    case off, low, medium, high, max
+
+    public var label: String {
+        switch self {
+        case .off: "Off"
+        case .low: "Low"
+        case .medium: "Medium"
+        case .high: "High"
+        case .max: "Max"
+        }
+    }
+
+    public var blurb: String {
+        switch self {
+        case .off: "No thinking — fastest replies"
+        case .low: "Brief thinking"
+        case .medium: "Balanced"
+        case .high: "Careful"
+        case .max: "Deepest (slowest)"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .off: "hare"
+        case .low: "gauge.with.dots.needle.0percent"
+        case .medium: "gauge.with.dots.needle.33percent"
+        case .high: "gauge.with.dots.needle.67percent"
+        case .max: "gauge.with.dots.needle.100percent"
+        }
+    }
+
+    /// The effort word we try first; nil for `.off`.
+    public var wireEffort: String? {
+        switch self {
+        case .off: nil
+        case .low: "low"
+        case .medium: "medium"
+        case .high: "high"
+        case .max: "xhigh"
+        }
+    }
+
+    /// Parse user input like "/think high", "fast", "none", "xhigh".
+    public init?(userInput raw: String) {
+        switch raw.lowercased().trimmingCharacters(in: .whitespaces) {
+        case "off", "none", "no", "fast", "0", "false", "disable", "disabled": self = .off
+        case "low", "light", "minimal", "1": self = .low
+        case "medium", "med", "mid", "normal", "2": self = .medium
+        case "high", "hard", "slow", "3": self = .high
+        case "max", "xhigh", "maximum", "highest", "deep", "4": self = .max
+        default: return nil
+        }
+    }
 }
 
 /// Metadata about a model, used to size the context gauge in the UI.
@@ -178,14 +270,22 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
 /// `GET /v1/models`; for the rest we fall back to the well-known tables below
 /// or a conservative default.
 public struct ModelInfo: Codable, Hashable, Sendable {
+    /// The id the server actually serves for this route. Usually the
+    /// configured model; when that isn't served but the server serves exactly
+    /// one model (a box that swaps models, e.g. the Spark swapper), it is that
+    /// one — the app follows it instead of failing with "model not found".
     public var id: String
     public var contextWindow: Int?
     public var maxTokens: Int?
+    /// Every model id the server listed (empty when `/models` didn't answer).
+    public var servedModels: [String]
 
-    public init(id: String, contextWindow: Int? = nil, maxTokens: Int? = nil) {
+    public init(id: String, contextWindow: Int? = nil, maxTokens: Int? = nil,
+                servedModels: [String] = []) {
         self.id = id
         self.contextWindow = contextWindow
         self.maxTokens = maxTokens
+        self.servedModels = servedModels
     }
 }
 
@@ -198,15 +298,19 @@ public struct LLMRequest: Sendable {
     public let model: String
     public let temperature: Double?
     public let maxTokens: Int?
+    /// Thinking level for this request; nil = the provider profile's default.
+    public let thinking: ThinkingLevel?
 
     public init(systemPrompt: String, messages: [LLMMessage], tools: [ToolSpec],
-                model: String, temperature: Double? = nil, maxTokens: Int? = nil) {
+                model: String, temperature: Double? = nil, maxTokens: Int? = nil,
+                thinking: ThinkingLevel? = nil) {
         self.systemPrompt = systemPrompt
         self.messages = messages
         self.tools = tools
         self.model = model
         self.temperature = temperature
         self.maxTokens = maxTokens
+        self.thinking = thinking
     }
 }
 
@@ -226,6 +330,9 @@ public struct LLMUsage: Codable, Hashable, Sendable {
 public enum LLMStreamEvent: Sendable {
     /// A text delta to append to the assistant message.
     case text(String)
+    /// A reasoning ("thinking") delta — `reasoning_content` from a vLLM/SGLang
+    /// reasoning parser, or OpenRouter's `reasoning`. Shown live, never sent back.
+    case reasoning(String)
     /// The stream finished: complete tool calls (may be empty) + metadata.
     case done(calls: [ToolCall], finish: String?, usage: LLMUsage?)
 }

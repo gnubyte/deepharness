@@ -44,7 +44,7 @@ final class ContextWindowTests: XCTestCase {
         // `context_len`) when the model was served behind a proxy that only
         // forwards the `/v1/*` surface.
         XCTAssertEqual(OpenAIClient.contextWindow(from: ["max_model_len": 1_000_000]), 1_000_000)
-        XCTAssertEqual(OpenAIClient.contextWindow(from: ["max_total_tokens": 262_144]), 262_144)
+        XCTAssertNil(OpenAIClient.contextWindow(from: ["max_total_tokens": 262_144]))  // KV pool, not a window
         XCTAssertNil(OpenAIClient.contextWindow(from: ["id": "gpt-4o"]))
         // Zero / negative should be ignored, so a bogus 0 doesn't win.
         XCTAssertNil(OpenAIClient.contextWindow(from: ["context": 0]))

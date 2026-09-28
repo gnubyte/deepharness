@@ -128,6 +128,35 @@ public final class SessionVM: Identifiable {
 
     public var running: Bool = false
     public var stopping: Bool = false
+
+    /// This chat's thinking level; nil = the provider's default.
+    public var thinking: ThinkingLevel?
+    /// The model's live reasoning for the current step (not persisted).
+    public var reasoning: String = ""
+    public var reasoningStarted: Date?
+    /// A transient status line ("Compacting conversation…") shown while busy.
+    public var activity: String?
+    /// The active `/goal`, while its loop runs.
+    public var goal: GoalState?
+
+    public struct GoalState: Hashable, Sendable {
+        public var text: String
+        public var round: Int
+        public var maxRounds: Int
+        public var started: Date = .now
+    }
+
+    /// Append a reasoning delta, keeping only the recent tail for display.
+    public func appendReasoning(_ chunk: String) {
+        if reasoning.isEmpty { reasoningStarted = .now }
+        reasoning += chunk
+        if reasoning.count > 6_000 { reasoning = String(reasoning.suffix(4_000)) }
+    }
+
+    public func clearReasoning() {
+        if !reasoning.isEmpty { reasoning = "" }
+        reasoningStarted = nil
+    }
     /// Id of the assistant entry currently receiving streamed deltas.
     public var streamingID: String?
 

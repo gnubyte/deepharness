@@ -21,20 +21,52 @@ public final class AppTransport {
     public private(set) var projectContext: ProjectContext?
 
     @ObservationIgnored private var engines: [String: Engine] = [:]
+    /// What each session's engine was built with; a mismatch rebuilds it
+    /// (provider or served model changed, window re-detected, thinking level).
+    @ObservationIgnored private var engineKeys: [String: EngineKey] = [:]
     @ObservationIgnored private var transcripts: [String: [LLMMessage]] = [:]
     @ObservationIgnored private var gates: [String: (cont: CheckedContinuation<Bool, Never>, sessionID: String)] = [:]
     @ObservationIgnored private var runTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private let basePrompt: String
     /// Route ID → context window (tokens) learned from a server probe.
-    @ObservationIgnored private var probedContext: [String: Int] = [:]
+    /// Observed, so the context gauge redraws the moment a probe lands.
+    private var probedContext: [String: Int] = [:]
+    /// Route ID → what the server said it serves, and when we last asked.
+    private var routeInfo: [String: RouteInfo] = [:]
     /// Route IDs whose probe is already in flight (avoids duplicate requests).
     @ObservationIgnored private var probingContext: Set<String> = []
+
+    struct RouteInfo: Hashable {
+        var servedModel: String
+        var servedModels: [String]
+        var context: Int?
+        var at: Date
+    }
+
+    struct EngineKey: Hashable {
+        var profile: ProviderProfile
+        var window: Int
+        var thinking: ThinkingLevel?
+        var preset: PermissionPreset
+    }
     /// Route ID → the fully-built system prompt (base + project context +
     /// preset), cached so the context gauge's token estimate reads a string
     /// instead of re-loading project files on every keystroke.
     @ObservationIgnored private var systemPrompts: [String: String] = [:]
     /// Called when tools touch files, so the code-mode editor can reload.
     @ObservationIgnored public var onFilesChanged: (([FileChange]) -> Void)?
+    /// True while the model server is switching models (Spark swapper).
+    @ObservationIgnored var isServerSwitching: (() -> Bool)?
+    /// Handles `/swap [model]`.
+    @ObservationIgnored var onSwapCommand: ((String?, SessionVM) -> Void)?
+
+    /// Post a notice into the chat the user is looking at.
+    func broadcast(_ text: String, error: Bool = false) {
+        guard let vm = selected else { banner = text; return }
+        vm.note(text, role: error ? .error : .notice)
+        log.recordItem(vm.id, kind: error ? "error" : "notice", text: text, toolName: nil,
+                       argSummary: nil, output: nil, isError: error)
+    }
 
     public init(config: AppConfig, log: ConversationLog = .shared, systemPrompt: String? = nil) {
         self.config = config
@@ -106,6 +138,7 @@ public final class AppTransport {
         runTasks[id]?.cancel()
         runTasks[id] = nil
         engines[id] = nil
+        engineKeys[id] = nil
         transcripts[id] = nil
         systemPrompts[id] = nil
         log.delete(id)
@@ -194,9 +227,10 @@ public final class AppTransport {
             case .todos:
                 continue
             case .compaction(let note):
-                // A compacted transcript must start from its summary, or the
-                // model would lose everything that was folded away.
-                out.append(.system(Compaction.summaryHeader + note.summary))
+                // A compacted transcript starts from its summary: everything
+                // above the divider is already folded into it.
+                pendingTools = []
+                out = [.system(Compaction.summaryHeader + note.summary)]
             }
         }
         flushTools()
@@ -205,7 +239,8 @@ public final class AppTransport {
 
     // MARK: - Engine
 
-    private func engine(for sessionID: String, vm: SessionVM, client: any LLMClient) -> Engine {
+    private func engine(for sessionID: String, vm: SessionVM, client: any LLMClient,
+                        window: Int, thinking: ThinkingLevel?) -> Engine {
         let workspace = vm.workspaceURL ?? FileManager.default.homeDirectoryForCurrentUser
         let policy = PermissionPolicy(preset: vm.preset, workspaceRoot: workspace)
         let model = (client as? OpenAIClient)?.profile.model ?? "model"
@@ -242,7 +277,8 @@ public final class AppTransport {
             config: .init(model: model,
                           temperature: (client as? OpenAIClient)?.profile.temperature,
                           maxOutputTokens: (client as? OpenAIClient)?.profile.maxOutputTokens,
-                          contextWindow: contextLimit()),
+                          contextWindow: window,
+                          thinking: thinking),
             workspace: workspace,
             policy: policy,
             permissionGate: { [weak self] id, name, detail in
@@ -301,16 +337,132 @@ public final class AppTransport {
             vm.note("The agent is still working; send again when it is done.")
             return
         }
+        if attachments.isEmpty, let command = SlashCommand.parse(text) {
+            runCommand(command, vm: vm)
+            return
+        }
+        if isServerSwitching?() == true {
+            vm.note("The Spark is switching models right now — send again once it says it's ready (usually a few minutes).")
+            return
+        }
         runTasks[sessionID] = Task { await runTurn(vm, text: text, attachments: attachments) }
     }
 
-    private func runTurn(_ vm: SessionVM, text: String, attachments: [MessageAttachment] = []) async {
+    // MARK: - Slash commands
+
+    private func runCommand(_ command: SlashCommand, vm: SessionVM) {
+        switch command {
+        case .help:
+            let lines = SlashCommand.catalog.map { "`\($0.usage)` — \($0.summary)" }
+            vm.note("Commands:\n" + lines.joined(separator: "\n"))
+
+        case .think(let arg):
+            let fallback = config.activeProvider?.thinking
+            guard let arg else {
+                let current = vm.thinking ?? fallback
+                vm.note("Thinking: **\(current?.label ?? "server default")**"
+                        + (vm.thinking == nil ? " (from the provider setting)" : " (this chat)")
+                        + ". Change it with `/think off|low|medium|high|max|default`.")
+                return
+            }
+            if ["default", "reset", "auto"].contains(arg.lowercased()) {
+                vm.thinking = nil
+                vm.note("Thinking back to the provider default (\(fallback?.label ?? "server default")).")
+            } else if let level = ThinkingLevel(userInput: arg) {
+                vm.thinking = level
+                vm.note("Thinking set to **\(level.label)** for this chat — \(level.blurb.lowercased()).")
+            } else {
+                vm.note("Unknown level “\(arg)”. Use off, low, medium, high, max, or default.", role: .error)
+            }
+
+        case .context:
+            runTasks[vm.id] = Task {
+                _ = await resolveRoute(force: true)
+                let limit = contextLimit()
+                let used = contextUsed(for: vm.id, draft: "")
+                let source = contextSource()
+                let model = config.activeProvider.map(effective)?.model ?? "?"
+                vm.note("Context: \(used.formatted()) of \(limit.formatted()) tokens used "
+                        + "(\(Int(Double(used) / Double(max(limit, 1)) * 100))%). Model `\(model)`; window \(source). "
+                        + "Auto-compaction starts at \(Int(Compaction.triggerFraction * 100))%.")
+                runTasks[vm.id] = nil
+            }
+
+        case .swap(let arg):
+            if let onSwapCommand {
+                onSwapCommand(arg, vm)
+            } else {
+                vm.note("Model switching isn't available.", role: .error)
+            }
+
+        case .compact(let focus):
+            runTasks[vm.id] = Task { await compactNow(vm, focus: focus) }
+
+        case .goal(let goal):
+            guard !goal.isEmpty else {
+                vm.note("Usage: `/goal <what you want done>` — the agent keeps working, round after round, "
+                        + "until it declares the goal complete (or needs you). Stop it any time with ⌘.")
+                return
+            }
+            runTasks[vm.id] = Task { await runTurn(vm, text: goal, attachments: [], goal: goal) }
+        }
+    }
+
+    /// `/compact`: fold the conversation into a summary now, whatever its size.
+    private func compactNow(_ vm: SessionVM, focus: String?) async {
+        let sessionID = vm.id
+        vm.running = true
+        vm.activity = "Compacting conversation…"
+        defer {
+            vm.running = false
+            vm.activity = nil
+            runTasks[sessionID] = nil
+        }
+        if transcripts[sessionID] == nil { hydrate(vm) }
+        let messages = transcripts[sessionID] ?? []
+        guard messages.contains(where: { $0.role == .user }) else {
+            vm.note("Nothing to compact yet.")
+            return
+        }
+        guard let profile = await resolveRoute() else {
+            vm.note(LLMError.noModel.errorDescription ?? "No model configured.", role: .error)
+            return
+        }
+        let prompt = systemPrompts[sessionID] ?? basePrompt
+        let before = TokenEstimate.request(systemPrompt: prompt, messages: messages)
+        guard let plan = Compaction.plan(usedTokens: before, limit: contextLimit(),
+                                         transcript: messages, force: true) else {
+            vm.note("The conversation is already as compact as it gets (~\(before.formatted()) tokens).")
+            return
+        }
+        let client = OpenAIClient(profile: profile)
+        guard let summary = await Compaction.summarize(client: client, plan: plan,
+                                                       model: profile.model, focus: focus) else {
+            vm.note("Compaction failed: the model did not return a summary. Nothing was changed.", role: .error)
+            return
+        }
+        if Task.isCancelled { return }
+        let newMessages = [LLMMessage(role: .system, content: Compaction.summaryHeader + summary)] + plan.toKeep
+        applyCompaction(sessionID: sessionID, plan: plan, summary: summary, newMessages: newMessages)
+        let after = TokenEstimate.request(systemPrompt: prompt, messages: newMessages)
+        let text = "Compacted \(plan.toSummarize.count) messages: ~\(before.formatted()) → ~\(after.formatted()) tokens."
+        vm.note(text)
+        log.recordItem(sessionID, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+    }
+
+    // MARK: - Turns
+
+    private func runTurn(_ vm: SessionVM, text: String, attachments: [MessageAttachment] = [],
+                         goal: String? = nil) async {
         let sessionID = vm.id
         vm.running = true
         vm.stopping = false
         defer {
             vm.running = false
             vm.stopping = false
+            vm.goal = nil
+            vm.activity = nil
+            vm.clearReasoning()
             vm.endStreaming()
             runTasks[sessionID] = nil
             log.touch(sessionID)
@@ -318,56 +470,24 @@ public final class AppTransport {
             sessions.sort { $0.updatedAt > $1.updatedAt }
         }
 
-        vm.appendMessage(.user, text)
-        log.recordItem(sessionID, kind: "user", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
-        if vm.title == "New chat" {
-            let first = text.split(separator: "\n").first.map(String.init) ?? text
-            let title = String(first.prefix(48))
-            if !title.isEmpty { renameSession(sessionID, to: title) }
-        }
-
         do {
-            let client = try config.makeClient()
-            let engine = engines[sessionID] ?? engine(for: sessionID, vm: vm, client: client)
-            let input = transcripts[sessionID] ?? []
-
-            // Engine events arrive on a pool thread; hop to main so the
-            // timeline is only ever mutated from one place.
-            let sink = self
-            let result = try await engine.run(messages: input, userText: text,
-                                              userAttachments: attachments) { event in
-                Task { @MainActor in
-                    sink.apply(event, sessionID: sessionID)
-                }
-            }
-            transcripts[sessionID] = result.messages
-            vm.lastUsage = result.usage
-            // How full the context is now: server-reported prompt tokens when
-            // available, otherwise a character-based estimate of the whole
-            // request (system prompt + transcript).
-            let systemPrompt = engines[sessionID]?.systemPrompt ?? basePrompt
-            vm.contextUsed = result.lastPromptTokens
-                ?? Self.estimateTokens(systemPrompt: systemPrompt, messages: result.messages)
-            if result.deniedCount > 0 {
-                vm.note("\(result.deniedCount) tool call(s) were denied.")
+            if let goal {
+                try await runGoal(vm, goal: goal)
+            } else {
+                _ = try await turn(vm, modelText: text, displayText: text, attachments: attachments)
             }
         } catch is CancellationError {
             vm.endStreaming()
-            vm.note("Stopped.")
-            log.recordItem(sessionID, kind: "notice", text: "Stopped.", toolName: nil, argSummary: nil, output: nil, isError: false)
+            let text = vm.goal != nil ? "Stopped. The goal was not finished." : "Stopped."
+            vm.note(text)
+            log.recordItem(sessionID, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
         } catch let error as LLMError {
             // A server overflow that still surfaced tells us the real window is
             // smaller than we budgeted — learn it so the gauge and future
             // compaction use the true number.
             if case .overflow(let limit, _) = error, limit > 0,
                let provider = config.activeProvider {
-                let routeID = provider.routeID
-                if let current = probedContext[routeID] {
-                    if limit < current { probedContext[routeID] = limit }
-                } else {
-                    probedContext[routeID] = limit
-                    engines.removeAll()
-                }
+                probedContext[provider.routeID] = min(limit, probedContext[provider.routeID] ?? limit)
             }
             let message = Self.describe(error)
             vm.endStreaming()
@@ -383,11 +503,112 @@ public final class AppTransport {
         }
     }
 
+    /// `/goal`: run turns until the model writes GOAL_COMPLETE (or GOAL_BLOCKED),
+    /// re-stating the goal every round so it survives compaction.
+    private func runGoal(_ vm: SessionVM, goal: String) async throws {
+        let maxRounds = GoalProtocol.defaultMaxRounds
+        vm.goal = .init(text: goal, round: 1, maxRounds: maxRounds)
+        var result = try await turn(vm, modelText: GoalProtocol.kickoff(goal),
+                                    displayText: "🎯 /goal \(goal)", attachments: [])
+        var round = 1
+        while true {
+            switch GoalProtocol.status(of: result.finalText) {
+            case .complete:
+                let text = "✅ Goal complete after \(round) round\(round == 1 ? "" : "s")."
+                vm.note(text)
+                log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+                return
+            case .blocked(let why):
+                let text = "⏸ Goal paused — the agent needs you: \(why)\nReply, then send `/goal \(goal.prefix(60))…` again to resume."
+                vm.note(text)
+                log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+                return
+            case .working:
+                break
+            }
+            if Task.isCancelled { throw CancellationError() }
+            guard round < maxRounds else {
+                let text = "Goal stopped after \(maxRounds) rounds without being declared complete. Send `/goal` again to keep going."
+                vm.note(text, role: .error)
+                log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+                return
+            }
+            round += 1
+            vm.goal?.round = round
+            result = try await turn(vm,
+                                    modelText: GoalProtocol.continuation(goal, round: round, maxRounds: maxRounds,
+                                                                         hitIterationLimit: result.hitIterationLimit),
+                                    displayText: "↻ Goal round \(round): keep going", attachments: [])
+        }
+    }
+
+    /// One user message → one engine run (which may take many tool steps).
+    private func turn(_ vm: SessionVM, modelText: String, displayText: String,
+                      attachments: [MessageAttachment]) async throws -> RunResult {
+        let sessionID = vm.id
+        vm.appendMessage(.user, displayText)
+        log.recordItem(sessionID, kind: "user", text: displayText, toolName: nil, argSummary: nil, output: nil, isError: false)
+        if vm.title == "New chat" {
+            let first = displayText.split(separator: "\n").first.map(String.init) ?? displayText
+            let title = String(first.prefix(48))
+            if !title.isEmpty { renameSession(sessionID, to: title) }
+        }
+        if transcripts[sessionID] == nil { transcripts[sessionID] = [] }
+
+        // Re-read what the server serves right now: the Spark can swap models
+        // between turns, and the window/model id must follow.
+        guard let profile = await resolveRoute() else { throw LLMError.noModel }
+        let window = contextLimit()
+        let thinking = vm.thinking
+        let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset)
+        if let previous = engineKeys[sessionID], previous.profile.model != profile.model {
+            vm.note("The server is now serving `\(profile.model)` (was `\(previous.profile.model)`) — switched to it, \(window.formatted())-token window.")
+        }
+        let engine: Engine
+        if let existing = engines[sessionID], engineKeys[sessionID] == key {
+            engine = existing
+        } else {
+            engine = self.engine(for: sessionID, vm: vm, client: OpenAIClient(profile: profile),
+                                 window: window, thinking: thinking)
+            engineKeys[sessionID] = key
+        }
+        let input = transcripts[sessionID] ?? []
+
+        // Engine events arrive on a pool thread; hop to main so the
+        // timeline is only ever mutated from one place.
+        let sink = self
+        let result = try await engine.run(messages: input, userText: modelText,
+                                          userAttachments: attachments) { event in
+            Task { @MainActor in
+                sink.apply(event, sessionID: sessionID)
+            }
+        }
+        transcripts[sessionID] = result.messages
+        vm.lastUsage = result.usage
+        // How full the context is now: server-reported prompt tokens when
+        // available, otherwise a character-based estimate of the whole
+        // request (system prompt + transcript).
+        let systemPrompt = engines[sessionID]?.systemPrompt ?? basePrompt
+        vm.contextUsed = result.lastPromptTokens
+            ?? Self.estimateTokens(systemPrompt: systemPrompt, messages: result.messages)
+        if result.deniedCount > 0 {
+            vm.note("\(result.deniedCount) tool call(s) were denied.")
+        }
+        if result.hitIterationLimit, vm.goal == nil {
+            vm.note("Paused after \(engine.config.maxIterations) steps. Say “continue” to keep going, or use `/goal` for long tasks.")
+        }
+        return result
+    }
+
     private func apply(_ event: EngineEvent, sessionID: String) {
         guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
         switch event {
         case .textDelta(let chunk):
+            vm.clearReasoning()
             vm.appendDelta(chunk)
+
+        case .reasoningDelta(let chunk):
+            vm.appendReasoning(chunk)
 
         case .assistantMessage(_, let text, _):
             // Fold a turn's complete text if deltas never arrived, then close
@@ -402,6 +623,7 @@ public final class AppTransport {
             vm.endStreaming()
 
         case .toolStarted(let id, let name, let preview):
+            vm.clearReasoning()
             vm.startTool(id: id, name: name, preview: preview)
 
         case .toolFinished(let id, let name, let ok, let summary, let output):
@@ -460,40 +682,79 @@ public final class AppTransport {
         guard let provider = config.activeProvider else { return FallbackContextWindow.defaultLimit }
         if let override = provider.contextWindow, override > 0 { return override }
         if let probed = probedContext[provider.routeID] { return probed }
-        return FallbackContextWindow.limit(for: provider.model) ?? FallbackContextWindow.defaultLimit
+        let model = effective(provider).model
+        return FallbackContextWindow.limit(for: model) ?? FallbackContextWindow.defaultLimit
     }
 
-    /// Fire (once) the server probe for the active route so `contextLimit`
-    /// fills in a learned value. Safe to call repeatedly; it's a no-op when a
-    /// probe is in flight or already answered.
+    /// Where the current window figure came from, for `/context` and the gauge tooltip.
+    @MainActor
+    public func contextSource() -> String {
+        guard let provider = config.activeProvider else { return "default" }
+        if let override = provider.contextWindow, override > 0 { return "set manually in Settings" }
+        if probedContext[provider.routeID] != nil { return "detected from the server" }
+        if FallbackContextWindow.limit(for: effective(provider).model) != nil { return "from the built-in model table (server did not report one)" }
+        return "a conservative default (server did not report one — set it in Settings)"
+    }
+
+    /// The model id actually in use for the active route (follows a swap).
+    @MainActor
+    public var activeModelID: String? {
+        config.activeProvider.map(effective)?.model
+    }
+
+    /// The profile with the model the server actually serves.
+    @MainActor
+    func effective(_ provider: ProviderProfile) -> ProviderProfile {
+        var p = provider
+        if let served = routeInfo[provider.routeID]?.servedModel, !served.isEmpty { p.model = served }
+        return p
+    }
+
+    /// Ask the server what it serves and how big its window is, then return the
+    /// profile to use. Cached for a few seconds so `/goal` rounds don't re-ask;
+    /// a failed probe keeps whatever we knew.
+    @MainActor
+    @discardableResult
+    func resolveRoute(force: Bool = false) async -> ProviderProfile? {
+        guard let provider = config.activeProvider else { return nil }
+        let routeID = provider.routeID
+        let fresh = routeInfo[routeID].map { Date().timeIntervalSince($0.at) < 15 } ?? false
+        if force || !fresh {
+            if let info = await OpenAIClient(profile: provider).modelInfo(), !info.servedModels.isEmpty {
+                routeInfo[routeID] = RouteInfo(servedModel: info.id, servedModels: info.servedModels,
+                                               context: info.contextWindow, at: .now)
+                if let limit = info.contextWindow, limit > 0, probedContext[routeID] != limit {
+                    probedContext[routeID] = limit
+                }
+            }
+        }
+        return effective(provider)
+    }
+
+    /// Fire the server probe for the active route so `contextLimit` fills in a
+    /// learned value. Safe to call repeatedly: one in flight at a time, and a
+    /// recent answer is reused.
     @MainActor
     public func ensureContextProbe() {
         guard let provider = config.activeProvider else { return }
-        probeContext(provider: provider)
-    }
-
-    @MainActor
-    private func probeContext(provider: ProviderProfile) {
         let routeID = provider.routeID
-        guard !probingContext.contains(routeID), probedContext[routeID] == nil else { return }
+        guard !probingContext.contains(routeID) else { return }
+        if let info = routeInfo[routeID], Date().timeIntervalSince(info.at) < 60 { return }
         probingContext.insert(routeID)
         Task { [weak self] in
-            let limit = await OpenAIClient(profile: provider).modelInfo()?.contextWindow
-            guard let self, let limit, limit > 0 else {
-                self?.probingContext.remove(routeID)
-                return
-            }
-            // Fill the cache only if we don't already have a value; a server
-            // that echoes a default back is not worth overriding with.
-            if self.probedContext[routeID] == nil {
-                self.probedContext[routeID] = limit
-                // Engines capture the context window at build time; a learned
-                // value means they must be rebuilt so in-run compaction budgets
-                // against the real window.
-                self.engines.removeAll()
-            }
-            self.probingContext.remove(routeID)
+            await self?.resolveRoute(force: true)
+            self?.probingContext.remove(routeID)
         }
+    }
+
+    /// Forget cached probes (Settings changed the route, or the user asked).
+    @MainActor
+    public func resetRouteCache() {
+        routeInfo.removeAll()
+        probedContext.removeAll()
+        engines.removeAll()
+        engineKeys.removeAll()
+        ensureContextProbe()
     }
 
     /// How much of the context a session is using right now, in tokens.
@@ -547,10 +808,13 @@ public final class AppTransport {
     /// when under the trigger or when there's nothing old enough to fold.
     @MainActor
     public func compactTranscript(sessionID: String, used: Int, messages: [LLMMessage]) async -> [LLMMessage] {
-        let limit = contextLimit()
+        let limit = engineKeys[sessionID]?.window ?? contextLimit()
         guard let plan = Compaction.plan(usedTokens: used, limit: limit, transcript: messages) else {
             return messages
         }
+        let vm = sessions.first { $0.id == sessionID }
+        vm?.activity = "Compacting conversation to fit the context window…"
+        defer { vm?.activity = nil }
         guard let summary = await summarize(sessionID: sessionID, plan: plan) else {
             // No summarizer available (no client, or it failed): keep the
             // transcript as-is; the server may still accept it, and an overflow
@@ -570,8 +834,9 @@ public final class AppTransport {
     /// under the trigger.
     @MainActor
     private func summarize(sessionID: String, plan: Compaction.Plan) async -> String? {
-        guard let client = try? config.makeClient() else { return nil }
-        return await Compaction.summarize(client: client, plan: plan)
+        await resolveRoute()
+        guard let profile = engineKeys[sessionID]?.profile ?? config.activeProvider.map(effective) else { return nil }
+        return await Compaction.summarize(client: OpenAIClient(profile: profile), plan: plan, model: profile.model)
     }
 
     /// Rewrite the session's display + persisted log so the summarized part is
@@ -600,8 +865,11 @@ public final class AppTransport {
                 seenUsers += 1
             }
         }
+        // Earlier messages stay visible above the divider (replay starts from
+        // the divider, so they are not sent to the model again). A cut inside
+        // one long turn has no later user entry: the divider goes at the end.
         let marker = ChatEntry(kind: .compaction(note))
-        vm.entries = cut.map { [marker] + vm.entries[$0...] } ?? [marker] + vm.entries
+        vm.entries.insert(marker, at: cut ?? vm.entries.count)
         // Re-sync the persisted log so a restart reloads the compacted conversation.
         log.resync(sessionID, rows: Self.logRows(for: vm.entries, sessionID: sessionID))
     }

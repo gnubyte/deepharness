@@ -25,13 +25,15 @@ final class AgentToolTests: XCTestCase {
         return out
     }
 
-    func testPlanWithoutFlagCannotCompactASingleTurnToolMarathon() {
-        // This is the gap `allowAssistantBoundary` exists to fix: with only
-        // one `.user` message in the whole transcript, the default rule has
-        // no boundary to cut at no matter how large the transcript grows.
+    func testPlanWithoutFlagFallsBackToAssistantBoundaryForASingleTurnToolMarathon() {
+        // With only one `.user` message in the whole transcript the user-only
+        // rule has no boundary to cut at; rather than run into the server's
+        // hard limit, the plan falls back to an assistant boundary.
         let msgs = toolMarathon(rounds: 20)
         let used = TokenEstimate.request(systemPrompt: "", messages: msgs)
-        XCTAssertNil(Compaction.plan(usedTokens: used, limit: 8_000, transcript: msgs))
+        let plan = Compaction.plan(usedTokens: used, limit: 8_000, transcript: msgs)
+        XCTAssertNotNil(plan)
+        XCTAssertEqual(plan?.toKeep.first?.role, .assistant)
     }
 
     func testPlanWithAssistantBoundaryCompactsASingleTurnToolMarathon() {
@@ -63,7 +65,7 @@ final class AgentToolTests: XCTestCase {
         XCTAssertEqual(summary, "a continuity note")
         XCTAssertEqual(client.requests.count, 1)
         XCTAssertTrue(client.requests[0].tools.isEmpty)
-        XCTAssertTrue(client.requests[0].systemPrompt.isEmpty)
+        XCTAssertEqual(client.requests[0].thinking, .off, "summaries are written with thinking off")
     }
 
     func testCompactionSummarizeReturnsNilOnClientFailure() async throws {
@@ -122,8 +124,8 @@ final class AgentToolTests: XCTestCase {
 
     /// Serves both a subagent's ordinary turns and its internal
     /// summarization calls from one client (as a real `OpenAIClient` would),
-    /// distinguishing them by shape (a summarization request always has no
-    /// tools, no system prompt, and exactly one user message) rather than by
+    /// distinguishing them by shape (a summarization request has no tools,
+    /// thinking off, and exactly one user message) rather than by
     /// call order.
     private final class SubagentClient: LLMClient, @unchecked Sendable {
         private let lock = NSLock()
@@ -134,7 +136,7 @@ final class AgentToolTests: XCTestCase {
         func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamEvent, Error> {
             lock.lock()
             requests.append(request)
-            let isSummaryRequest = request.tools.isEmpty && request.systemPrompt.isEmpty
+            let isSummaryRequest = request.tools.isEmpty && request.thinking == .off
                 && request.messages.count == 1 && request.messages[0].role == .user
             let turn: ScriptedClient.Turn
             if isSummaryRequest {

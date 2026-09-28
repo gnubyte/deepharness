@@ -14,6 +14,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             ProviderSettings()
                 .tabItem { Label("Models", systemImage: "cpu") }
+            SparkSettings()
+                .tabItem { Label("Spark", systemImage: "bolt.horizontal.circle") }
             PluginSettings()
                 .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
             EditorSettings()
@@ -173,6 +175,7 @@ private struct ProviderEditor: View {
     @State private var models: [String] = []
     @State private var headerRows: [HeaderRow] = []
     @State private var reasoning: String = ""
+    @State private var detected: String?
     private let original: ProviderProfile
 
     init(profile: ProviderProfile) {
@@ -218,18 +221,24 @@ private struct ProviderEditor: View {
                             .frame(width: 100)
                     }
                     LabeledContent("Context window") {
-                        TextField("auto", value: $draft.contextWindow, format: .number)
-                            .frame(width: 100)
+                        HStack {
+                            TextField("auto", value: $draft.contextWindow, format: .number)
+                                .frame(width: 100)
+                            Button("Detect") { Task { await detect() } }
+                        }
                     }
-                    Text("Leave blank to auto-detect from the server and well-known model tables.")
+                    Text(detected ?? "Leave blank to auto-detect from the server (vLLM/SGLang report max_model_len). Only set it to force a smaller window.")
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Picker("Reasoning effort", selection: $reasoning) {
-                        Text("Default").tag("")
-                        Text("Low").tag("low")
-                        Text("Medium").tag("medium")
-                        Text("High").tag("high")
+                    Picker("Default thinking", selection: $reasoning) {
+                        Text("Server default").tag("")
+                        ForEach(ThinkingLevel.allCases, id: \.self) { level in
+                            Text("\(level.label) — \(level.blurb)").tag(level.rawValue)
+                        }
                     }
+                    Text("Sent as enable_thinking / reasoning_effort. Each chat can override it from the composer or with /think.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Section("Custom Headers") {
                     ForEach($headerRows) { $row in
@@ -282,6 +291,21 @@ private struct ProviderEditor: View {
         }
     }
 
+    private func detect() async {
+        detected = "Asking the server…"
+        var probe = draft
+        probe.apiKey = apiKey.isEmpty ? nil : apiKey
+        let info = await OpenAIClient(profile: probe).modelInfo()
+        if let limit = info?.contextWindow {
+            let follow = (info?.id).flatMap { $0 != draft.model ? " (serving `\($0)`)" : nil } ?? ""
+            detected = "Detected \(limit.formatted()) tokens\(follow). Leave the field blank to always use the live value."
+        } else if let served = info?.servedModels, !served.isEmpty {
+            detected = "The server answered but reports no window for \(draft.model); set one here."
+        } else {
+            detected = "Could not reach the server to detect the window."
+        }
+    }
+
     private func save() {
         var profile = draft
         profile.apiKey = nil
@@ -295,6 +319,7 @@ private struct ProviderEditor: View {
         }
         model.config.activate(profile)
         model.config.setAPIKey(apiKey, for: profile)
+        model.transport.resetRouteCache()
         dismiss()
     }
 }
@@ -428,5 +453,114 @@ private struct EditorSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+
+// MARK: - Spark
+
+/// Where the Spark Swapper lives and how to log in to it.
+private struct SparkSettings: View {
+    @Environment(AppModel.self) private var model
+    @State private var url = ""
+    @State private var user = ""
+    @State private var pass = ""
+    @State private var testing = false
+    /// Local confirmation (the chat window has its own; two alerts on one
+    /// shared flag would fight while this sheet is up).
+    @State private var pending: SwapperStatus.Model?
+
+    var body: some View {
+        let spark = model.spark
+        Form {
+            Section {
+                TextField("Address", text: $url, prompt: Text("https://192.168.68.69:8999"))
+                    .font(Theme.mono(11))
+                TextField("Username", text: $user)
+                SecureField("Password", text: $pass)
+                HStack {
+                    Button(testing ? "Connecting…" : "Save & Connect") { Task { await connect() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(testing || url.isEmpty || user.isEmpty || pass.isEmpty)
+                    if spark.pinnedFingerprint != nil {
+                        Button("Forget Certificate") { spark.pinnedFingerprint = nil }
+                    }
+                }
+            } header: {
+                Text("Spark Swapper")
+            } footer: {
+                Text("The login you created on the swapper's web page. The password is kept in your Keychain.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            if let fp = spark.untrustedFingerprint {
+                Section("Certificate") {
+                    Text("The swapper uses a self-signed certificate. Trust it if this fingerprint matches the server's (`sudo openssl x509 -in /etc/spark-swapper/tls.crt -noout -fingerprint -sha256`):")
+                        .font(.caption).fixedSize(horizontal: false, vertical: true)
+                    Text(fp).font(Theme.mono(10)).textSelection(.enabled)
+                    Button("Trust This Certificate") { spark.trustPresentedCertificate() }
+                }
+            }
+
+            Section("Status") {
+                if let err = spark.lastError, spark.untrustedFingerprint == nil {
+                    Label(err, systemImage: "exclamationmark.triangle").foregroundStyle(Theme.errorTint)
+                        .font(.caption)
+                }
+                if let s = spark.status {
+                    if let line = spark.progressLine {
+                        Label(line, systemImage: "hourglass")
+                    }
+                    ForEach(s.ordered) { m in
+                        HStack {
+                            Image(systemName: m.key == s.active ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(m.key == s.active ? Theme.successTint : .secondary)
+                            VStack(alignment: .leading) {
+                                Text(m.title)
+                                Text("\(m.served_id) · \(m.context.formatted()) ctx · \(m.engine ?? "")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if m.key != s.active {
+                                Button("Switch") { pending = m }
+                                    .disabled(s.isSwitching)
+                            }
+                        }
+                    }
+                    if let oc = s.openclaw_primary {
+                        Text("OpenClaw → \(oc)").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else if spark.isConfigured {
+                    Text("Not connected yet.").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            url = spark.url
+            user = spark.username
+            pass = spark.password
+        }
+        .alert("Switch the Spark to \(pending?.title ?? "")?",
+               isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
+            Button("Switch") {
+                if let t = pending { Task { await spark.swap(to: t.key) } }
+                pending = nil
+            }
+            Button("Cancel", role: .cancel) { pending = nil }
+        } message: {
+            Text("The current model stops and the new one loads (Flash takes about 11 minutes). Chats and OpenClaw follow automatically.")
+        }
+    }
+
+    private func connect() async {
+        testing = true
+        defer { testing = false }
+        let spark = model.spark
+        spark.url = url.trimmingCharacters(in: .whitespaces)
+        spark.username = user.trimmingCharacters(in: .whitespaces)
+        spark.password = pass
+        await spark.refresh()
+        spark.startMonitoring()
     }
 }

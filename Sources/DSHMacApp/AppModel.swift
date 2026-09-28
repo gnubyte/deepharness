@@ -18,6 +18,8 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
 final class AppModel {
     let config = AppConfig.shared
     let transport: AppTransport
+    /// The DGX Spark's model switcher.
+    let spark: SparkController
     /// File tree, open editors, and terminals for the current project.
     let code = CodeWorkspace()
 
@@ -33,8 +35,16 @@ final class AppModel {
 
     init() {
         transport = AppTransport(config: config)
+        spark = SparkController(config: config, transport: transport)
         mode = WorkspaceMode(rawValue: config.lastMode) ?? .chat
         showWizard = !config.wizardCompleted || !config.isConfigured
+
+        let spark = spark
+        transport.isServerSwitching = { spark.isSwitching }
+        transport.onSwapCommand = { arg, vm in
+            Task { @MainActor in await spark.handleCommand(arg, in: vm) }
+        }
+        spark.startMonitoring()
 
         // The agent's file writes drive the editor's live reload.
         transport.onFilesChanged = { [weak self] changes in

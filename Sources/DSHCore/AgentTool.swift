@@ -36,7 +36,8 @@ public struct AgentTool: ToolExecutor {
             maxIterations: Self.subagentMaxIterations,
             toolTimeout: 300,
             model: context.model,
-            contextWindow: context.contextWindow
+            contextWindow: context.contextWindow,
+            thinking: context.thinking
         )
         let client = context.client
         let engine = Engine(
@@ -63,7 +64,8 @@ public struct AgentTool: ToolExecutor {
                                                  allowAssistantBoundary: true) else {
                     return messages
                 }
-                guard let summary = await Compaction.summarize(client: client, plan: plan) else {
+                guard let summary = await Compaction.summarize(client: client, plan: plan,
+                                                               model: context.model) else {
                     return messages
                 }
                 return [LLMMessage(role: .system, content: Compaction.summaryHeader + summary)] + plan.toKeep

@@ -16,6 +16,22 @@ struct ChatView: View {
 
     private var transport: AppTransport { model.transport }
 
+    private var sparkConfirmShown: Binding<Bool> {
+        Binding(get: { model.spark.confirmTarget != nil },
+                set: { if !$0 { model.spark.confirmTarget = nil } })
+    }
+    private var sparkConfirmTitle: String {
+        "Switch the Spark to \(model.spark.confirmTarget?.title ?? "")?"
+    }
+    private var sparkConfirmMessage: String {
+        guard let t = model.spark.confirmTarget else { return "" }
+        let current = model.spark.status?.activeModel?.title
+        let eta = t.key.contains("flash") ? "about 11 minutes" : "a few minutes"
+        return (current.map { "\($0) stops, then " } ?? "")
+            + "\(t.title) loads (\(eta), \(t.context.formatted())-token context). OpenClaw and every chat here follow it automatically; "
+            + "if it fails to load, the previous model comes back."
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             transcript
@@ -24,6 +40,17 @@ struct ChatView: View {
             composer
         }
         .background(.background)
+        .alert(sparkConfirmTitle, isPresented: sparkConfirmShown) {
+            Button("Switch") {
+                if let target = model.spark.confirmTarget {
+                    Task { await model.spark.swap(to: target.key) }
+                }
+                model.spark.confirmTarget = nil
+            }
+            Button("Cancel", role: .cancel) { model.spark.confirmTarget = nil }
+        } message: {
+            Text(sparkConfirmMessage)
+        }
         .onChange(of: model.code.pendingMention) { _, mention in
             guard let mention else { return }
             insertMention(mention)
@@ -108,6 +135,16 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(spacing: 6) {
+            SparkSwapBanner()
+            if let goal = session.goal {
+                GoalBanner(goal: goal, session: session)
+            }
+            if !slashMatches.isEmpty {
+                SlashHints(matches: slashMatches) { usage in
+                    let word = usage.split(separator: " ").first.map(String.init) ?? usage
+                    draft = word + " "
+                }
+            }
             if let tool = session.runningTool {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -171,6 +208,8 @@ struct ChatView: View {
             HStack(spacing: 10) {
                 Label(session.preset.label, systemImage: session.preset.icon)
                     .foregroundStyle(session.preset == .fullAccess ? Theme.errorTint : .secondary)
+                ModelMenu(session: session)
+                ThinkingMenu(session: session)
                 if let name = session.projectName {
                     Label(name, systemImage: "folder")
                         .foregroundStyle(.secondary)
@@ -189,6 +228,13 @@ struct ChatView: View {
         .padding(.vertical, 10)
         .frame(maxWidth: Theme.maxTranscriptWidth)
         .frame(maxWidth: .infinity)
+    }
+
+    /// Commands matching what's typed, while the draft is a bare "/word".
+    private var slashMatches: [SlashCommand.Info] {
+        let t = draft.trimmingCharacters(in: .whitespaces)
+        guard t.hasPrefix("/"), !t.contains(" "), !t.contains("\n"), t.count < 12 else { return [] }
+        return SlashCommand.catalog.filter { $0.usage.hasPrefix(t.lowercased()) }
     }
 
     private func send() {
@@ -741,7 +787,7 @@ private struct ContextGaugeView: View {
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
         }
-        .help("Context window in use for \(model.config.activeProvider?.model ?? "this model"): \(used.formatted()) of \(limit.formatted()) tokens.")
+        .help("Context window in use for \(model.transport.activeModelID ?? "this model"): \(used.formatted()) of \(limit.formatted()) tokens — window \(model.transport.contextSource()). Type /compact to free space.")
     }
 
     private func tint(_ fraction: Double) -> Color {
@@ -751,28 +797,148 @@ private struct ContextGaugeView: View {
     }
 }
 
-/// Shown between "you sent" and "the first token arrived".
+/// Shown while the agent is busy: what it's doing, and — for reasoning
+/// models — a live tail of its thinking.
 private struct ThinkingRow: View {
     let session: SessionVM
     @State private var phase = 0.0
+    @State private var now = Date()
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "sparkle")
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-                .opacity(0.4 + 0.6 * abs(sin(phase)))
-            Text(session.stopping ? "Stopping…" : "Working…")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Spacer()
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Image(systemName: session.reasoning.isEmpty ? "sparkle" : "brain")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                    .opacity(0.4 + 0.6 * abs(sin(phase)))
+                Text(headline)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            if !session.reasoning.isEmpty {
+                Text(tail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(3)
+                    .truncationMode(.head)
+                    .padding(.leading, 28)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .task {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 90_000_000)
                 phase += 0.2
+                now = Date()
             }
         }
+    }
+
+    private var headline: String {
+        if session.stopping { return "Stopping…" }
+        if let activity = session.activity { return activity }
+        if !session.reasoning.isEmpty, let start = session.reasoningStarted {
+            return "Thinking… \(Int(now.timeIntervalSince(start)))s"
+        }
+        return "Working…"
+    }
+
+    /// The last few lines of reasoning, flattened.
+    private var tail: String {
+        let flat = session.reasoning.suffix(400).replacingOccurrences(of: "\n", with: " ")
+        return String(flat).trimmingCharacters(in: .whitespaces)
+    }
+}
+
+/// The active `/goal`, above the composer.
+private struct GoalBanner: View {
+    let goal: SessionVM.GoalState
+    let session: SessionVM
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "target")
+                .foregroundStyle(Color.accentColor)
+            Text("Goal · round \(goal.round) of \(goal.maxRounds)")
+                .font(.system(size: 11, weight: .semibold))
+            Text(goal.text)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Text("⌘. to stop")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// Matching slash commands while typing "/…".
+private struct SlashHints: View {
+    let matches: [SlashCommand.Info]
+    let pick: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(matches, id: \.usage) { info in
+                Button {
+                    pick(info.usage)
+                } label: {
+                    HStack(spacing: 10) {
+                        Text(info.usage).font(Theme.mono(11))
+                        Text(info.summary).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(.vertical, 3).padding(.horizontal, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.hairline, lineWidth: 1))
+    }
+}
+
+/// Per-chat thinking level, next to the permission preset.
+private struct ThinkingMenu: View {
+    @Environment(AppModel.self) private var model
+    let session: SessionVM
+
+    var body: some View {
+        let fallback = model.config.activeProvider?.thinking
+        let current = session.thinking ?? fallback
+        Menu {
+            Button {
+                session.thinking = nil
+            } label: {
+                Label("Provider default (\(fallback?.label ?? "server default"))",
+                      systemImage: session.thinking == nil ? "checkmark" : "")
+            }
+            Divider()
+            ForEach(ThinkingLevel.allCases, id: \.self) { level in
+                Button {
+                    session.thinking = level
+                } label: {
+                    Label("\(level.label) — \(level.blurb)",
+                          systemImage: session.thinking == level ? "checkmark" : level.symbol)
+                }
+            }
+        } label: {
+            Label("Thinking: \(current?.label ?? "Default")", systemImage: current?.symbol ?? "brain")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .foregroundStyle(.secondary)
+        .disabled(session.running)
+        .help("How hard the model thinks before answering (sent as reasoning_effort / enable_thinking). Also: /think <level>")
     }
 }
 
@@ -912,6 +1078,99 @@ struct FlowLayout: Layout {
             subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
+
+// MARK: - Model switching
+
+/// The model in use, and one click to change it: the Spark's models (served
+/// by the Spark Swapper) and the provider routes configured in Settings.
+private struct ModelMenu: View {
+    @Environment(AppModel.self) private var model
+    let session: SessionVM
+
+    var body: some View {
+        let spark = model.spark
+        let current = model.transport.activeModelID ?? model.config.activeProvider?.model ?? "No model"
+        let limit = model.transport.contextLimit()
+        Menu {
+            if spark.isConfigured {
+                Section("DGX Spark — what it serves") {
+                    if let status = spark.status {
+                        ForEach(status.ordered) { m in
+                            Button {
+                                spark.request(m)
+                            } label: {
+                                Label("\(m.title) — \(Self.short(m.context))"
+                                      + (m.key == status.active ? "  (serving)" : m.running ? "  (loading)" : ""),
+                                      systemImage: m.key == status.active ? "checkmark.circle.fill"
+                                          : m.running ? "hourglass" : "arrow.triangle.2.circlepath")
+                            }
+                            .disabled(m.key == status.active || status.isSwitching)
+                        }
+                    } else {
+                        Text(spark.lastError ?? "Connecting to the Spark…")
+                    }
+                    Button("Refresh") { Task { await spark.refresh() } }
+                }
+            } else {
+                Button("Set Up Spark Model Switching…") { model.showSettings = true }
+            }
+            Section("Providers") {
+                ForEach(model.config.providers, id: \.routeID) { p in
+                    Button {
+                        model.config.activeRoute = p.routeID
+                        model.transport.resetRouteCache()
+                    } label: {
+                        Label(p.displayName, systemImage: p.routeID == model.config.activeRoute ? "checkmark" : "")
+                    }
+                }
+            }
+        } label: {
+            Label("\(current) · \(Self.short(limit))", systemImage: spark.isSwitching ? "hourglass" : "cpu")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .foregroundStyle(.secondary)
+        .disabled(session.running)
+        .help("Model in use and its context window. Pick a Spark model to switch what the Spark serves (also /swap), or another configured provider.")
+        .task { if spark.isConfigured && spark.status == nil { await spark.refresh() } }
+    }
+
+    static func short(_ n: Int) -> String {
+        n >= 1_000_000
+            ? String(format: "%.1fM", Double(n) / 1_000_000).replacingOccurrences(of: ".0M", with: "M")
+            : "\(n / 1024)K"
+    }
+}
+
+/// Live progress while the Spark switches models, above the composer.
+private struct SparkSwapBanner: View {
+    @Environment(AppModel.self) private var model
+    @State private var tick = Date()
+
+    var body: some View {
+        if let line = model.spark.progressLine {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(line)
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                Spacer()
+                Text(tick, style: .time).hidden()   // keeps the timer line redrawing
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Theme.noticeTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    tick = Date()
+                }
+            }
         }
     }
 }

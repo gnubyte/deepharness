@@ -19,12 +19,14 @@ public struct ToolContext: Sendable {
     /// fallback), so a subagent budgets auto-compaction against the real
     /// window instead of running uncompacted until it hits a hard wall.
     public let contextWindow: Int?
+    /// The parent's thinking level, so subagents think as hard as it does.
+    public let thinking: ThinkingLevel?
     /// Asks the user for permission; subagents inherit the parent's hook.
     public let requestPermission: @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool
 
     public init(workspace: URL, policy: PermissionPolicy,
                 client: any LLMClient, registry: ToolRegistry, depth: Int = 0,
-                model: String = "", contextWindow: Int? = nil,
+                model: String = "", contextWindow: Int? = nil, thinking: ThinkingLevel? = nil,
                 requestPermission: @escaping @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool = { _, _, _ in true }) {
         self.workspace = workspace
         self.policy = policy
@@ -33,6 +35,7 @@ public struct ToolContext: Sendable {
         self.depth = depth
         self.model = model
         self.contextWindow = contextWindow
+        self.thinking = thinking
         self.requestPermission = requestPermission
     }
 }

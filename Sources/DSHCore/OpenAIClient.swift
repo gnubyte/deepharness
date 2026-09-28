@@ -32,9 +32,11 @@ public struct OpenAIClient: LLMClient {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let result = try await client.runTurn(request) { delta in
+                    let result = try await client.runTurn(request, onText: { delta in
                         continuation.yield(.text(delta))
-                    }
+                    }, onReasoning: { delta in
+                        continuation.yield(.reasoning(delta))
+                    })
                     continuation.yield(.done(calls: result.calls,
                                              finish: result.finish,
                                              usage: result.usage))
@@ -67,79 +69,69 @@ public struct OpenAIClient: LLMClient {
         return arr.compactMap { $0["id"] as? String }
     }
 
-    /// Probe the server for the active model's metadata (context window, etc.).
-    /// `ModelInfo.contextWindow` is `nil` when neither live source answered —
-    /// deliberately: the caller (`AppTransport.probeContext`) caches whatever
-    /// this returns as a *learned* value and never probes that route again, so
-    /// this must NOT paper over a failed probe with the static fallback table
-    /// itself, or a transient miss (server briefly unauthenticated, a
-    /// `/get_model_info` route that 404s or is swallowed by an unrelated
-    /// service on the same host) would lock in a guessed window forever
-    /// instead of the real one the next successful probe would have found.
-    /// The fallback tables are applied by the caller, fresh, every time
-    /// there's no cached probe — see `AppTransport.contextLimit`.
+    /// Probe the server for the active model's metadata (context window, the
+    /// id it really serves, etc.).
     ///
-    /// SGLang servers (the DGX Spark case) expose the *live* `context_len` on
-    /// `GET /get_model_info`, which is the authoritative figure — e.g. 262144
-    /// for a 256K window, or 1048576 when the model was served with YaRN for
-    /// 1M. We read that first, then the assorted `/models` fields.
+    /// `contextWindow` is `nil` when no live source answered — deliberately:
+    /// the caller applies the static fallback tables fresh each time, so a
+    /// transient miss never locks a guessed window in as "learned".
+    ///
+    /// Sources, in order:
+    ///  1. `GET /v1/models` — vLLM and SGLang both report `max_model_len` here
+    ///     (1000000 for the Spark's YaRN 1M serve, 524288 for Flash at 512K).
+    ///     If the configured id isn't listed but the server serves exactly one
+    ///     model, that one is used (and reported as `id`): a box whose model
+    ///     was swapped keeps working instead of 404ing.
+    ///  2. SGLang's `/get_model_info` / `/get_server_info` (`context_len` /
+    ///     `context_length`), at `/v1/…` and at the server root.
     public func modelInfo(_ model: String? = nil) async -> ModelInfo? {
         let id = model?.isEmpty == false ? model! : profile.model
         var limit: Int? = nil
         var maxOut: Int? = nil
+        var resolved = id
+        var served: [String] = []
 
-        // 1) SGLang's authoritative /get_model_info (has "context_len" + "max_total_tokens").
-        if let sglang = await sglangContextLength() { limit = sglang }
-
-        // 2) /v1/models fields (Ollama, LM Studio, OpenRouter, some vLLM builds).
         if let url = URL(string: profile.endpoint(path: "models")) {
             var req = URLRequest(url: url)
-            req.timeoutInterval = 10
+            req.timeoutInterval = 8
             applyHeaders(&req)
-            do {
-                let (data, response) = try await session.data(for: req)
-                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-                   let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let arr = obj["data"] as? [[String: Any]] {
-                    for entry in arr {
-                        guard let eid = entry["id"] as? String, Self.matchesModel(eid, id) else { continue }
-                        limit = limit ?? Self.contextWindow(from: entry)
-                        maxOut = (entry["max_tokens"] as? Int) ?? (entry["top_k"] as? Int)
-                        // Ollama's full list can contain a "name" alias; prefer the exact hit.
-                        if eid == id { break }
-                    }
+            if let (data, response) = try? await session.data(for: req),
+               let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let arr = obj["data"] as? [[String: Any]] {
+                served = arr.compactMap { $0["id"] as? String }
+                var hit = arr.first { ($0["id"] as? String) == id }
+                    ?? arr.first { Self.matchesModel(($0["id"] as? String) ?? "", id) }
+                if hit == nil, arr.count == 1 { hit = arr[0] }
+                if let hit {
+                    resolved = (hit["id"] as? String) ?? id
+                    limit = Self.contextWindow(from: hit)
+                    maxOut = hit["max_tokens"] as? Int
                 }
-            } catch {
-                // Network down / 404 / unsupported route: fall through to tables.
             }
         }
-
-        return ModelInfo(id: id, contextWindow: limit, maxTokens: maxOut)
+        if limit == nil { limit = await sglangContextLength() }
+        return ModelInfo(id: resolved, contextWindow: limit, maxTokens: maxOut, servedModels: served)
     }
 
-    /// SGLang-specific: `GET /get_model_info` returns a single object with the
-    /// live `context_len` (the authoritative window — 262144 for a 256K serve,
-    /// 1048576 for a YaRN 1M serve). The route lives at the server root, but the
-    /// provider's base URL often ends in `/v1`, so we try both. Some builds also
-    /// echo the figure on `/v1/models`.
+    /// SGLang-specific metadata routes. They live at the server root, but the
+    /// base URL usually ends in `/v1` (and behind a proxy the root may belong
+    /// to something else entirely, which answers HTML — ignored), so try both.
     private func sglangContextLength() async -> Int? {
+        let root = Self.strippingV1(profile.baseURL)
         let candidates: [String] = [
-            profile.endpoint(path: "get_model_info"),                 // …/v1/get_model_info
-            Self.strippingV1(profile.baseURL) + "/get_model_info",    // …/get_model_info
+            profile.endpoint(path: "get_model_info"), root + "/get_model_info",
+            profile.endpoint(path: "get_server_info"), root + "/get_server_info",
         ]
         for url in candidates.compactMap(URL.init) {
             var req = URLRequest(url: url)
-            req.timeoutInterval = 10
+            req.timeoutInterval = 6
             applyHeaders(&req)
-            do {
-                let (data, response) = try await session.data(for: req)
-                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { continue }
-                guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                if let v = obj["context_len"] as? Int, v > 0 { return v }
-                if let v = obj["max_total_tokens"] as? Int, v > 0 { return v }
-            } catch {
-                continue // not SGLang / route missing: try the next candidate
-            }
+            guard let (data, response) = try? await session.data(for: req),
+                  let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            if let v = obj["context_len"] as? Int, v > 0 { return v }
+            if let v = obj["context_length"] as? Int, v > 0 { return v }
         }
         return nil
     }
@@ -193,8 +185,8 @@ public struct OpenAIClient: LLMClient {
         if let v = entry["context_window"] as? Int, v > 0 { return v }          // OpenRouter
         if let v = entry["context_len"] as? Int, v > 0 { return v }             // SGLang (echoed on /models)
         if let v = entry["max_context_len"] as? Int, v > 0 { return v }         // SGLang
-        if let v = entry["max_model_len"] as? Int, v > 0 { return v }           // vLLM / llama.cpp
-        if let v = entry["max_total_tokens"] as? Int, v > 0 { return v }        // SGLang
+        if let v = entry["max_model_len"] as? Int, v > 0 { return v }           // vLLM / SGLang / llama.cpp
+        // Not `max_total_tokens`: that is SGLang's KV-pool size, not a window.
         return nil
     }
 
@@ -208,7 +200,9 @@ public struct OpenAIClient: LLMClient {
     }
 
     private func runTurn(_ request: LLMRequest,
-                         onText: @escaping @Sendable (String) -> Void) async throws -> TurnResult {
+                         onText: @escaping @Sendable (String) -> Void,
+                         onReasoning: @escaping @Sendable (String) -> Void = { _ in },
+                         isRetry: Bool = false) async throws -> TurnResult {
         guard let url = URL(string: profile.endpoint(path: "chat/completions")) else {
             throw LLMError.unsupported("bad base URL: \(profile.baseURL)")
         }
@@ -226,6 +220,15 @@ public struct OpenAIClient: LLMClient {
                 if errData.count > 8_000 { break }
             }
             let body = String(decoding: errData, as: UTF8.self)
+            // A chat template that rejects our effort word ("Unexpected
+            // reasoning effort high. Supported types are xhigh (default),
+            // medium, and low.") — learn the nearest accepted word and retry.
+            if !isRetry, http.statusCode == 400,
+               let requested = effortWord(for: request),
+               let fix = Self.effortCorrection(requested: requested, errorBody: body) {
+                ReasoningEffortCache.shared.learn(route: effortRoute(request), requested: requested, accepted: fix)
+                return try await runTurn(request, onText: onText, onReasoning: onReasoning, isRetry: true)
+            }
             // SGLang / vLLM report a context-overflow 400 as
             // "This model's maximum context length is N tokens; however, you requested M ...".
             if let limit = Self.overflowLimit(in: body) {
@@ -250,19 +253,19 @@ public struct OpenAIClient: LLMClient {
             lineBuffer += String(decoding: lineBytes, as: UTF8.self)
             raw.removeAll(keepingCapacity: true)
             try parseLine(lineBuffer, text: &text, usage: &usage, finish: &finish,
-                          pending: &pending, onText: onText)
+                          pending: &pending, onText: onText, onReasoning: onReasoning)
             lineBuffer = ""
         }
         if !lineBuffer.isEmpty {
             try parseLine(lineBuffer, text: &text, usage: &usage, finish: &finish,
-                          pending: &pending, onText: onText)
+                          pending: &pending, onText: onText, onReasoning: onReasoning)
         }
         // A server may omit the final newline.
         if !raw.isEmpty {
             lineBuffer += String(decoding: raw, as: UTF8.self)
             if !lineBuffer.isEmpty {
                 try parseLine(lineBuffer, text: &text, usage: &usage, finish: &finish,
-                              pending: &pending, onText: onText)
+                              pending: &pending, onText: onText, onReasoning: onReasoning)
             }
         }
 
@@ -292,7 +295,8 @@ public struct OpenAIClient: LLMClient {
                            usage: inout LLMUsage?,
                            finish: inout String?,
                            pending: inout [Int: (id: String, name: String, args: String)],
-                           onText: @escaping @Sendable (String) -> Void) throws {
+                           onText: @escaping @Sendable (String) -> Void,
+                           onReasoning: @escaping @Sendable (String) -> Void) throws {
         var line = rawLine
         if line.hasSuffix("\r") { line.removeLast() }
         // SSE: only "data:" lines matter (ignore event:, id:, keepalives).
@@ -315,6 +319,9 @@ public struct OpenAIClient: LLMClient {
               let first = choices.first else { return }
 
         if let delta = first["delta"] as? [String: Any] {
+            if let r = (delta["reasoning_content"] as? String) ?? (delta["reasoning"] as? String), !r.isEmpty {
+                onReasoning(r)
+            }
             if let content = delta["content"] as? String, !content.isEmpty {
                 text += content
                 onText(content)
@@ -387,11 +394,7 @@ public struct OpenAIClient: LLMClient {
         }
         if let t = request.temperature ?? profile.temperature { body["temperature"] = t }
         if let mt = request.maxTokens ?? profile.maxOutputTokens { body["max_tokens"] = mt }
-        // Reasoning effort for thinking models (OpenAI/OpenRouter/compat).
-        if let effort = profile.reasoningEffort, !effort.isEmpty,
-           profile.kind == .openAI || profile.kind == .openRouter || profile.kind == .openAICompat {
-            body["reasoning_effort"] = effort
-        }
+        applyThinking(request, to: &body)
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map { spec -> [String: Any] in
                 var params: Any = "{}"
@@ -407,6 +410,78 @@ public struct OpenAIClient: LLMClient {
         }
         let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return data
+    }
+
+    // MARK: Thinking
+
+    /// The level in force for a request: the request's own, else the route's.
+    func thinkingLevel(for request: LLMRequest) -> ThinkingLevel? {
+        request.thinking ?? profile.thinking
+    }
+
+    private func effortRoute(_ request: LLMRequest) -> String {
+        "\(profile.baseURL)|\(request.model.isEmpty ? profile.model : request.model)"
+    }
+
+    /// The effort word that will go on the wire (after any learned remap), or
+    /// nil when none is sent.
+    func effortWord(for request: LLMRequest) -> String? {
+        guard let level = thinkingLevel(for: request), let word = level.wireEffort else { return nil }
+        if let learned = ReasoningEffortCache.shared.accepted(route: effortRoute(request), requested: word) {
+            return learned.isEmpty ? nil : learned
+        }
+        return word
+    }
+
+    /// Put the thinking controls on the request body.
+    ///
+    /// Self-hosted servers get `chat_template_kwargs` — that is how Qwen3.x,
+    /// GLM and DeepSeek templates switch thinking on/off and read the effort —
+    /// plus the top-level `reasoning_effort` (SGLang forwards it to the
+    /// template too; vLLM's gpt-oss path reads it there). Hosted APIs only
+    /// understand the top-level field, and only when thinking is on.
+    func applyThinking(_ request: LLMRequest, to body: inout [String: Any]) {
+        guard let level = thinkingLevel(for: request) else { return }
+        let effort = effortWord(for: request)
+        if profile.isSelfHosted && (profile.kind == .openAICompat || profile.kind == .openAI || profile.kind == .openRouter) {
+            var kwargs: [String: Any] = ["enable_thinking": level != .off]
+            if let effort {
+                kwargs["reasoning_effort"] = effort
+                body["reasoning_effort"] = effort
+            }
+            body["chat_template_kwargs"] = kwargs
+        } else if profile.kind == .ollama || profile.kind == .lmStudio {
+            if level == .off { body["chat_template_kwargs"] = ["enable_thinking": false] }
+            if let effort { body["reasoning_effort"] = effort }
+        } else if let effort {
+            body["reasoning_effort"] = effort
+        }
+    }
+
+    /// Effort vocabulary, weakest → strongest, for picking the nearest word a
+    /// template accepts.
+    static let effortRank: [String: Int] = [
+        "none": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6,
+    ]
+
+    /// If `errorBody` is a template rejecting `requested`, the nearest effort
+    /// it accepts ("" = send none). Nil when the error is about something else.
+    static func effortCorrection(requested: String, errorBody: String) -> String? {
+        let lower = errorBody.lowercased()
+        guard lower.contains("reasoning effort") || lower.contains("reasoning_effort") else { return nil }
+        guard lower.contains(requested.lowercased()) || lower.contains("supported") || lower.contains("invalid") else { return nil }
+        // Pull the accepted words from the tail ("Supported types are xhigh (default), medium, and low").
+        var tail = lower
+        for marker in ["supported types are", "supported values are", "supported:", "must be one of", "expected one of", "supported"] {
+            if let r = lower.range(of: marker) { tail = String(lower[r.upperBound...]); break }
+        }
+        let words = tail.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        let accepted = Set(words.filter { effortRank[$0] != nil && $0 != requested.lowercased() })
+        guard !accepted.isEmpty, let want = effortRank[requested.lowercased()] else { return "" }
+        return accepted.min { a, b in
+            let da = abs(effortRank[a]! - want), db = abs(effortRank[b]! - want)
+            return da != db ? da < db : effortRank[a]! > effortRank[b]!   // tie → the stronger one
+        }
     }
 
     /// Build the OpenAI `content` value for a user message. Plain text when
@@ -487,6 +562,10 @@ public enum FallbackContextWindow {
     private static let prefixes: [(String, Int)] = [
         ("llama-3.3-", 131_072), ("llama-3.1-", 131_072), ("llama-3.2-", 131_072),
         ("llama-4-", 1_048_576), ("llama4-", 1_048_576),
+        // Qwen3.5 and later ship a 256K native window (262144); the probe
+        // replaces this with the served figure (e.g. 1M under YaRN).
+        ("qwen3.5", 262_144), ("qwen3.6", 262_144), ("qwen3.7", 262_144), ("qwen3.8", 262_144),
+        ("qwen3.9", 262_144), ("qwen3-next", 262_144), ("qwen3-coder", 262_144),
         ("qwen3", 32_768), ("qwen2.5", 32_768), ("qwen2-72b", 131_072),
         ("deepseek-r1", 65_536), ("deepseek-v3", 131_072), ("deepseek", 65_536),
         ("gpt-4o", 128_000), ("gpt-4.1", 1_048_576), ("gpt-4", 128_000),
@@ -507,5 +586,31 @@ public enum FallbackContextWindow {
         // Bare base without the family prefix, e.g. "8b" models already caught above;
         // last resort: the full id in the exact table.
         return exact[modelID.lowercased()]
+    }
+}
+
+// MARK: - Learned reasoning-effort vocabulary
+
+/// Per route (base URL + model), which effort word the server's template
+/// actually accepts for each word we asked for — learned from its 400s so
+/// the retry happens once, not on every request.
+public final class ReasoningEffortCache: @unchecked Sendable {
+    public static let shared = ReasoningEffortCache()
+    private var map: [String: String] = [:]
+    private let lock = NSLock()
+
+    public func accepted(route: String, requested: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return map["\(route)|\(requested)"]
+    }
+
+    public func learn(route: String, requested: String, accepted: String) {
+        lock.lock(); defer { lock.unlock() }
+        map["\(route)|\(requested)"] = accepted
+    }
+
+    public func reset() {
+        lock.lock(); defer { lock.unlock() }
+        map.removeAll()
     }
 }

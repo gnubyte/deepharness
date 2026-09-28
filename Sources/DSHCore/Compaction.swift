@@ -39,10 +39,17 @@ public enum Compaction {
     /// Compact once a request reaches this fraction of the window, so the next
     /// turn (prompt + output) still fits with headroom.
     public static let triggerFraction: Double = 0.75
-    /// Keep this fraction of the window of recent conversation verbatim.
+    /// Keep this fraction of the window of recent conversation verbatim…
     public static let keepFraction: Double = 0.25
+    /// …but never more than this: on a 1M window a quarter is 250K tokens,
+    /// which would barely shrink anything and keep every turn slow.
+    public static let maxKeepTokens = 96_000
     /// Even for small windows, keep at least this much recent context.
     public static let minKeepTokens = 4_000
+    /// A manual `/compact` keeps only a short recent tail.
+    public static let manualKeepFraction: Double = 0.08
+    public static let manualMaxKeepTokens = 24_000
+    public static let manualMinKeepTokens = 2_000
     /// Summarizing fewer than this many messages is not worth the round trip.
     public static let minSummarizable = 4
 
@@ -77,28 +84,56 @@ public enum Compaction {
     /// default (user-only) rule can never compact it at all; the app's own
     /// session compaction keeps the default so a compacted transcript still
     /// starts exactly where the display's "Compacted N messages" divider goes.
+    ///
+    /// `force` (a manual `/compact`) skips the trigger threshold, keeps a much
+    /// shorter tail, and accepts as few as two messages to fold.
+    ///
+    /// When the whole budget is taken by one long turn (a user message then
+    /// dozens of tool round-trips) no user boundary exists inside the keep
+    /// window; rather than give up and run into the server's hard limit, the
+    /// cut then falls back to an assistant boundary.
     public static func plan(usedTokens: Int, limit: Int, transcript: [LLMMessage],
-                            allowAssistantBoundary: Bool = false) -> Plan? {
+                            allowAssistantBoundary: Bool = false,
+                            force: Bool = false) -> Plan? {
         guard limit > 0, !transcript.isEmpty else { return nil }
-        let threshold = Int(Double(limit) * triggerFraction)
-        guard usedTokens >= threshold else { return nil }
-
-        let keepBudget = max(Int(Double(limit) * keepFraction), minKeepTokens)
-        var tokens = 0
-        var boundary: Int? = nil
-        var i = transcript.count - 1
-        while i >= 0 {
-            let m = transcript[i]
-            tokens += TokenEstimate.message(m)
-            if m.role == .user || (allowAssistantBoundary && m.role == .assistant) { boundary = i }
-            if tokens >= keepBudget { break }
-            i -= 1
+        if !force {
+            let threshold = Int(Double(limit) * triggerFraction)
+            guard usedTokens >= threshold else { return nil }
         }
-        guard let boundary, boundary > 0 else { return nil }
-        let toSummarize = Array(transcript[0..<boundary])
-        let toKeep = Array(transcript[boundary...])
-        guard toSummarize.count >= minSummarizable else { return nil }
-        return Plan(toSummarize: toSummarize, toKeep: toKeep, usedTokens: usedTokens, limit: limit)
+        let keepBudget = force
+            ? min(max(Int(Double(limit) * manualKeepFraction), manualMinKeepTokens), manualMaxKeepTokens)
+            : min(max(Int(Double(limit) * keepFraction), minKeepTokens), maxKeepTokens)
+        let minimum = force ? 2 : minSummarizable
+
+        func split(assistantToo: Bool) -> Plan? {
+            var tokens = 0
+            var boundary: Int? = nil
+            var i = transcript.count - 1
+            while i >= 0 {
+                let m = transcript[i]
+                tokens += TokenEstimate.message(m)
+                if m.role == .user || (assistantToo && m.role == .assistant) { boundary = i }
+                if tokens >= keepBudget { break }
+                i -= 1
+            }
+            // A forced compaction of a short chat: keep just the last exchange.
+            if force, boundary == nil || boundary == 0 {
+                boundary = transcript.lastIndex { $0.role == .user || (assistantToo && $0.role == .assistant) }
+            }
+            guard let boundary, boundary > 0 else { return nil }
+            let toSummarize = Array(transcript[0..<boundary])
+            let toKeep = Array(transcript[boundary...])
+            // Only a summary so far and nothing new to fold: not worth a call.
+            let substantive = toSummarize.filter { !isSummary($0) }
+            guard toSummarize.count >= minimum, !substantive.isEmpty else { return nil }
+            return Plan(toSummarize: toSummarize, toKeep: toKeep, usedTokens: usedTokens, limit: limit)
+        }
+        return split(assistantToo: allowAssistantBoundary) ?? (allowAssistantBoundary ? nil : split(assistantToo: true))
+    }
+
+    /// Whether a message is an earlier compaction summary.
+    public static func isSummary(_ m: LLMMessage) -> Bool {
+        m.role == .system && (m.content ?? "").hasPrefix(summaryHeader)
     }
 
     /// The prompt that turns `messages` into a continuity summary.
@@ -106,10 +141,16 @@ public enum Compaction {
     /// Each message is capped at a share of `budgetTokens` (in characters) so
     /// the summarizing request itself fits comfortably inside the window even
     /// when it is asking about a transcript that nearly filled it.
-    public static func summaryPrompt(for messages: [LLMMessage], budgetTokens: Int) -> String {
-        let perMessage = max(300, budgetTokens * 4 / max(1, messages.count))
+    public static func summaryPrompt(for messages: [LLMMessage], budgetTokens: Int,
+                                     focus: String? = nil) -> String {
+        // Earlier summaries are carried forward whole (they are already
+        // dense); everything else shares what is left of the budget.
+        let previous = messages.filter(isSummary).map { String(($0.content ?? "").dropFirst(summaryHeader.count)) }
+        let rest = messages.filter { !isSummary($0) }
+        let previousChars = previous.reduce(0) { $0 + $1.count }
+        let perMessage = max(300, (budgetTokens * 4 - previousChars) / max(1, rest.count))
         var body = ""
-        for m in messages {
+        for m in rest {
             switch m.role {
             case .system:
                 body += "System: \(clip(m.content ?? "", perMessage / 4))\n"
@@ -125,17 +166,28 @@ public enum Compaction {
                 body += "Tool result (\(m.name ?? "unknown")): \(clip(m.content ?? "", perMessage / 2))\n"
             }
         }
-        return """
-        The earlier part of this agent conversation was compacted to fit the context window. \
-        Write a continuity note the agent can pick up from, in at most ~500 words, with these sections:
+        let prior = previous.isEmpty ? "" : """
 
-        - Task: what the user asked for and the current goal
+        The conversation was already compacted before. Merge this earlier summary in — keep every fact from it that still matters:
+        <earlier-summary>
+        \(previous.joined(separator: "\n\n"))
+        </earlier-summary>
+
+        """
+        let focusLine = (focus?.isEmpty == false) ? "\nThe user asked this summary to focus on: \(focus!)\n" : ""
+        return """
+        The earlier part of this agent conversation is being compacted to fit the context window. \
+        Write a continuity note the agent can pick up from and keep working without asking the user to repeat anything. \
+        Use at most ~800 words, with these sections:
+
+        - Task: what the user asked for and the current goal (quote the user's key requirements verbatim)
         - Decisions: important choices, constraints, and why
         - Work done: files created/edited (with paths), commands run, key results
         - Open items: unfinished steps, unresolved errors, pending questions
-        - State: exactly where the conversation stands now
-
-        Be factual and specific (paths, commands, versions, error messages). Omit small talk.
+        - State: exactly where the conversation stands now and the very next step
+        \(focusLine)\(prior)
+        Be factual and specific (paths, commands, versions, error messages). Omit small talk. \
+        Output only the note.
 
         <conversation>
         \(body)
@@ -156,13 +208,22 @@ public enum Compaction {
     /// well clear of the very limit it exists to protect. Returns `nil` on any
     /// failure (network, empty result) so the caller can keep the transcript
     /// as-is rather than lose it.
+    ///
+    /// Thinking is switched off for the summary call: it is a writing task,
+    /// and a reasoning model at max effort would otherwise spend minutes (and
+    /// the whole output budget) thinking before writing a word.
     public static func summarize(client: any LLMClient, plan: Plan,
                                  budgetFraction: Double = 0.4,
-                                 maxOutputTokens: Int = 2048) async -> String? {
-        let budget = Int(Double(plan.limit) * budgetFraction)
-        let prompt = summaryPrompt(for: plan.toSummarize, budgetTokens: budget)
-        let request = LLMRequest(systemPrompt: "", messages: [.user(prompt)], tools: [],
-                                 model: "", temperature: nil, maxTokens: maxOutputTokens)
+                                 maxOutputTokens: Int = 4096,
+                                 model: String = "",
+                                 focus: String? = nil) async -> String? {
+        // Big windows don't need a huge summary input: cap it so the call stays quick.
+        let budget = min(Int(Double(plan.limit) * budgetFraction), 200_000)
+        let prompt = summaryPrompt(for: plan.toSummarize, budgetTokens: budget, focus: focus)
+        let request = LLMRequest(systemPrompt: "You write concise, factual continuity notes for a coding agent.",
+                                 messages: [.user(prompt)], tools: [],
+                                 model: model, temperature: nil, maxTokens: maxOutputTokens,
+                                 thinking: .off)
         var text = ""
         do {
             for try await event in client.stream(request) {
@@ -171,7 +232,14 @@ public enum Compaction {
         } catch {
             return nil
         }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = stripThinking(text).trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Drop an inline `<think>…</think>` block (servers without a reasoning
+    /// parser leave it in the content).
+    public static func stripThinking(_ text: String) -> String {
+        guard let close = text.range(of: "</think>") else { return text }
+        return String(text[close.upperBound...])
     }
 }

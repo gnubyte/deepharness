@@ -140,7 +140,7 @@ final class CompactionTests: XCTestCase {
     func testContextWindowFieldVariants() {
         XCTAssertEqual(OpenAIClient.contextWindow(from: ["context_len": 262_144]), 262_144)
         XCTAssertEqual(OpenAIClient.contextWindow(from: ["max_model_len": 1_048_576]), 1_048_576)
-        XCTAssertEqual(OpenAIClient.contextWindow(from: ["max_total_tokens": 100_000]), 100_000)
+        XCTAssertNil(OpenAIClient.contextWindow(from: ["max_total_tokens": 100_000]))
         XCTAssertEqual(OpenAIClient.contextWindow(from: ["context": 32_768]), 32_768)
         XCTAssertNil(OpenAIClient.contextWindow(from: ["foo": 1]))
         XCTAssertNil(OpenAIClient.contextWindow(from: ["context_len": 0]))

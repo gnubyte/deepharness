@@ -5,6 +5,8 @@ import Foundation
 public enum EngineEvent: Sendable {
     /// A chunk of assistant text arrived.
     case textDelta(String)
+    /// A chunk of the model's reasoning arrived (shown live, not kept).
+    case reasoningDelta(String)
     /// The assistant's message for this turn is complete (text + any tool calls).
     case assistantMessage(id: String, text: String, calls: [ToolCall])
     /// A tool call is about to execute.
@@ -36,14 +38,18 @@ public struct RunResult: Sendable {
     /// Prompt tokens on the final model call — a good measure of how full the
     /// context is now. Nil when the server didn't report per-request usage.
     public let lastPromptTokens: Int?
+    /// True when the run stopped because it used its whole iteration budget
+    /// while the model still wanted to call tools (it did not finish).
+    public let hitIterationLimit: Bool
 
     public init(messages: [LLMMessage], usage: LLMUsage?, deniedCount: Int,
-                finalText: String, lastPromptTokens: Int? = nil) {
+                finalText: String, lastPromptTokens: Int? = nil, hitIterationLimit: Bool = false) {
         self.messages = messages
         self.usage = usage
         self.deniedCount = deniedCount
         self.finalText = finalText
         self.lastPromptTokens = lastPromptTokens
+        self.hitIterationLimit = hitIterationLimit
     }
 }
 
@@ -59,10 +65,13 @@ public struct EngineConfig: Sendable {
     public var contextWindow: Int?
     /// How many times one run may compact, as a runaway guard (0 = never).
     public var maxCompactions: Int
+    /// Thinking level sent with every model call; nil = the provider default.
+    public var thinking: ThinkingLevel?
 
     public init(maxIterations: Int = 30, toolTimeout: TimeInterval = 300,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
-                contextWindow: Int? = nil, maxCompactions: Int = 4) {
+                contextWindow: Int? = nil, maxCompactions: Int = 4,
+                thinking: ThinkingLevel? = nil) {
         self.maxIterations = maxIterations
         self.toolTimeout = toolTimeout
         self.model = model
@@ -70,6 +79,7 @@ public struct EngineConfig: Sendable {
         self.maxOutputTokens = maxOutputTokens
         self.contextWindow = contextWindow
         self.maxCompactions = maxCompactions
+        self.thinking = thinking
     }
 }
 
@@ -176,7 +186,8 @@ public struct Engine: Sendable {
                 tools: registry.specs,
                 model: config.model,
                 temperature: config.temperature,
-                maxTokens: config.maxOutputTokens
+                maxTokens: config.maxOutputTokens,
+                thinking: config.thinking
             )
 
             // -- Model turn --
@@ -190,6 +201,8 @@ public struct Engine: Sendable {
                     case .text(let d):
                         text += d
                         sink(.textDelta(d))
+                    case .reasoning(let r):
+                        sink(.reasoningDelta(r))
                     case .done(let c, _, let u):
                         calls = c
                         turnUsage = u
@@ -257,6 +270,7 @@ public struct Engine: Sendable {
                                           client: client, registry: registry,
                                           depth: 0, model: config.model,
                                           contextWindow: config.contextWindow,
+                                          thinking: config.thinking,
                                           requestPermission: permissionGate)
                 let executor = registry.tool(named: call.name)
                 let result: ToolResult
@@ -286,7 +300,8 @@ public struct Engine: Sendable {
         // Iteration budget exhausted: stop rather than loop forever.
         sink(.finished(usage: usage))
         return RunResult(messages: messages, usage: usage, deniedCount: denied,
-                         finalText: finalText, lastPromptTokens: lastPromptTokens)
+                         finalText: finalText, lastPromptTokens: lastPromptTokens,
+                         hitIterationLimit: true)
     }
 
     // MARK: - Permission

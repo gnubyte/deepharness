@@ -53,8 +53,45 @@ Requires Swift 6 / Xcode 26 and macOS 14+.
 ## First run
 
 The setup wizard runs on first launch and is re-runnable any time from **Settings ▸ Run Again…** or
-**Help ▸ Run Setup Wizard…**. Seven steps: pick a backend, enter its address, prove the connection
-works, choose a model, pin a permission preset, and optionally open a project.
+**Help ▸ Run Setup Wizard…**. Eight steps: pick a backend, enter its address (and key, if your
+server wants one), prove the connection works, choose a model, set the context window and default
+thinking level, pin a permission preset, and optionally open a project. Re-running it edits the
+existing route in place, so headers and other settings survive.
+
+### Context window
+
+Leave it on **Auto**. Every turn the app re-reads `GET /v1/models` — vLLM and SGLang both report
+`max_model_len` there (1,000,000 for the Spark's YaRN serve, 524,288 for Qwen3.8 Flash at 512K) — so
+the gauge and auto-compaction always budget against what the server is actually serving. If the
+configured model id isn't served but the server serves exactly one model (a box that swaps models),
+the app follows it and says so in the chat. Pick a fixed size only to cap the window lower. `/context`
+shows the figure and where it came from.
+
+### Switching models
+
+The **model menu** under the composer shows the model in use and its window, and switches in one click:
+
+- **DGX Spark — what it serves**: the models the [Spark Swapper](https://192.168.68.69:8999) knows
+  (Qwen3.8 27B at 1M, Qwen3.8 Flash Next at 512K). Picking one asks the Spark to stop the current server
+  and load the other; a banner above the composer tracks the steps, sending is paused while it
+  switches, and when it's done every chat follows the new model and window automatically (OpenClaw is
+  repointed by the swapper). `/swap` lists them; `/swap flash` switches.
+- **Providers**: any other route configured in Settings.
+
+Set it up once in **Settings ▸ Spark**: the swapper's address (`https://<spark>:8999`, pre-filled from the
+active server) and the login you created on its web page — the password goes to the Keychain. The
+swapper's certificate is self-signed; the app shows its SHA-256 fingerprint once for you to trust, then
+pins it.
+
+### Thinking
+
+For reasoning models, the composer's **Thinking** menu (or `/think <level>`) sets how hard the model
+thinks in that chat: Off · Low · Medium · High · Max, over a per-provider default set in the wizard or
+Settings. On a self-hosted server it is sent as `chat_template_kwargs.enable_thinking` plus
+`reasoning_effort` (top-level and in the template kwargs); hosted APIs get only `reasoning_effort`.
+Templates disagree on vocabulary — Qwen3.8 accepts `low`/`medium`/`xhigh` and 400s on `high` — so
+when a server rejects a word the client picks the nearest one it lists, retries once, and remembers
+it. The model's reasoning streams live under the "Thinking…" row.
 
 ### Pointing it at a DGX Spark
 
@@ -131,6 +168,19 @@ unterminated fence while a response is still streaming.
 
 The composer sends on ↩ and inserts a newline on ⇧↩. Files the turn touched appear as chips that jump
 straight to the editor.
+
+### Slash commands
+
+| Command | What it does |
+|---|---|
+| `/goal <task>` | Works on the task round after round until the model ends a reply with `GOAL_COMPLETE` (or `GOAL_BLOCKED: …` when it needs you). The goal is restated every round so it survives compaction; capped at 40 rounds; ⌘. stops it. |
+| `/compact [focus]` | Summarizes the conversation now, keeping a short recent tail. Earlier messages stay visible above the divider; the model carries the summary. |
+| `/think off\|low\|medium\|high\|max\|default` | Thinking level for this chat. |
+| `/context` | Window size, usage, and where the window figure came from. |
+| `/help` | Lists these. |
+
+Long chats also compact automatically at 75% of the window (keeping up to ~96K recent tokens verbatim),
+including in the middle of one long tool-heavy turn.
 
 ## Memory and skills
 
@@ -271,6 +321,7 @@ Verified on macOS 14+ / Apple Silicon:
 - **No image attachments.** The old client had them against the harness's attachment API; nothing has
   replaced that here yet.
 - **Subagents are untested against a real child** — nothing local reliably spawned one.
-- **Reasoning blocks render as ordinary assistant text.**
+- **Reasoning is shown live but not kept** in the transcript once the answer arrives. Servers
+  without a reasoning parser leave `<think>` text inline in the answer.
 - **Search across sessions is not implemented.** Transcripts are plain JSON under
   `~/Library/Application Support/DSHMac/conversations/`, so `grep` works in the meantime.
