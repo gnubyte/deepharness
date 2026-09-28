@@ -50,7 +50,7 @@ public enum Compaction {
     /// (and a human reading it back from storage) knows what it is.
     public static let summaryHeader = "[Earlier conversation, compacted]\n"
 
-    public struct Plan {
+    public struct Plan: Sendable {
         /// The older messages to summarize (a complete conversation: ends before
         /// a user turn, so no tool result is left orphaned).
         public let toSummarize: [LLMMessage]

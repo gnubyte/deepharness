@@ -332,15 +332,21 @@ public struct OpenAIClient: LLMClient {
 
     // MARK: Request body
 
-    private func makeBody(_ request: LLMRequest) throws -> Data {
+    func makeBody(_ request: LLMRequest) throws -> Data {
         var messages: [[String: Any]] = []
-        if !request.systemPrompt.isEmpty {
-            messages.append(["role": "system", "content": request.systemPrompt])
-        }
+        // Some OpenAI-compatible servers (SGLang on the DGX Spark, notably)
+        // reject any request with more than one system message, or with one
+        // anywhere but index 0 — e.g. after compaction inserts a "[Earlier
+        // conversation, compacted]" note into the transcript as `.system`.
+        // Collect every system-role message (the engine's own prompt plus
+        // any the transcript carries) and merge them into a single leading
+        // message so the wire request always has at most one, always first.
+        var systemParts: [String] = []
+        if !request.systemPrompt.isEmpty { systemParts.append(request.systemPrompt) }
         for m in request.messages {
             switch m.role {
             case .system:
-                messages.append(["role": "system", "content": m.content ?? ""])
+                if let c = m.content, !c.isEmpty { systemParts.append(c) }
             case .user:
                 messages.append(["role": "user", "content": userContent(for: m)])
             case .assistant:
@@ -358,6 +364,9 @@ public struct OpenAIClient: LLMClient {
                                  "tool_call_id": m.toolCallID ?? "",
                                  "content": m.content ?? ""])
             }
+        }
+        if !systemParts.isEmpty {
+            messages.insert(["role": "system", "content": systemParts.joined(separator: "\n\n")], at: 0)
         }
 
         var body: [String: Any] = [
