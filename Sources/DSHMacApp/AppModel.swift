@@ -170,5 +170,5 @@ final class AppModel {
         select(id)
     }
 
-    var anythingRunning: Bool { !transport.runningSessions.isEmpty }
+    var anythingRunning: Bool { transport.anythingRunning }
 }

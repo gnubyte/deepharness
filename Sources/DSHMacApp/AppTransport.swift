@@ -31,6 +31,15 @@ public final class AppTransport {
     public private(set) var vaultRevision = 0
     /// Per chat: credentials set to "ask first" that the user has allowed.
     @ObservationIgnored private var vaultGrants: [String: VaultGrants] = [:]
+    /// Per chat: background subagents it launched.
+    @ObservationIgnored private var backgroundPools: [String: BackgroundAgents] = [:]
+    /// Per chat: queue tasks the agent has added (capped, so a runaway loop
+    /// can't flood the queue).
+    @ObservationIgnored private var agentQueuedCount: [String: Int] = [:]
+    static let maxAgentQueuedTasksPerChat = 20
+    /// Automatic continuations since the user last sent something, per chat.
+    @ObservationIgnored private var autoContinuations: [String: Int] = [:]
+    static let maxAutoContinuations = 3
     /// Where the task queue is persisted.
     @ObservationIgnored private let queueFile: URL
     /// How engines retry model calls that fail transiently (tests shorten it).
@@ -170,6 +179,11 @@ public final class AppTransport {
     read before you edit, and check your work after you change something. When a task needs more than a
     couple of steps, track it with `todo_write` so the user can see the plan.
 
+    Parallel and background work: for a well-scoped side task, launch a subagent with `agent` — with \
+    run_in_background: true it works while you continue (several can run at once); you're told when each \
+    finishes, and agent_status / agent_stop manage them. Long-running programs go in `process_start`. \
+    Follow-up work that can happen later, unattended, goes on the task queue with `queue_task`.
+
     Rules that matter:
     - Never claim a command succeeded unless you ran it and saw the output.
     - Prefer `edit` over `write_file` for changes to an existing file; rewriting a whole file loses work.
@@ -222,6 +236,8 @@ public final class AppTransport {
         engineKeys[id] = nil
         computerGrants[id] = nil
         vaultGrants[id] = nil
+        backgroundPools.removeValue(forKey: id)?.stopAll()
+        agentQueuedCount[id] = nil
         config.sessionSkills[id] = nil
         transcripts[id] = nil
         systemPrompts[id] = nil
@@ -611,6 +627,8 @@ public final class AppTransport {
         vm.endStreaming()
         runTasks[vm.id] = nil
         queueSessions[vm.id] = nil
+        // The task is over: nothing it started in the background keeps going.
+        backgroundPools[vm.id]?.stopAll()
         if queueActiveTaskID == taskID { queueActiveTaskID = nil }
         log.touch(vm.id)
         vm.updatedAt = .now
@@ -824,6 +842,13 @@ public final class AppTransport {
         var extra: [any ToolExecutor] = PluginLoader.tools(from: plugins, reserved: Set(builtins.names))
         if !skillState.active.isEmpty { extra.append(UseSkillTool(skills: skillState.active)) }
         extra.append(VaultSearchTool(vault: vault))
+        extra.append(contentsOf: ToolRegistry.backgroundAgentTools())
+        if vm.preset != .plan {
+            extra.append(QueueAddTool(add: { [weak self] title, details, front, start in
+                await self?.agentQueueTask(title: title, details: details, front: front, start: start,
+                                           from: sessionID) ?? "Error: the app is closing."
+            }))
+        }
         if vm.preset != .plan {
             extra.append(ProposeSkillTool(projectRoot: vm.workspaceURL, locations: skillLocations))
         }
@@ -869,10 +894,96 @@ public final class AppTransport {
                 await self?.rerouteForRetry(sessionID: sessionID)
             },
             vault: vault,
-            vaultGrants: vaultGrants(for: sessionID)
+            vaultGrants: vaultGrants(for: sessionID),
+            backgroundAgents: backgroundPool(for: sessionID)
         )
         engines[sessionID] = engine
         return engine
+    }
+
+    // MARK: - Background agents & tasks
+
+    private func backgroundPool(for sessionID: String) -> BackgroundAgents {
+        if let existing = backgroundPools[sessionID] { return existing }
+        let pool = BackgroundAgents()
+        pool.onChange = { [weak self] job in
+            Task { @MainActor [weak self] in self?.backgroundJobChanged(job, sessionID: sessionID) }
+        }
+        backgroundPools[sessionID] = pool
+        return pool
+    }
+
+    private func backgroundJobChanged(_ job: BackgroundAgents.Job, sessionID: String) {
+        guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
+        if let i = vm.backgroundJobs.firstIndex(where: { $0.id == job.id }) {
+            vm.backgroundJobs[i] = job
+        } else {
+            vm.backgroundJobs.append(job)
+        }
+        guard job.status != .running else { return }
+        let verb = job.status == .done ? "finished" : job.status.rawValue
+        defer {
+            // A Stop never wakes the chat back up.
+            if job.status != .stopped { continueAfterBackgroundAgents(vm) }
+        }
+        let text = "🤖 Background agent \(job.id) “\(job.description)” \(verb) after \(job.elapsed.formattedDuration)."
+        vm.note(text)
+        log.recordItem(sessionID, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+    }
+
+    /// An idle chat whose background agents have all finished picks the work
+    /// back up by itself: the main agent gets their reports and carries on.
+    private func continueAfterBackgroundAgents(_ vm: SessionVM) {
+        guard !vm.running, runTasks[vm.id] == nil, queueSessions[vm.id] == nil,
+              vm.runningBackgroundJobs.isEmpty,
+              let pool = backgroundPools[vm.id], pool.all.contains(where: { $0.status == .done || $0.status == .failed }),
+              isServerSwitching?() != true else { return }
+        // At most a few automatic continuations in a row: a model that keeps
+        // relaunching agents must not loop unattended forever.
+        guard autoContinuations[vm.id, default: 0] < Self.maxAutoContinuations else {
+            vm.note("Background agents finished — reply to continue.")
+            return
+        }
+        // Only when there's something the agent hasn't seen yet.
+        let unseen = pool.takeUnreported()
+        guard !unseen.isEmpty else { return }
+        autoContinuations[vm.id, default: 0] += 1
+        let modelText = "(Automatic — not from the user.) Your background agents finished:\n\n"
+            + BackgroundAgents.notice(for: unseen) + "\n\nContinue the task with their results."
+        runTasks[vm.id] = Task { await runTurn(vm, text: "🤖 Background agents finished — continuing", modelText: modelText) }
+    }
+
+    public func stopBackgroundAgent(sessionID: String, id: String) {
+        backgroundPools[sessionID]?.stop(id)
+    }
+
+    public func stopBackgroundAgents(sessionID: String) {
+        backgroundPools[sessionID]?.stopAll()
+    }
+
+    /// `queue_task`: the agent adds a background task to the queue.
+    private func agentQueueTask(title: String, details: String, front: Bool, start: Bool, from sessionID: String) -> String {
+        let count = agentQueuedCount[sessionID, default: 0]
+        guard count < Self.maxAgentQueuedTasksPerChat else {
+            return "Error: this chat has already queued \(count) tasks — the limit. Ask the user before queuing more."
+        }
+        agentQueuedCount[sessionID] = count + 1
+        let vm = sessions.first { $0.id == sessionID }
+        let cwd = vm?.cwd ?? projectContext?.root.path
+        let task = queue.add(title, details: details, atFront: front, cwd: cwd)
+        queue.note(task.id, "Queued by the agent in “\(vm?.title ?? "a chat")”.")
+        let position = queue.position(of: task.id) ?? 0
+        var out = "Queued “\(task.title)” at #\(position) (\(queue.queuedCount) waiting)."
+        if queueRunning {
+            out += " The queue is running; it will get to it in order."
+        } else if start {
+            startQueue()
+            out += queueRunning ? " Started the queue." : " The queue couldn't start (no model configured?)."
+        } else {
+            out += " The queue isn't running — it starts when the user presses Start (or call queue_task with start: true)."
+        }
+        vm?.note("📋 The agent queued a task: “\(task.title)” (#\(position)).")
+        return out
     }
 
     private func vaultGrants(for sessionID: String) -> VaultGrants {
@@ -992,6 +1103,7 @@ public final class AppTransport {
             vm.note("The agent is still working; send again when it is done.")
             return
         }
+        autoContinuations[sessionID] = 0
         if attachments.isEmpty, let command = SlashCommand.parse(text) {
             runCommand(command, vm: vm)
             return
@@ -1768,14 +1880,22 @@ public final class AppTransport {
     // MARK: - Stopping
 
     public func stopSession(_ id: String) {
-        sessions.first { $0.id == id }?.stopping = true
+        if let vm = sessions.first(where: { $0.id == id }), vm.running { vm.stopping = true }
         resolveAllGates(for: id, with: false)
         runTasks[id]?.cancel()
+        // Stop means everything the agent is doing in this chat.
+        backgroundPools[id]?.stopAll()
     }
 
     public func stopAll() {
         stopQueue()
         for id in runTasks.keys { stopSession(id) }
+        for pool in backgroundPools.values { pool.stopAll() }
+    }
+
+    /// Anything working — a turn, a queue task, or a background agent.
+    public var anythingRunning: Bool {
+        !runningSessions.isEmpty || sessions.contains { !$0.runningBackgroundJobs.isEmpty }
     }
 
     public func note(_ message: String) { banner = message }

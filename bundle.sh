@@ -30,8 +30,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key>            <string>DSH</string>
   <key>CFBundleDisplayName</key>     <string>DSH</string>
   <key>CFBundleIdentifier</key>      <string>dev.local.dsh.mac</string>
-  <key>CFBundleVersion</key>         <string>13</string>
-  <key>CFBundleShortVersionString</key> <string>0.11.0</string>
+  <key>CFBundleVersion</key>         <string>14</string>
+  <key>CFBundleShortVersionString</key> <string>0.12.0</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleExecutable</key>      <string>DSH</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>

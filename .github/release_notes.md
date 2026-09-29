@@ -9,30 +9,25 @@ prompt on first launch — right-click the app and choose **Open**, or run:
 xattr -d com.apple.quarantine /Applications/DSH.app
 ```
 
-## What's new in 0.11.0 — the Credentials Vault
+## What's new in 0.12.0 — background subagents and background tasks
 
-Keep API keys, tokens and passwords where the agent can use them without ever
-seeing them.
-
-- **Credentials Vault** (key button in the toolbar, or ⌘⇧K): add, search,
-  edit and delete credentials — name, kind, description, username, URL, tags.
-  Values are encrypted in your macOS Keychain; the list shows each value as a
-  SHA-256 fingerprint. **Reveal** or **Copy** the real value after Touch ID or
-  your login password.
-- **The agent uses credentials by name.** It finds them with `vault_search`
-  and writes `{{vault:NAME}}` where the value goes — a shell command
-  (`export OPENAI_API_KEY={{vault:OPENAI_API_KEY}}`), a `.env` file it writes,
-  a URL or a header. The harness puts the real value in only when the tool
-  runs, and replaces every vault value in every tool result with
-  `[vault:NAME]`. The value never reaches the model, the chat or the logs.
-- **Per-credential access:** *Agent may use*, *Ask first* (once per chat), or
-  *Never*. Use counts and last-used times are shown.
-- **Works with skills:** skills can refer to `{{vault:NAME}}`, and generated
-  skills are told to do so instead of embedding secrets. Subagents use the
-  vault the same way.
+- **Background subagents.** The agent can launch a subagent with
+  `run_in_background` and keep working while it runs; up to four run in
+  parallel per chat. It checks on them with `agent_status` (optionally
+  waiting) and stops one with `agent_stop`. Reports arrive automatically when
+  an agent finishes, and a chat that went idle picks the work back up by
+  itself once its background agents are done.
+- **A bar above the composer** shows running background agents, with a menu
+  to stop one or all. Stop in the chat (and Stop All) stops them too.
+- **Background tasks.** The agent can put follow-up work on the Task Queue
+  with `queue_task` (and start the queue), so it runs unattended in its own
+  chat, in the same project. At most 20 per chat.
+- A foreground subagent may now run for up to an hour (was 5 minutes).
 
 ## Earlier
 
+- **0.11.0** — the Credentials Vault: API keys and passwords in the Keychain that
+  the agent uses as `{{vault:NAME}}` without ever seeing them.
 - **0.10.0** — the queue works unattended: model outages retry until the model
   is back, `/goal` runs with no round cap until the model says it's done, and
   a long list of Task Queue fixes.

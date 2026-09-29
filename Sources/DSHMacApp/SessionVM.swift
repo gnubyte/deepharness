@@ -149,6 +149,9 @@ public final class SessionVM: Identifiable {
     public var goal: GoalState?
     /// Set while a model call is being retried (server down, timed out, busy).
     public var retry: RetryState?
+    /// Background subagents this chat launched (running and finished).
+    public var backgroundJobs: [BackgroundAgents.Job] = []
+    public var runningBackgroundJobs: [BackgroundAgents.Job] { backgroundJobs.filter { $0.status == .running } }
     /// The last `/goal` started in this chat and not yet completed; a bare
     /// `/goal` resumes it.
     public var lastGoal: String?

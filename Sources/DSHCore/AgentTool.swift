@@ -11,9 +11,9 @@ public struct AgentTool: ToolExecutor {
     public static let name = "agent"
     public static let spec = ToolSpec(
         name: name,
-        description: "Spawn a subagent to work a self-contained task (e.g. 'find every usage of X and report the call sites'). It gets the same tools (except agent), works autonomously in a bounded loop, and returns a final report. Prefer this over doing long exploration yourself when the task is well-scoped.",
+        description: "Spawn a subagent to work a self-contained task (e.g. 'find every usage of X and report the call sites'). It gets the same tools (except agent), works autonomously in a bounded loop, and returns a final report. Prefer this over doing long exploration yourself when the task is well-scoped. Set run_in_background to true to launch it in the background and keep working: several can run in parallel; check them with agent_status (you're also told automatically when one finishes) and stop one with agent_stop.",
         parameters: """
-        {"type":"object","properties":{"description":{"type":"string","description":"What to name this subagent"},"prompt":{"type":"string","description":"The complete task for the subagent. It cannot ask you questions — everything it needs goes here."}},"required":["description","prompt"]}
+        {"type":"object","properties":{"description":{"type":"string","description":"What to name this subagent"},"prompt":{"type":"string","description":"The complete task for the subagent. It cannot ask you questions — everything it needs goes here."},"run_in_background":{"type":"boolean","description":"Start it in the background and return at once (default false: wait for its report)"}},"required":["description","prompt"]}
         """
     )
 
@@ -30,11 +30,31 @@ public struct AgentTool: ToolExecutor {
             return ToolResult(output: "Error: nested subagents are not allowed (depth limit).")
         }
 
+        if JSONArgs.bool(args, "run_in_background", default: false) {
+            guard let pool = context.backgroundAgents else {
+                return ToolResult(output: "Error: background subagents aren't available here; call agent without run_in_background.")
+            }
+            switch pool.launch(description: desc, work: { await Self.run(desc: desc, prompt: prompt, context: context) }) {
+            case .success(let job):
+                return ToolResult(output: "Started background agent \(job.id) “\(desc)”. It works while you continue — you'll be told automatically when it finishes; agent_status {\"id\":\"\(job.id)\",\"wait_seconds\":120} waits for it, agent_stop stops it.")
+            case .failure(let error):
+                return ToolResult(output: "Error: " + (error.errorDescription ?? "can't start another background agent."))
+            }
+        }
+        let outcome = await Self.run(desc: desc, prompt: prompt, context: context)
+        return ToolResult(output: outcome.ok
+            ? "Subagent '\(desc)' finished.\n\n\(outcome.report)"
+            : "Subagent '\(desc)' failed: \(outcome.report)")
+    }
+
+    /// Run a subagent to completion; returns its report (or the failure).
+    static func run(desc: String, prompt: String, context: ToolContext) async -> (ok: Bool, report: String) {
+
         // Same capabilities as the parent, minus `agent` itself: start from
         // the parent's registry and drop agent. That way a process the parent
         // launched is readable here, and a "debug this game window" task can
         // screenshot and drive without the parent relaying every observation.
-        let subRegistry = context.registry.removing("agent")
+        let subRegistry = context.registry.removing("agent", AgentStatusTool.name, AgentStopTool.name, QueueAddTool.name)
         let config = EngineConfig(
             maxIterations: Self.subagentMaxIterations,
             toolTimeout: 300,
@@ -79,15 +99,10 @@ public struct AgentTool: ToolExecutor {
 
         do {
             let result = try await engine.run(messages: [], userText: prompt, sink: { _ in })
-            let report: String
-            if !result.finalText.isEmpty {
-                report = result.finalText
-            } else {
-                report = "Subagent completed without a final report. Its tool work (if any) has already been applied in the workspace."
-            }
-            return ToolResult(output: "Subagent '\(desc)' finished.\n\n\(report)")
+            if !result.finalText.isEmpty { return (true, result.finalText) }
+            return (true, "Subagent completed without a final report. Its tool work (if any) has already been applied in the workspace.")
         } catch {
-            return ToolResult(output: "Subagent '\(desc)' failed: \(error.localizedDescription)")
+            return (false, error.localizedDescription)
         }
     }
 

@@ -20,6 +20,8 @@ struct SeenRequest: Sendable {
     let messages: [[String: String]]
     var lastUser: String { messages.last(where: { $0["role"] == "user" })?["content"] ?? "" }
     var allUserText: String { messages.filter { $0["role"] == "user" }.compactMap { $0["content"] }.joined(separator: "\n") }
+    /// The request is answering a user message (not a tool result).
+    var fresh: Bool { messages.last?["role"] == "user" }
 }
 
 /// URLProtocol-backed model server: `/models` answers with one model,
@@ -533,6 +535,71 @@ final class QueueRunnerTests: XCTestCase {
             XCTAssertFalse(try String(contentsOf: file, encoding: .utf8).contains(secret), "not in \(file.lastPathComponent)")
         }
         XCTAssertEqual(transport.vault.entry(named: "DEPLOY_TOKEN")?.useCount, 1)
+    }
+
+    // MARK: Background agents & tasks
+
+    func testAgentQueuesABackgroundTaskAndStartsTheQueue() async throws {
+        FakeModelServer.reset { req, n in
+            if req.lastUser.hasPrefix("GOAL:") { return .text("Wrote the tests.\nGOAL_COMPLETE") }
+            if n == 1, req.fresh {
+                return .toolCall("queue_task", #"{"title":"Write parser tests","details":"Cover the edge cases.","start":true}"#)
+            }
+            return .text("Queued it.")
+        }
+        let vm = transport.newSession(cwd: project("main").path)
+        transport.send("queue the tests for later", sessionID: vm.id)
+        try await waitUntil("queued task done") {
+            transport.queue.tasks.first?.status == .complete && !transport.queueRunning && !vm.running
+        }
+        let task = try XCTUnwrap(transport.queue.tasks.first)
+        XCTAssertEqual(task.title, "Write parser tests")
+        XCTAssertEqual(task.cwd, project("main").path)
+        XCTAssertTrue(task.log.contains { $0.text.contains("Queued by the agent") })
+        XCTAssertTrue(notes(vm).contains { $0.contains("The agent queued a task") })
+    }
+
+    func testBackgroundAgentFinishesAndTheIdleChatCarriesOn() async throws {
+        FakeModelServer.reset { req, _ in
+            if req.messages.first?["content"]?.hasPrefix("You are a focused subagent") == true {
+                return .slow(0.3, "Subagent report: 7 call sites.")
+            }
+            if req.lastUser.contains("Your background agents finished") {
+                return .text("Using the report: 7 call sites.")
+            }
+            if req.lastUser == "find call sites in the background", req.fresh {
+                return .toolCall("agent", #"{"description":"call sites","prompt":"Find call sites of foo","run_in_background":true}"#)
+            }
+            return .text("Started it; I'll pick up the results when it's done.")
+        }
+        let vm = transport.newSession(cwd: project("main").path)
+        transport.send("find call sites in the background", sessionID: vm.id)
+        try await waitUntil("auto-continued") {
+            !vm.running && FakeModelServer.seen.contains { $0.lastUser.contains("Your background agents finished") }
+                && vm.entries.contains { $0.message?.text == "Using the report: 7 call sites." }
+        }
+        let auto = try XCTUnwrap(FakeModelServer.seen.first { $0.lastUser.contains("Your background agents finished") })
+        XCTAssertTrue(auto.lastUser.contains("Subagent report: 7 call sites."))
+        XCTAssertTrue(notes(vm).contains { $0.contains("Background agent bg-1 “call sites” finished") })
+        XCTAssertEqual(vm.backgroundJobs.first?.status, .done)
+    }
+
+    func testStopStopsTheChatsBackgroundAgents() async throws {
+        FakeModelServer.reset { req, _ in
+            if req.messages.first?["content"]?.hasPrefix("You are a focused subagent") == true { return .slow(10, "late") }
+            if req.lastUser == "go", req.fresh {
+                return .toolCall("agent", #"{"description":"slow","prompt":"take forever","run_in_background":true}"#)
+            }
+            return .text("waiting")
+        }
+        let vm = transport.newSession(cwd: project("main").path)
+        transport.send("go", sessionID: vm.id)
+        try await waitUntil("background running") { !vm.running && vm.runningBackgroundJobs.count == 1 }
+        XCTAssertTrue(transport.anythingRunning)
+        transport.stopSession(vm.id)
+        try await waitUntil("stopped") { vm.runningBackgroundJobs.isEmpty }
+        XCTAssertEqual(vm.backgroundJobs.first?.status, .stopped)
+        XCTAssertFalse(vm.stopping)
     }
 
     // MARK: /goal

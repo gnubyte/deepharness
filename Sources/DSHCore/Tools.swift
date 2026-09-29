@@ -27,12 +27,16 @@ public struct ToolContext: Sendable {
     /// subagent can use `{{vault:NAME}}` exactly like its parent.
     public let vault: CredentialVault?
     public let vaultGrants: VaultGrants
+    /// Background subagents this chat has launched (`agent` with
+    /// run_in_background, `agent_status`, `agent_stop`). Nil for subagents.
+    public let backgroundAgents: BackgroundAgents?
 
     public init(workspace: URL, policy: PermissionPolicy,
                 client: any LLMClient, registry: ToolRegistry, depth: Int = 0,
                 model: String = "", contextWindow: Int? = nil, thinking: ThinkingLevel? = nil,
                 requestPermission: @escaping @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool = { _, _, _ in true },
-                vault: CredentialVault? = nil, vaultGrants: VaultGrants = VaultGrants()) {
+                vault: CredentialVault? = nil, vaultGrants: VaultGrants = VaultGrants(),
+                backgroundAgents: BackgroundAgents? = nil) {
         self.workspace = workspace
         self.policy = policy
         self.client = client
@@ -44,6 +48,7 @@ public struct ToolContext: Sendable {
         self.requestPermission = requestPermission
         self.vault = vault
         self.vaultGrants = vaultGrants
+        self.backgroundAgents = backgroundAgents
     }
 }
 
@@ -212,6 +217,12 @@ public struct ToolRegistry: Sendable {
         ]
         if depth == 0 { tools.append(AgentTool()) }
         return ToolRegistry(tools: tools)
+    }
+
+    /// Tools for background subagents (the `agent` tool starts them with
+    /// run_in_background). Added by the app next to a `BackgroundAgents` pool.
+    public static func backgroundAgentTools() -> [any ToolExecutor] {
+        [AgentStatusTool(), AgentStopTool()]
     }
 
     /// Background-process tools. Separate from `standard()` so existing test

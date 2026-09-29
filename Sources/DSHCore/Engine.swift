@@ -186,6 +186,9 @@ public struct Engine: Sendable {
     /// tool runs, scrubbed from every tool result), and this chat's approvals.
     public let vault: CredentialVault?
     public let vaultGrants: VaultGrants
+    /// Background subagents launched from this chat; their results are handed
+    /// to the model automatically when they finish.
+    public let backgroundAgents: BackgroundAgents?
 
     public init(client: any LLMClient,
                 registry: ToolRegistry,
@@ -199,7 +202,8 @@ public struct Engine: Sendable {
                 computerGrants: ComputerGrants = ComputerGrants(),
                 reroute: (@Sendable () async -> (client: any LLMClient, model: String)?)? = nil,
                 vault: CredentialVault? = nil,
-                vaultGrants: VaultGrants = VaultGrants()) {
+                vaultGrants: VaultGrants = VaultGrants(),
+                backgroundAgents: BackgroundAgents? = nil) {
         self.client = client
         self.registry = registry
         self.systemPrompt = systemPrompt
@@ -213,6 +217,7 @@ public struct Engine: Sendable {
         self.reroute = reroute
         self.vault = vault
         self.vaultGrants = vaultGrants
+        self.backgroundAgents = backgroundAgents
     }
 
     /// Convenience for tests / subagents with auto-approval.
@@ -245,6 +250,8 @@ public struct Engine: Sendable {
             messages.append(.user(userText,
                                   attachments: userAttachments.isEmpty ? nil : userAttachments))
         }
+        // Background agents that finished since the last turn report in.
+        Self.appendBackgroundResults(&messages, from: backgroundAgents)
         progress?.update(messages, progressed: false)
         var usage: LLMUsage? = nil
         var denied = 0
@@ -433,11 +440,14 @@ public struct Engine: Sendable {
                                           contextWindow: config.contextWindow,
                                           thinking: config.thinking,
                                           requestPermission: permissionGate,
-                                          vault: vault, vaultGrants: vaultGrants)
+                                          vault: vault, vaultGrants: vaultGrants,
+                                          backgroundAgents: backgroundAgents)
                 let executor = registry.tool(named: call.name)
                 let result: ToolResult
                 if let executor {
-                    result = await executeWithTimeout(executor, args: arguments, context: context)
+                    // A (foreground) subagent is a whole task, not a quick tool call.
+                    let timeout = call.name == AgentTool.name ? max(config.toolTimeout, 3_600) : config.toolTimeout
+                    result = await executeWithTimeout(executor, args: arguments, context: context, timeout: timeout)
                 } else {
                     result = ToolResult(output: "Error: unknown tool '\(call.name)'.")
                 }
@@ -483,6 +493,9 @@ public struct Engine: Sendable {
                     imageSource: names))
                 progress?.update(messages)
             }
+            if Self.appendBackgroundResults(&messages, from: backgroundAgents) {
+                progress?.update(messages)
+            }
         }
 
         // Iteration budget exhausted: stop rather than loop forever.
@@ -520,6 +533,12 @@ public struct Engine: Sendable {
     /// per chat; the rest are substituted into the arguments.
     func resolveVault(for call: ToolCall) async -> VaultResolution {
         guard let vault else { return .none }
+        // Only tools that *execute* their arguments get real values. A
+        // subagent prompt, a queued task, a skill draft or a todo would carry
+        // the secret to a model or to disk, so those keep the placeholder.
+        let nonExecuting: Set<String> = ["agent", "queue_task", "propose_skill", "todo_write", "use_skill",
+                                         "vault_search", "agent_status", "agent_stop", "exit_plan_mode"]
+        guard !nonExecuting.contains(call.name) else { return .none }
         let names = VaultPlaceholders.names(in: call.arguments.raw)
         guard !names.isEmpty else { return .none }
         var values: [String: String] = [:]
@@ -616,9 +635,29 @@ public struct Engine: Sendable {
         }
     }
 
+    /// Hand the model the reports of background agents that finished, as an
+    /// automatic message (folded into a trailing user message so user turns
+    /// never stack). Returns true when something was added.
+    @discardableResult
+    static func appendBackgroundResults(_ messages: inout [LLMMessage], from pool: BackgroundAgents?) -> Bool {
+        guard let pool else { return false }
+        let finished = pool.takeUnreported()
+        guard !finished.isEmpty else { return false }
+        let notice = BackgroundAgents.notice(for: finished)
+        if let last = messages.indices.last, messages[last].role == .user {
+            messages[last].content = (messages[last].content ?? "") + "\n\n" + notice
+        } else {
+            // Tagged like the tool-image message: an automatic user message
+            // with no display entry (compaction's user-count mapping skips it).
+            messages.append(LLMMessage(role: .user, content: notice, imageSource: "background agents"))
+        }
+        return true
+    }
+
     private func executeWithTimeout(_ executor: any ToolExecutor,
                                     args: JSONString,
-                                    context: ToolContext) async -> ToolResult {
+                                    context: ToolContext,
+                                    timeout: TimeInterval) async -> ToolResult {
         do {
             return try await withThrowingTaskGroup(of: ToolResult.self) { group in
                 group.addTask {
@@ -627,8 +666,8 @@ public struct Engine: Sendable {
                 group.addTask {
                     // Watchdog: fires the timeout; when it wins, the group
                     // cancels the executor task.
-                    try await Task.sleep(nanoseconds: UInt64(config.toolTimeout) * 1_000_000_000)
-                    return ToolResult(output: "Error: tool timed out after \(Int(config.toolTimeout))s.")
+                    try await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)
+                    return ToolResult(output: "Error: tool timed out after \(Int(timeout))s.")
                 }
                 guard let first = try await group.next() else {
                     return ToolResult(output: "Error: tool produced no result.")
