@@ -231,13 +231,17 @@ public enum Compaction {
                                  model: model, temperature: nil, maxTokens: maxOutputTokens,
                                  thinking: .off)
         var text = ""
+        var finished = false
         do {
             for try await event in client.stream(request) {
                 if case .text(let delta) = event { text += delta }
+                if case .done = event { finished = true }
             }
         } catch {
             return nil
         }
+        // Stopped mid-summary: a cut-off summary must never replace history.
+        guard finished, !Task.isCancelled else { return nil }
         let trimmed = stripThinking(text).trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }

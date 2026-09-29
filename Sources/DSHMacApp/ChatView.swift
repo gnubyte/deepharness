@@ -863,6 +863,11 @@ private struct ThinkingRow: View {
 
     private var headline: String {
         if session.stopping { return "Stopping…" }
+        if let retry = session.retry {
+            let wait = Int(retry.nextAttempt.timeIntervalSince(now).rounded(.up))
+            let when = wait > 0 ? "retrying in \(wait)s" : "retrying now"
+            return "Model unavailable (\(retry.reason)) — \(when) · attempt \(retry.attempt + 1). Stop to give up."
+        }
         if let activity = session.activity { return activity }
         if !session.reasoning.isEmpty, let start = session.reasoningStarted {
             return "Thinking… \(Int(now.timeIntervalSince(start)))s"
@@ -886,7 +891,7 @@ private struct GoalBanner: View {
         HStack(spacing: 8) {
             Image(systemName: "target")
                 .foregroundStyle(Color.accentColor)
-            Text("Goal · round \(goal.round) of \(goal.maxRounds)")
+            Text("Goal · round \(goal.round)")
                 .font(.system(size: 11, weight: .semibold))
             Text(goal.text)
                 .font(.system(size: 11))

@@ -368,7 +368,9 @@ public enum LLMError: LocalizedError, Sendable {
             "Could not reach the model server (\(why)). Is it running and is the address right?"
         case .http(let code, let body): "The model server replied \(code): \(String(body.prefix(300)))"
         case .overflow(let limit, let detail):
-            "Conversation is too long for the \(limit.formatted())-token window (\(detail.prefix(120)))."
+            limit > 0
+                ? "Conversation is too long for the \(limit.formatted())-token window (\(detail.prefix(120)))."
+                : "Conversation is too long for the server (\(detail.prefix(120)))."
         case .sse(let why): "The model stream ended unexpectedly (\(why))."
         case .unsupported(let what): "\(what) is not supported yet."
         }

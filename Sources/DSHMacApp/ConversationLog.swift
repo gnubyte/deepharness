@@ -58,7 +58,18 @@ public final class ConversationLog {
 
     private let dir: URL
     private var rows: [String: LogSession] = [:]
+    /// Loaded timelines. A released session (an archived queue chat) is
+    /// dropped from memory and read back from disk when next needed.
     private var items: [String: [LogItemRow]] = [:]
+    /// Sessions with changes not yet written. Writes are coalesced: a long
+    /// unattended run logs thousands of rows, and rewriting the whole file
+    /// for every one of them grows quadratically.
+    private var dirty: Set<String> = []
+    private var flushScheduled = false
+    /// How long a burst of changes is coalesced before it is written.
+    public var writeDelay: TimeInterval = 0.75
+    /// File writes happen here, in order, off the main thread.
+    private let io = DispatchQueue(label: "DSHMac.ConversationLog.io", qos: .utility)
 
     public init(dir: URL? = nil) {
         let base = dir ?? Self.defaultDir
@@ -70,12 +81,9 @@ public final class ConversationLog {
                 where url.pathExtension == "json" {
                 if let data = try? Data(contentsOf: url),
                    let file = try? JSONDecoder().decode(SessionFile.self, from: data) {
+                    // Timelines load on demand (loadItems): holding every
+                    // chat's full history in memory doesn't scale to a long queue.
                     rows[file.session.id] = file.session
-                    items[file.session.id] = file.items.map {
-                        LogItemRow(sessionID: file.session.id, seq: $0.seq, kind: $0.kind,
-                                   text: $0.text, toolName: $0.toolName, argSummary: $0.argSummary,
-                                   output: $0.output, isError: $0.isError, at: $0.at)
-                    }
                 }
             }
         } catch {}
@@ -104,13 +112,43 @@ public final class ConversationLog {
     }
 
     public func loadItems(_ id: String) -> [LogItemRow] {
-        items[id] ?? []
+        if let loaded = items[id] { return loaded }
+        let loaded = readItems(id) ?? []
+        if rows[id] != nil { items[id] = loaded }
+        return loaded
+    }
+
+    /// Write this session's pending changes now and drop its timeline from
+    /// memory; `loadItems` reads it back from disk on demand.
+    public func release(_ id: String) {
+        if dirty.remove(id) != nil { write(id) }
+        items[id] = nil
+    }
+
+    /// Write every pending change. `wait` blocks until the bytes are on disk
+    /// (app termination, tests).
+    public func flush(wait: Bool = false) {
+        flushScheduled = false
+        let ids = dirty
+        dirty = []
+        for id in ids { write(id) }
+        if wait { io.sync {} }
+    }
+
+    private func readItems(_ id: String) -> [LogItemRow]? {
+        io.sync {}   // a write for this file may still be in flight
+        guard let data = try? Data(contentsOf: fileURL(id)),
+              let file = try? JSONDecoder().decode(SessionFile.self, from: data) else { return nil }
+        return file.items.map {
+            LogItemRow(sessionID: id, seq: $0.seq, kind: $0.kind, text: $0.text, toolName: $0.toolName,
+                       argSummary: $0.argSummary, output: $0.output, isError: $0.isError, at: $0.at)
+        }
     }
 
     public func recordItem(_ id: String, kind: String, text: String?,
                            toolName: String?, argSummary: String?, output: String?,
                            isError: Bool) {
-        var list = items[id, default: []]
+        var list = items[id] ?? (rows[id] != nil ? readItems(id) ?? [] : [])
         let row = LogItemRow(sessionID: id, seq: list.count, kind: kind, text: text,
                              toolName: toolName, argSummary: argSummary, output: output,
                              isError: isError, at: .now)
@@ -122,7 +160,9 @@ public final class ConversationLog {
     public func delete(_ id: String) {
         rows[id] = nil
         items[id] = nil
-        try? FileManager.default.removeItem(at: fileURL(id))
+        dirty.remove(id)
+        let url = fileURL(id)
+        io.async { try? FileManager.default.removeItem(at: url) }
     }
 
     /// Replace a session's stored items wholesale. Used after a turn so the
@@ -149,13 +189,27 @@ public final class ConversationLog {
     }
 
     private func persist(_ id: String) {
+        guard rows[id] != nil else { return }
+        dirty.insert(id)
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        let delay = writeDelay
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            self?.flush()
+        }
+    }
+
+    private func write(_ id: String) {
         guard let row = rows[id] else { return }
-        let file = SessionFile(session: row, items: (items[id] ?? []).map {
+        let stored = items[id] ?? readItems(id) ?? []
+        let file = SessionFile(session: row, items: stored.map {
             StoredItem(seq: $0.seq, kind: $0.kind, text: $0.text, toolName: $0.toolName,
                        argSummary: $0.argSummary, output: $0.output, isError: $0.isError, at: $0.at)
         })
         guard let data = try? JSONEncoder().encode(file) else { return }
-        try? data.write(to: fileURL(id), options: .atomic)
+        let url = fileURL(id)
+        io.async { try? data.write(to: url, options: .atomic) }
     }
 
     private struct SessionFile: Codable {

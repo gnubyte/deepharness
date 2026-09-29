@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Background processes the agent started (game engines, servers) must
         // not outlive the app that owns their ptys.
         ProcessManager.shared.stopAll()
+        // Conversation writes are coalesced; get the last ones on disk.
+        MainActor.assumeIsolated { ConversationLog.shared.flush(wait: true) }
     }
 }
 

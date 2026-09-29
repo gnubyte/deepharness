@@ -121,6 +121,11 @@ public final class SessionVM: Identifiable {
     public var preset: PermissionPreset
 
     public var entries: [ChatEntry] = []
+    /// False while the stored timeline hasn't been read into `entries` (a chat
+    /// from a previous launch, or an archived queue chat whose timeline was
+    /// released). `AppTransport.hydrate` loads it; nothing may resync a chat
+    /// to disk until it is loaded.
+    public var loaded = true
     public var pendingGates: [GateVM] = []
     public var todos: [TodoItem] = []
     public var lastUsage: LLMUsage?
@@ -142,12 +147,25 @@ public final class SessionVM: Identifiable {
     public var activity: String?
     /// The active `/goal`, while its loop runs.
     public var goal: GoalState?
+    /// Set while a model call is being retried (server down, timed out, busy).
+    public var retry: RetryState?
+    /// The last `/goal` started in this chat and not yet completed; a bare
+    /// `/goal` resumes it.
+    public var lastGoal: String?
 
     public struct GoalState: Hashable, Sendable {
         public var text: String
         public var round: Int
-        public var maxRounds: Int
         public var started: Date = .now
+    }
+
+    public struct RetryState: Hashable, Sendable {
+        /// How many attempts have failed in a row.
+        public var attempt: Int
+        /// Why the last attempt failed ("the request timed out").
+        public var reason: String
+        /// When the next attempt goes out.
+        public var nextAttempt: Date
     }
 
     /// Append a reasoning delta, keeping only the recent tail for display.

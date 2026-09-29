@@ -31,6 +31,7 @@ public final class AppConfig {
         static let sessionSkills = "skills.session.v1"
         static let computerTools = "computer.tools.v1"
         static let queuePaused = "queue.paused.v1"
+        static let queueResume = "queue.resumeOnLaunch.v1"
     }
 
     private let defaults: UserDefaults
@@ -79,6 +80,11 @@ public final class AppConfig {
     /// or restart does *not* set this, so an interrupted queue resumes on
     /// launch — a stopped one stays stopped.
     public var queuePaused: Bool = false { didSet { persist() } }
+
+    /// The task queue was working when the app last quit (or crashed), so it
+    /// picks up again on launch. Set by Start, cleared by Stop, by a pause
+    /// and when the queue runs dry — tasks merely *added* never auto-start.
+    public var queueResumeOnLaunch: Bool = false { didSet { persist() } }
 
     // MARK: - Active route
 
@@ -209,6 +215,7 @@ public final class AppConfig {
         }
         computerToolsEnabled = defaults.object(forKey: Keys.computerTools) as? Bool ?? true
         queuePaused = defaults.bool(forKey: Keys.queuePaused)
+        queueResumeOnLaunch = defaults.bool(forKey: Keys.queueResume)
     }
 
     private func persist() {
@@ -230,6 +237,7 @@ public final class AppConfig {
         if let data = try? JSONEncoder().encode(sessionSkills) { defaults.set(data, forKey: Keys.sessionSkills) }
         defaults.set(computerToolsEnabled, forKey: Keys.computerTools)
         defaults.set(queuePaused, forKey: Keys.queuePaused)
+        defaults.set(queueResumeOnLaunch, forKey: Keys.queueResume)
     }
 }
 

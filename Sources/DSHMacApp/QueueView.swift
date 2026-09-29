@@ -32,22 +32,18 @@ struct QueueView: View {
     var body: some View {
         VStack(spacing: 0) {
             QueueHeaderView(running: transport.queueRunningNow,
+                            stopping: transport.queueStopping,
                             subtitle: subtitle,
-                            canStart: queue.nextTask != nil,
-                            onAdd: {
-                                adding = true
-                                newTitle = ""; newDetails = ""
-                                withAnimation { selectedTaskID = "new" }
-                            },
+                            canStart: queue.nextTask != nil || transport.queueStopping,
+                            onAdd: { beginAdd() },
                             onLog: { showLog = true },
                             onStart: { transport.startQueue() },
                             onStop: { transport.stopQueue() })
             Divider()
-            if queue.tasks.isEmpty {
-                QueueEmptyView(onAdd: {
-                    adding = true
-                    withAnimation { selectedTaskID = "new" }
-                })
+            // The add card lives in the list, so the list shows while adding
+            // even when the queue is still empty.
+            if queue.tasks.isEmpty && !adding {
+                QueueEmptyView(onAdd: { beginAdd() })
             } else {
                 TaskListPane(
                     tasks: queue.tasks,
@@ -61,15 +57,17 @@ struct QueueView: View {
                         selectedTaskID = id
                         isEditing = false
                     },
-                    onMoveBefore: { dragged, target in
-                        transport.queueMove(id: dragged, before: target)
+                    onMoveOnto: { dragged, target in
+                        transport.queueMove(id: dragged, onto: target)
                     },
                     onCancelAdd: { adding = false; selectedTaskID = nil },
                     onAdd: {
-                        transport.queueAdd(newTitle, details: newDetails, atFront: newAtFront)
+                        guard !newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        let added = transport.queueAdd(newTitle, details: newDetails, atFront: newAtFront)
                         newTitle = ""; newDetails = ""; newAtFront = false
                         adding = false
-                        selectedTaskID = transport.queue.nextTask?.id
+                        isEditing = false
+                        selectedTaskID = added.id
                     })
                 Divider()
                 TaskDetailPane(
@@ -80,6 +78,7 @@ struct QueueView: View {
                     onSave: { saveEdit() },
                     onOpenChat: { if let id = selectedTask?.sessionID { model.openSession(id) } },
                     onResume: { if let id = selectedTask?.id { transport.resumeTask(id) } },
+                    onRequeue: { if let id = selectedTask?.id { transport.queueRequeue(id: id) } },
                     onEdit: { if let t = selectedTask {
                         editingTitle = t.title; editingDetails = t.details; isEditing = true
                     } },
@@ -98,18 +97,32 @@ struct QueueView: View {
         .sheet(isPresented: $showLog) { QueueLogSheet() }
     }
 
+    private func beginAdd() {
+        newTitle = ""; newDetails = ""; newAtFront = false
+        isEditing = false
+        adding = true
+        withAnimation { selectedTaskID = "new" }
+    }
+
     private var subtitle: String {
         let s = queue.stats()
         if transport.queueRunningNow {
-            if let running = queue.runningTask {
-                return "Working “\(running.title)” · \(s.queued) waiting"
+            let active = transport.queueActiveTaskID.flatMap { queue.task($0) } ?? queue.runningTask
+            if transport.queueOnlyTasks != nil, let active {
+                return "Working “\(active.title)” (just this task)"
+            }
+            if let active {
+                return "Working “\(active.title)” · \(s.queued) waiting"
             }
             return "Queue is running"
         }
-        if s.blocked > 0 { return "\(s.blocked) need(s) you · \(s.queued) waiting" }
-        if s.queued > 0 { return "\(s.queued) waiting · \(s.completed) done" }
-        if s.total > 0 { return "\(s.total) finished" }
-        return "Nothing queued"
+        var parts: [String] = []
+        if s.queued > 0 { parts.append("\(s.queued) waiting") }
+        if s.blocked > 0 { parts.append("\(s.blocked) need\(s.blocked == 1 ? "s" : "") you") }
+        if s.failed > 0 { parts.append("\(s.failed) failed") }
+        if s.completed > 0 { parts.append("\(s.completed) done") }
+        if s.skipped > 0 { parts.append("\(s.skipped) skipped") }
+        return parts.isEmpty ? "Nothing queued" : parts.joined(separator: " · ")
     }
 
     private var positionMap: [String: Int] {
@@ -132,6 +145,7 @@ struct QueueView: View {
 @MainActor
 struct QueueHeaderView: View {
     let running: Bool
+    let stopping: Bool
     let subtitle: String
     let canStart: Bool
     let onAdd: () -> Void
@@ -141,10 +155,11 @@ struct QueueHeaderView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if running { ProgressView().controlSize(.small) }
+            if running || stopping { ProgressView().controlSize(.small) }
             VStack(alignment: .leading, spacing: 1) {
                 Text("Task Queue").font(.system(size: 13, weight: .semibold))
-                Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(stopping ? "Stopping — the current task is winding down…" : subtitle)
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             Spacer()
             Button(action: onAdd) { Image(systemName: "plus") }
@@ -197,7 +212,7 @@ struct TaskListPane: View {
     @Binding var newDetails: String
     @Binding var newAtFront: Bool
     let onSelect: (String) -> Void
-    let onMoveBefore: (String, String) -> Void
+    let onMoveOnto: (String, String) -> Void
     let onCancelAdd: () -> Void
     let onAdd: () -> Void
 
@@ -211,7 +226,8 @@ struct TaskListPane: View {
                         }
                         .id(task.id)
                         // Queued tasks can be dragged onto another queued task
-                        // to reorder the queue.
+                        // to take its place (after it when dragged down,
+                        // before it when dragged up).
                         .draggable(task.id) {
                             if task.status == .queued {
                                 Text(task.title).lineLimit(1)
@@ -223,7 +239,7 @@ struct TaskListPane: View {
                                   dragged != task.id,
                                   tasks.first(where: { $0.id == dragged })?.status == .queued
                             else { return false }
-                            onMoveBefore(dragged, task.id)
+                            onMoveOnto(dragged, task.id)
                             return true
                         }
                     }
@@ -350,7 +366,7 @@ private struct NewTaskCard: View {
                 Button("Add Task", action: onAdd)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(8)
@@ -369,6 +385,7 @@ struct TaskDetailPane: View {
     let onSave: () -> Void
     let onOpenChat: () -> Void
     let onResume: () -> Void
+    let onRequeue: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -381,7 +398,7 @@ struct TaskDetailPane: View {
                 } else {
                     TaskMetaHeader(task: task)
                     TaskActionBar(task: task, onOpenChat: onOpenChat, onResume: onResume,
-                                  onEdit: onEdit, onDelete: onDelete)
+                                  onRequeue: onRequeue, onEdit: onEdit, onDelete: onDelete)
                 }
             } else {
                 Text("Select a task to edit it or open its chat.")
@@ -406,6 +423,11 @@ private struct TaskMetaHeader: View {
                 Spacer()
             }
             Text(metaLine).font(.system(size: 10)).foregroundStyle(.secondary)
+            if let cwd = task.cwd {
+                Label(URL(fileURLWithPath: cwd).lastPathComponent, systemImage: "folder")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .help(cwd)
+            }
             if !task.details.isEmpty {
                 Text(task.details).font(.system(size: 11)).lineLimit(3).foregroundStyle(.secondary)
             }
@@ -436,6 +458,7 @@ private struct TaskActionBar: View {
     let task: QueueTask
     let onOpenChat: () -> Void
     let onResume: () -> Void
+    let onRequeue: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -444,13 +467,19 @@ private struct TaskActionBar: View {
             if task.sessionID != nil {
                 Button("Open chat", action: onOpenChat).controlSize(.small)
             }
-            if task.status == .blocked || task.status == .failed {
-                Button(action: onResume) { Label("Resume in chat", systemImage: "arrow.clockwise") }
+            if task.status == .blocked || task.status == .failed || task.status == .skipped {
+                Button(action: onResume) { Label("Resume", systemImage: "arrow.clockwise") }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .help("Work this task now in its own chat, picking up where it stopped (next in line if the queue is running)")
+                Button(action: onRequeue) { Image(systemName: "arrow.uturn.up") }
+                    .controlSize(.small)
+                    .help("Put it back at the front of the queue without starting it")
             }
             Spacer()
-            Button(action: onEdit) { Image(systemName: "pencil") }.help("Edit this task")
+            if task.status != .running {
+                Button(action: onEdit) { Image(systemName: "pencil") }.help("Edit this task")
+            }
             Button(action: onDelete) { Image(systemName: "trash") }
                 .foregroundStyle(.red)
                 .help("Delete this task")
@@ -505,8 +534,9 @@ struct QueueLogSheet: View {
                     .padding(14)
             }
         }
-        .frame(width: 620, height: 460)
+        .frame(width: 680, height: 480)
         .onAppear { text = QueueLog.report(model.transport.queue) }
+        .onChange(of: model.transport.queue) { _, queue in text = QueueLog.report(queue) }
     }
 
     private var header: some View {

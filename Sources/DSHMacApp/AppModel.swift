@@ -75,8 +75,9 @@ final class AppModel {
     /// want to auto-fail a whole queue because the Spark is down at launch.
     func resumeQueueIfNeeded() {
         guard config.isConfigured,
+              config.queueResumeOnLaunch,
               !config.queuePaused,
-              transport.queue.nextTask != nil || transport.queue.hasRunning else { return }
+              transport.queue.nextTask != nil else { return }
         transport.startQueue()
     }
 

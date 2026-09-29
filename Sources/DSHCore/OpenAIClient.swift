@@ -19,10 +19,39 @@ public struct OpenAIClient: LLMClient {
     public init(profile: ProviderProfile, session: URLSession = .shared) {
         self.profile = profile
         var cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 120   // per-chunk; idle streams time out
-        cfg.timeoutIntervalForResource = 3_600
+        // Idle timeout between bytes. Generous: a local server prefilling a
+        // few hundred thousand tokens sends nothing until the first token, and
+        // a timeout here only means a retry (see RequestRetry) that starts the
+        // prefill over.
+        cfg.timeoutIntervalForRequest = Self.idleTimeout
+        // A whole streamed reply may legitimately run for hours on a slow box.
+        cfg.timeoutIntervalForResource = 24 * 3_600
         cfg.waitsForConnectivity = true
-        self.session = URLSession(configuration: cfg)
+        if let stubs = Self.protocolClassesForTesting {
+            cfg.protocolClasses = stubs + (cfg.protocolClasses ?? [])
+            cfg.waitsForConnectivity = false
+        }
+        self.session = Self.sharedSession(cfg)
+    }
+
+    /// Seconds without a byte before a request times out (and is retried).
+    public static let idleTimeout: TimeInterval = 600
+
+    /// Test hook: URLProtocol stubs every new client's session routes through.
+    nonisolated(unsafe) static var protocolClassesForTesting: [AnyClass]?
+
+    /// Clients are made per request and per retry; they share one session
+    /// (all use the same settings) instead of leaking one URLSession each —
+    /// a multi-day outage retries thousands of times.
+    private static let sessionLock = NSLock()
+    nonisolated(unsafe) private static var sessions: [String: URLSession] = [:]
+    private static func sharedSession(_ cfg: URLSessionConfiguration) -> URLSession {
+        let key = (cfg.protocolClasses ?? []).map { NSStringFromClass($0) }.joined(separator: ",")
+        sessionLock.lock(); defer { sessionLock.unlock() }
+        if let cached = sessions[key] { return cached }
+        let session = URLSession(configuration: cfg)
+        sessions[key] = session
+        return session
     }
 
     // MARK: LLMClient
@@ -42,7 +71,11 @@ public struct OpenAIClient: LLMClient {
                                              usage: result.usage))
                     continuation.finish()
                 } catch let e as URLError where e.code == .cancelled {
-                    continuation.finish(throwing: CancellationError())
+                    // Our Stop, or the system dropping the request (which is
+                    // worth retrying, not a reason to halt a queue).
+                    continuation.finish(throwing: Task.isCancelled
+                        ? CancellationError()
+                        : LLMError.connection("the request was cancelled by the system"))
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -159,6 +192,10 @@ public struct OpenAIClient: LLMClient {
     /// requested 270000 tokens". Returns nil when the body carries no limit.
     static func overflowLimit(in body: String) -> Int? {
         let patterns = [
+            // SGLang: "The input (270000 tokens) is longer than the model's context length (262144 tokens)."
+            "context length \\((\\d+) tokens\\)",
+            "maximum context length of (\\d+)",
+            "context length of (\\d+)",
             "maximum context length is (\\d+)",
             "context length is (\\d+)",
             "exceed the maximum context length of (\\d+)",
@@ -234,42 +271,58 @@ public struct OpenAIClient: LLMClient {
             if let limit = Self.overflowLimit(in: body) {
                 throw LLMError.overflow(limit: limit, detail: body)
             }
+            // A proxy in front of the model (nginx's client_max_body_size)
+            // refusing the body: the conversation must shrink, like an overflow.
+            if http.statusCode == 413 {
+                throw LLMError.overflow(limit: 0, detail: "request too large for the server (HTTP 413)")
+            }
             throw LLMError.http(http.statusCode, body)
         }
 
-        var text = ""
-        var usage: LLMUsage?
-        var finish: String?
-        var pending: [Int: (id: String, name: String, args: String)] = [:]
+        var stream = StreamState()
 
         // Assemble complete lines from raw bytes so UTF-8 sequences that
         // span chunk boundaries never break.
         var raw = Data()
-        var lineBuffer = ""
         for try await byte in bytes {
             raw.append(byte)
             guard byte == 0x0A else { continue }
-            let lineBytes = raw.dropLast() // strip the newline
-            lineBuffer += String(decoding: lineBytes, as: UTF8.self)
+            let line = String(decoding: raw.dropLast(), as: UTF8.self) // strip the newline
             raw.removeAll(keepingCapacity: true)
-            try parseLine(lineBuffer, text: &text, usage: &usage, finish: &finish,
-                          pending: &pending, onText: onText, onReasoning: onReasoning)
-            lineBuffer = ""
-        }
-        if !lineBuffer.isEmpty {
-            try parseLine(lineBuffer, text: &text, usage: &usage, finish: &finish,
-                          pending: &pending, onText: onText, onReasoning: onReasoning)
+            try parseLine(line, into: &stream, onText: onText, onReasoning: onReasoning)
         }
         // A server may omit the final newline.
         if !raw.isEmpty {
-            lineBuffer += String(decoding: raw, as: UTF8.self)
-            if !lineBuffer.isEmpty {
-                try parseLine(lineBuffer, text: &text, usage: &usage, finish: &finish,
-                              pending: &pending, onText: onText, onReasoning: onReasoning)
-            }
+            try parseLine(String(decoding: raw, as: UTF8.self), into: &stream,
+                          onText: onText, onReasoning: onReasoning)
         }
 
-        var calls = pending
+        // Not SSE at all: some servers ignore `stream: true` and answer with
+        // one JSON completion (or a JSON error).
+        if !stream.sawData, !stream.otherBody.isEmpty {
+            try parsePlainBody(stream.otherBody, into: &stream, status: (response as? HTTPURLResponse)?.statusCode,
+                               onText: onText)
+            if stream.finish == nil {
+                // Something answered, but not a model (a proxy's HTML page,
+                // a wrong base URL): retrying can't fix that.
+                let snippet = stream.otherBody.replacingOccurrences(of: "\n", with: " ").prefix(200)
+                throw LLMError.http((response as? HTTPURLResponse)?.statusCode ?? 200,
+                                    "unrecognised reply (is the base URL an OpenAI-compatible /v1?): \(snippet)")
+            }
+        }
+        if stream.finish == "error" {
+            throw LLMError.http(500, "the server ended the reply with an error")
+        }
+        // Every OpenAI-compatible server ends a reply with a finish_reason
+        // and/or `data: [DONE]`. Neither means the connection closed mid-reply
+        // (server restarted, proxy dropped it) — a failure worth retrying, not
+        // a short answer.
+        if !stream.sawDone && stream.finish == nil {
+            throw LLMError.sse(stream.sawData ? "the reply was cut off before it finished"
+                                              : "the server closed the connection without replying")
+        }
+
+        var calls = stream.pending
             .sorted { $0.key < $1.key }
             .map { entry -> ToolCall in
                 ToolCall(id: entry.value.id.isEmpty ? "call-\(entry.key)" : entry.value.id,
@@ -279,41 +332,70 @@ public struct OpenAIClient: LLMClient {
 
         // XML tool-call fallback: some backends (Qwen on Ollama without
         // function-calling, older vLLM) emit tool blocks in the text instead.
-        if calls.isEmpty, XMLToolCalls.containsBlock(text) {
-            let parsed = XMLToolCalls.parse(text)
+        if calls.isEmpty, XMLToolCalls.containsBlock(stream.text) {
+            let parsed = XMLToolCalls.parse(stream.text)
             for (i, p) in parsed.enumerated() {
                 calls.append(ToolCall(id: "xml-\(i)", name: p.name,
                                       arguments: p.argumentsJSON.raw))
             }
         }
 
-        return TurnResult(text: text, calls: calls, finish: finish, usage: usage)
+        return TurnResult(text: stream.text, calls: calls, finish: stream.finish, usage: stream.usage)
     }
 
-    private func parseLine(_ rawLine: String,
-                           text: inout String,
-                           usage: inout LLMUsage?,
-                           finish: inout String?,
-                           pending: inout [Int: (id: String, name: String, args: String)],
-                           onText: @escaping @Sendable (String) -> Void,
-                           onReasoning: @escaping @Sendable (String) -> Void) throws {
+    /// Everything one streamed reply accumulates.
+    struct StreamState {
+        var text = ""
+        var usage: LLMUsage?
+        var finish: String?
+        var pending: [Int: (id: String, name: String, args: String)] = [:]
+        /// Saw `data: [DONE]`.
+        var sawDone = false
+        /// Saw at least one `data:` line.
+        var sawData = false
+        /// Non-SSE lines (capped), for servers that answer in plain JSON.
+        var otherBody = ""
+    }
+
+    func parseLine(_ rawLine: String,
+                   into state: inout StreamState,
+                   onText: @escaping @Sendable (String) -> Void,
+                   onReasoning: @escaping @Sendable (String) -> Void) throws {
         var line = rawLine
         if line.hasSuffix("\r") { line.removeLast() }
         // SSE: only "data:" lines matter (ignore event:, id:, keepalives).
-        guard line.hasPrefix("data:") else { return }
+        guard line.hasPrefix("data:") else {
+            if !state.sawData, !line.isEmpty, !line.hasPrefix(":"), state.otherBody.utf8.count < 2_000_000 {
+                state.otherBody += line + "\n"
+            }
+            return
+        }
+        state.sawData = true
         var payload = String(line.dropFirst(5))
         if payload.hasPrefix(" ") { payload.removeFirst() }
-        if payload == "[DONE]" { return }
+        if payload.trimmingCharacters(in: .whitespaces) == "[DONE]" {
+            state.sawDone = true
+            return
+        }
 
         guard let data = payload.data(using: .utf8),
-              let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return // ignore undecodable lines (keepalive pings etc.)
+        }
+
+        // An error reported mid-stream (vLLM: {"object":"error",…}; others:
+        // {"error":{…}}) — surface it instead of ending with an empty reply.
+        if obj["error"] != nil || obj["choices"] == nil, let (code, message) = Self.streamError(in: obj) {
+            if let limit = Self.overflowLimit(in: message) {
+                throw LLMError.overflow(limit: limit, detail: message)
+            }
+            throw LLMError.http(code, message)
         }
 
         if let u = obj["usage"] as? [String: Any],
            let p = u["prompt_tokens"] as? Int,
            let c = u["completion_tokens"] as? Int, p > 0 || c > 0 {
-            usage = LLMUsage(promptTokens: p, completionTokens: c)
+            state.usage = LLMUsage(promptTokens: p, completionTokens: c)
         }
         guard let choices = obj["choices"] as? [[String: Any]],
               let first = choices.first else { return }
@@ -323,23 +405,73 @@ public struct OpenAIClient: LLMClient {
                 onReasoning(r)
             }
             if let content = delta["content"] as? String, !content.isEmpty {
-                text += content
+                state.text += content
                 onText(content)
             }
             if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
                 for tc in toolCalls {
                     let index = (tc["index"] as? Int) ?? 0
-                    var entry = pending[index] ?? (id: "", name: "", args: "")
+                    var entry = state.pending[index] ?? (id: "", name: "", args: "")
                     if let id = tc["id"] as? String, !id.isEmpty { entry.id = id }
                     if let fn = tc["function"] as? [String: Any] {
                         if let name = fn["name"] as? String { entry.name = name }
                         if let args = fn["arguments"] as? String { entry.args += args }
                     }
-                    pending[index] = entry
+                    state.pending[index] = entry
                 }
             }
         }
-        if let fr = first["finish_reason"] as? String { finish = fr }
+        if let fr = first["finish_reason"] as? String { state.finish = fr }
+    }
+
+    /// A plain (non-streamed) JSON reply: a completion, or an error.
+    func parsePlainBody(_ body: String, into state: inout StreamState, status: Int?,
+                        onText: @Sendable (String) -> Void) throws {
+        guard let data = body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        if obj["choices"] == nil, let (code, message) = Self.streamError(in: obj) {
+            if let limit = Self.overflowLimit(in: message) { throw LLMError.overflow(limit: limit, detail: message) }
+            throw LLMError.http(code == 500 ? (status ?? 500) : code, message)
+        }
+        guard let choices = obj["choices"] as? [[String: Any]], let first = choices.first,
+              let message = first["message"] as? [String: Any] else { return }
+        if let content = message["content"] as? String, !content.isEmpty {
+            state.text += content
+            onText(content)
+        }
+        if let calls = message["tool_calls"] as? [[String: Any]] {
+            for (i, tc) in calls.enumerated() {
+                let fn = tc["function"] as? [String: Any]
+                state.pending[i] = (id: (tc["id"] as? String) ?? "",
+                                    name: (fn?["name"] as? String) ?? "",
+                                    args: (fn?["arguments"] as? String) ?? "")
+            }
+        }
+        state.finish = (first["finish_reason"] as? String) ?? "stop"
+        if let u = obj["usage"] as? [String: Any],
+           let p = u["prompt_tokens"] as? Int, let c = u["completion_tokens"] as? Int {
+            state.usage = LLMUsage(promptTokens: p, completionTokens: c)
+        }
+    }
+
+    /// The status code and message of an error object, if `obj` is one.
+    static func streamError(in obj: [String: Any]) -> (code: Int, message: String)? {
+        func code(_ any: Any?) -> Int? {
+            if let n = any as? Int { return n }
+            if let s = any as? String { return Int(s) }
+            return nil
+        }
+        if let err = obj["error"] as? [String: Any] {
+            let message = (err["message"] as? String) ?? "\(err)"
+            return (code(err["code"]) ?? code(err["status"]) ?? 500, message)
+        }
+        if let err = obj["error"] as? String {
+            return (code(obj["code"]) ?? code(obj["status"]) ?? 500, err)
+        }
+        if (obj["object"] as? String) == "error" {
+            return (code(obj["code"]) ?? 500, (obj["message"] as? String) ?? "server error")
+        }
+        return nil
     }
 
     // MARK: Request body

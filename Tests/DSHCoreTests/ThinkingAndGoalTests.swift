@@ -105,27 +105,81 @@ final class SlashAndGoalTests: XCTestCase {
         XCTAssertEqual(GoalProtocol.status(of: ""), .working)
     }
 
+    func testGoalMarkerVariantsModelsActuallyWrite() {
+        // Marker first, summary after — the loop must not spin forever on it.
+        XCTAssertEqual(GoalProtocol.status(of: "GOAL_COMPLETE\n\nSummary:\n- fixed a\n- fixed b\n- fixed c\n- tests pass"), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "All green.\n✅ GOAL_COMPLETE"), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "All green.\n`GOAL_COMPLETE`."), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "All green.\n## GOAL_COMPLETE"), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "All green.\nStatus: GOAL_COMPLETE"), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "All green.\nGOAL COMPLETE"), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "All green.\n<GOAL_COMPLETE>"), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "Stuck.\n**GOAL_BLOCKED**: which database should I use?"),
+                       .blocked("which database should I use"))
+        XCTAssertEqual(GoalProtocol.status(of: "Stuck.\nGOAL_BLOCKED"), .blocked("The agent needs your input."))
+        // The last marker line wins.
+        XCTAssertEqual(GoalProtocol.status(of: "GOAL_BLOCKED: need a key\nFound it in .env after all.\nGOAL_COMPLETE"), .complete)
+        // Prose around the marker is not a marker.
+        XCTAssertEqual(GoalProtocol.status(of: "Once the tests pass I will print GOAL_COMPLETE."), .working)
+        XCTAssertEqual(GoalProtocol.status(of: "I am not GOAL_BLOCKED yet, continuing."), .working)
+        XCTAssertEqual(GoalProtocol.status(of: "This is not a GOAL_COMPLETE situation"), .working)
+        // A marker inside a code block (e.g. echoing source) doesn't count.
+        XCTAssertEqual(GoalProtocol.status(of: "Here's the file:\n```\nGOAL_COMPLETE\n```\nStill working."), .working)
+    }
+
+    func testMarkdownLabelledMarkersFromReview() {
+        XCTAssertEqual(GoalProtocol.status(of: "All done.\n**Status:** GOAL_COMPLETE"), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "All done.\nStatus: **GOAL_COMPLETE**"), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "All done.\nFinal status: `GOAL_COMPLETE`"), .complete)
+        XCTAssertEqual(GoalProtocol.status(of: "Stuck.\n**Status:** GOAL_BLOCKED: need the API key"), .blocked("need the API key"))
+        // Status reports and recaps are not a verdict.
+        XCTAssertEqual(GoalProtocol.status(of: "Checklist:\n- tests: pass\n- GOAL_BLOCKED: no"), .working)
+        XCTAssertEqual(GoalProtocol.status(of: "Goal blocked: no\nContinuing with the parser."), .working)
+        XCTAssertEqual(GoalProtocol.status(of: "Resuming.\nLast round ended with:\nGOAL_BLOCKED: need the DB password\nYou gave it above, so I ran the migration.\nNext: seed data.\nThen the API."), .working)
+        XCTAssertEqual(GoalProtocol.status(of: "Recap:\n- Previously: GOAL_BLOCKED on the DB password (answered)"), .working)
+        // A one-line code span doesn't swallow the rest of the reply.
+        XCTAssertEqual(GoalProtocol.status(of: "```swift build```\nAll green.\nGOAL_COMPLETE"), .complete)
+        // Thinking left inline by a server without a reasoning parser.
+        XCTAssertEqual(GoalProtocol.status(of: "<think>\nWhen everything passes I end with:\nGOAL_COMPLETE\nBut 3 tests fail.\n</think>\nThree tests still fail; fixing next."), .working)
+        XCTAssertEqual(GoalProtocol.status(of: "<think>checking</think>\nAll verified.\nGOAL_COMPLETE"), .complete)
+        // Buried markers are noticed so the next round can ask for them plainly.
+        let buried = "All tests pass.\nGOAL_COMPLETE\n\nChanges:\n- a\n- b\n- c"
+        XCTAssertEqual(GoalProtocol.status(of: buried), .working)
+        XCTAssertTrue(GoalProtocol.mentionsMarker(buried))
+        XCTAssertTrue(GoalProtocol.continuation("g", round: 2, hitIterationLimit: false, markerMisplaced: true).contains("did not count"))
+    }
+
     func testGoalPromptsCarryTheGoal() {
         XCTAssertTrue(GoalProtocol.kickoff("fix the build").contains("fix the build"))
-        let c = GoalProtocol.continuation("fix the build", round: 3, maxRounds: 40, hitIterationLimit: true)
+        let c = GoalProtocol.continuation("fix the build", round: 3, hitIterationLimit: true)
         XCTAssertTrue(c.contains("fix the build") && c.contains("round 3") && c.contains("cut off"))
+        // No round budget: the model is never told it has N rounds.
+        XCTAssertFalse(c.contains("round 3 of"))
+        let e = GoalProtocol.continuation("fix the build", round: 4, hitIterationLimit: false, error: "HTTP 400: bad")
+        XCTAssertTrue(e.contains("HTTP 400: bad") && e.contains("round 4"))
+        // Prompts themselves must never read as a verdict if echoed.
+        XCTAssertEqual(GoalProtocol.status(of: c), .working)
+        XCTAssertEqual(GoalProtocol.status(of: e), .working)
     }
 
     func testAutoGoalProtocol() {
-        XCTAssertEqual(GoalProtocol.defaultMaxRoundsAuto, 200)
         let k = GoalProtocol.kickoffAuto("refactor the parser")
         XCTAssertTrue(k.contains("refactor the parser"))
         XCTAssertTrue(k.contains("GOAL_COMPLETE"))
         XCTAssertTrue(k.contains("unattended"))
         // Auto prompts must not promise to ask the user for confirmation.
         XCTAssertFalse(k.contains("Stop it any time"))
-        let c = GoalProtocol.continuationAuto("refactor the parser", round: 2, maxRounds: 200, hitIterationLimit: false)
-        XCTAssertTrue(c.contains("round 2 of 200"))
+        let c = GoalProtocol.continuationAuto("refactor the parser", round: 2, hitIterationLimit: false)
+        XCTAssertTrue(c.contains("round 2"))
         XCTAssertTrue(c.contains("unattended"))
         // Blocked marker still recognized after the auto reminder.
         XCTAssertEqual(GoalProtocol.status(of: c + "\nGOAL_BLOCKED: need the API key"),
                        .blocked("need the API key"))
         XCTAssertEqual(GoalProtocol.status(of: "done\nGOAL_COMPLETE"), .complete)
+        let r = GoalProtocol.resumeAuto("refactor the parser")
+        XCTAssertTrue(r.hasPrefix("[Resuming]") && r.contains("refactor the parser") && r.contains("unattended"))
+        XCTAssertTrue(GoalProtocol.resume("x").hasPrefix("[Resuming]"))
+        XCTAssertFalse(GoalProtocol.resume("x").contains("unattended"))
     }
 }
 

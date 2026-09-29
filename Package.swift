@@ -16,5 +16,8 @@ let package = Package(
         .executableTarget(name: "DSHMacApp", dependencies: ["DSHCore"]),
         // Engine tests (tools, permissions, Qwen XML parser, loop).
         .testTarget(name: "DSHCoreTests", dependencies: ["DSHCore"]),
+        // The harness end to end: the task queue runner, /goal, retries —
+        // driven against a fake model server.
+        .testTarget(name: "DSHMacAppTests", dependencies: ["DSHMacApp", "DSHCore"]),
     ]
 )

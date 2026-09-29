@@ -217,4 +217,71 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertEqual(3723.0.formattedDuration, "1h 2m")
         XCTAssertEqual(7200.0.formattedDuration, "2h")
     }
+
+    // MARK: - Runner support
+
+    func testDragOntoReachesEveryPositionIncludingFirstAndLast() {
+        var q = TaskQueue()
+        let a = q.add("A"), b = q.add("B"), c = q.add("C")
+        // The first task can be dragged down (it used to be stuck).
+        q.move(id: a.id, onto: c.id)
+        XCTAssertEqual(q.tasks.map(\.title), ["B", "C", "A"])
+        // ... and the last can be dragged to the top.
+        q.move(id: a.id, onto: b.id)
+        XCTAssertEqual(q.tasks.map(\.title), ["A", "B", "C"])
+        // Onto a finished task: ignored.
+        q.start(c.id); q.finish(c.id, status: .complete)
+        q.move(id: a.id, onto: c.id)
+        XCTAssertEqual(q.tasks.map(\.title), ["A", "B", "C"])
+        XCTAssertEqual(q.task(a.id)?.log.last?.kind, .reordered)
+    }
+
+    func testMoveBeforeCanMoveTheFirstTask() {
+        var q = TaskQueue()
+        let a = q.add("A"), _ = q.add("B"), c = q.add("C")
+        q.move(id: a.id, before: c.id)
+        XCTAssertEqual(q.tasks.map(\.title), ["B", "A", "C"])
+        q.move(id: a.id, before: nil)
+        XCTAssertEqual(q.tasks.map(\.title), ["B", "C", "A"])
+    }
+
+    func testStartRecordsTheSessionSoAStoppedTaskResumesInItsChat() {
+        var q = TaskQueue()
+        let a = q.add("A")
+        q.start(a.id, sessionID: "chat-1")
+        XCTAssertEqual(q.task(a.id)?.sessionID, "chat-1")
+        q.markStopped(a.id)
+        XCTAssertEqual(q.task(a.id)?.status, .queued)
+        XCTAssertEqual(q.task(a.id)?.sessionID, "chat-1")
+    }
+
+    func testTaskRemembersItsProjectAndTrimsInput() {
+        var q = TaskQueue()
+        let a = q.add("  Fix it \n", details: "\n steps \n", cwd: "/tmp/proj")
+        XCTAssertEqual(a.title, "Fix it")
+        XCTAssertEqual(a.details, "steps")
+        XCTAssertEqual(a.cwd, "/tmp/proj")
+        XCTAssertNil(q.add("B", cwd: "").cwd)
+    }
+
+    func testQueueFilesWithoutNewFieldsStillDecode() throws {
+        // A task-queue.json written by 0.9.0 (no cwd).
+        let json = #"{"tasks":[{"id":"1","title":"Old","details":"","status":"queued","enteredAt":0,"rounds":0,"promptTokens":0,"completionTokens":0,"log":[]}]}"#
+        let q = try JSONDecoder().decode(TaskQueue.self, from: Data(json.utf8))
+        XCTAssertEqual(q.tasks.first?.title, "Old")
+        XCTAssertNil(q.tasks.first?.cwd)
+    }
+
+    func testNotesAndRequeueOfSkippedTasks() {
+        var q = TaskQueue()
+        let a = q.add("A")
+        q.start(a.id)
+        q.note(a.id, "Model unavailable — retrying.")
+        XCTAssertEqual(q.task(a.id)?.log.last?.text, "Model unavailable — retrying.")
+        q.remove(id: a.id)   // running → skipped
+        XCTAssertEqual(q.task(a.id)?.status, .skipped)
+        q.requeue(a.id)
+        XCTAssertEqual(q.task(a.id)?.status, .queued)
+        XCTAssertNil(q.task(a.id)?.finishedAt)
+    }
 }

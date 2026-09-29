@@ -14,7 +14,7 @@ public enum QueueLog {
         out.append("\(mark) \(task.title)")
         out.append(metaLine(task, now: now))
         for line in task.log {
-            out.append(format(line))
+            out.append(format(line, now: now))
         }
         return out.joined(separator: "\n")
     }
@@ -63,7 +63,7 @@ public enum QueueLog {
         }
         if let ended = task.finishedAt {
             let d = ended.timeIntervalSince(task.startedAt ?? ended)
-            parts.append("finished \(when(ended, now: now)) (\(d.formattedDuration), \(task.rounds) rounds)")
+            parts.append("finished \(when(ended, now: now)) (\(d.formattedDuration), \(task.rounds) round\(task.rounds == 1 ? "" : "s"))")
         } else if task.status == .running, let started = task.startedAt {
             parts.append("running \(now.timeIntervalSince(started).formattedDuration)")
         }
@@ -76,8 +76,18 @@ public enum QueueLog {
         return "  " + parts.joined(separator: " · ")
     }
 
-    private static func format(_ line: QueueLogLine) -> String {
-        "  \(when(line.at, now: Date.now))  \(line.text)"
+    /// A log line with an absolute stamp — a multi-day log must still read
+    /// right when it is copied out and read later — plus the relative age.
+    private static func format(_ line: QueueLogLine, now: Date) -> String {
+        "  \(stamp(line.at))  (\(when(line.at, now: now)))  \(line.text)"
+    }
+
+    /// "Sep 24 10:32:05".
+    public static func stamp(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM d HH:mm:ss"
+        return f.string(from: date)
     }
 
     /// Compact, readable relative timestamps: "now", "5m ago", "2h ago",

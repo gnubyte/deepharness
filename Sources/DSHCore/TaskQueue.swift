@@ -20,6 +20,14 @@ public enum QueueTaskStatus: String, Codable, CaseIterable, Sendable {
     case skipped
 
     public var label: String { rawValue.capitalized }
+
+    /// A status this build doesn't know (written by a newer one) reads as
+    /// blocked — it needs a person to look, and must never be re-run
+    /// unattended — rather than failing the whole file.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = QueueTaskStatus(rawValue: raw) ?? .blocked
+    }
 }
 
 /// One line of a task's history.
@@ -39,6 +47,11 @@ public struct QueueLogLine: Identifiable, Codable, Hashable, Sendable {
         case failed
         case skipped
         case note         // free-form (edited, archived, …)
+
+        public init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Kind(rawValue: raw) ?? .note
+        }
     }
 
     public init(id: UUID = UUID(), at: Date = .now, kind: Kind, text: String) {
@@ -64,8 +77,13 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
     /// Token totals for the whole task.
     public var promptTokens: Int = 0
     public var completionTokens: Int = 0
-    /// The session that worked this task (to jump to its transcript).
+    /// The session working / that worked this task (to jump to its
+    /// transcript, and so an interrupted task resumes in the same chat).
     public var sessionID: String?
+    /// The project folder the task was queued in; it runs there even if the
+    /// app has since switched to another project. Nil for tasks queued before
+    /// this was recorded (they run in the current project).
+    public var cwd: String?
     public var log: [QueueLogLine]
 
     public init(id: String = UUID().uuidString,
@@ -73,12 +91,14 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
                 details: String = "",
                 status: QueueTaskStatus = .queued,
                 enteredAt: Date = .now,
+                cwd: String? = nil,
                 log: [QueueLogLine] = []) {
         self.id = id
         self.title = title
         self.details = details
         self.status = status
         self.enteredAt = enteredAt
+        self.cwd = cwd
         self.log = log
     }
 
@@ -104,6 +124,31 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
 
     public mutating func appendLog(_ kind: QueueLogLine.Kind, _ text: String, at: Date = .now) {
         log.append(QueueLogLine(at: at, kind: kind, text: text))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, details, status, enteredAt, startedAt, finishedAt, rounds
+        case promptTokens, completionTokens, sessionID, cwd, log
+    }
+
+    /// Tolerant decoding: a missing field (a file from an older or newer
+    /// build) takes its default instead of failing — and a failed decode
+    /// would otherwise cost the user their whole queue.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? "Untitled task"
+        details = try c.decodeIfPresent(String.self, forKey: .details) ?? ""
+        status = try c.decodeIfPresent(QueueTaskStatus.self, forKey: .status) ?? .queued
+        enteredAt = try c.decodeIfPresent(Date.self, forKey: .enteredAt) ?? .now
+        startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
+        finishedAt = try c.decodeIfPresent(Date.self, forKey: .finishedAt)
+        rounds = try c.decodeIfPresent(Int.self, forKey: .rounds) ?? 0
+        promptTokens = try c.decodeIfPresent(Int.self, forKey: .promptTokens) ?? 0
+        completionTokens = try c.decodeIfPresent(Int.self, forKey: .completionTokens) ?? 0
+        sessionID = try c.decodeIfPresent(String.self, forKey: .sessionID)
+        cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        log = (try? c.decodeIfPresent([QueueLogLine].self, forKey: .log)) ?? []
     }
 }
 
@@ -193,8 +238,11 @@ public extension TaskQueue {
 
 public extension TaskQueue {
     @discardableResult
-    mutating func add(_ title: String, details: String = "", atFront: Bool = false) -> QueueTask {
-        var task = QueueTask(title: title, details: details)
+    mutating func add(_ title: String, details: String = "", atFront: Bool = false,
+                      cwd: String? = nil) -> QueueTask {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        var task = QueueTask(title: title, details: details.trimmingCharacters(in: .whitespacesAndNewlines),
+                             cwd: (cwd?.isEmpty ?? true) ? nil : cwd)
         task.appendLog(.entered, "Entered the queue at #\(atFront ? 1 : queuedCount + 1)")
         if atFront { tasks.insert(task, at: tasks.firstIndex { $0.status == .queued } ?? tasks.endIndex) }
         else { tasks.append(task) }
@@ -203,8 +251,8 @@ public extension TaskQueue {
 
     mutating func update(id: String, title: String?, details: String?) {
         guard var t = task(id) else { return }
-        if let title, !title.isEmpty { t.title = title }
-        if let details { t.details = details }
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { t.title = title }
+        if let details { t.details = details.trimmingCharacters(in: .whitespacesAndNewlines) }
         t.appendLog(.note, "Details updated.")
         self[t.id] = t
     }
@@ -233,22 +281,35 @@ public extension TaskQueue {
         guard to != from else { return }
         let t = tasks.remove(at: from)
         tasks.insert(t, at: to)
-        if var moved = self[t.id] {
-            moved.appendLog(.reordered, "Moved to position #\(position(of: t.id) ?? 0 + 1)")
-            self[t.id] = moved
-        }
+        logMove(t.id)
     }
 
+    /// Move a queued task so it sits just before `targetID` (nil = the end).
     mutating func move(id: String, before targetID: String?) {
-        guard let from = index(of: id), tasks[from].status == .queued, from != 0 else { return }
+        guard let from = index(of: id), tasks[from].status == .queued, targetID != id else { return }
         var to = targetID.flatMap(index(of:)) ?? tasks.count
-        guard to != from else { return }
         if to > from { to -= 1 }
+        guard to != from else { return }
         let t = tasks.remove(at: from)
         tasks.insert(t, at: to)
-        if var moved = self[t.id] {
-            moved.appendLog(.reordered, "Moved to position #\(position(of: t.id) ?? 0 + 1)")
-            self[t.id] = moved
+        logMove(t.id)
+    }
+
+    /// Drag-and-drop: dropping a queued task onto another puts it in that
+    /// task's place — after it when dragged down, before it when dragged up —
+    /// so every position, first and last included, is reachable.
+    mutating func move(id: String, onto targetID: String) {
+        guard let from = index(of: id), let to = index(of: targetID), from != to,
+              tasks[from].status == .queued, tasks[to].status == .queued else { return }
+        let t = tasks.remove(at: from)
+        tasks.insert(t, at: to)
+        logMove(t.id)
+    }
+
+    private mutating func logMove(_ id: String) {
+        if var moved = self[id] {
+            moved.appendLog(.reordered, "Moved to position #\(position(of: id) ?? 1)")
+            self[id] = moved
         }
     }
 
@@ -258,15 +319,40 @@ public extension TaskQueue {
         return tasks[0..<idx].count(where: { $0.status == .queued }) + 1
     }
 
-    mutating func start(_ id: String) {
+    mutating func start(_ id: String, sessionID: String? = nil) {
         // Queued, or a blocked/failed task being retried. Fresh stats each run.
         guard var t = task(id), t.status != .running else { return }
         t.status = .running
         t.startedAt = .now
+        t.finishedAt = nil
         t.rounds = 0
         t.promptTokens = 0
         t.completionTokens = 0
+        // Record the chat now, not at the end: a task stopped or interrupted
+        // mid-way resumes in the same conversation, with its context.
+        if let sessionID { t.sessionID = sessionID }
         t.appendLog(.started, "Work started — \(t.title)")
+        self[t.id] = t
+    }
+
+    /// Record the chat a task will run in (before it starts).
+    mutating func attachSession(_ id: String, _ sessionID: String) {
+        guard var t = task(id) else { return }
+        t.sessionID = sessionID
+        self[t.id] = t
+    }
+
+    /// Forget a deleted chat: tasks that pointed at it get a fresh one next time.
+    mutating func detachSession(_ sessionID: String) {
+        for i in tasks.indices where tasks[i].sessionID == sessionID && tasks[i].status != .running {
+            tasks[i].sessionID = nil
+        }
+    }
+
+    /// A free-form line in a task's history (model outages, recoveries, …).
+    mutating func note(_ id: String, _ text: String) {
+        guard var t = task(id) else { return }
+        t.appendLog(.note, text)
         self[t.id] = t
     }
 
@@ -283,11 +369,12 @@ public extension TaskQueue {
     /// retried next), keeping its transcript link so work resumes in the same chat.
     mutating func requeue(_ id: String, toFront: Bool = true) {
         guard var t = task(id), t.status != .running else { return }
-        let wasBlockedOrFailed = t.status == .blocked || t.status == .failed
+        let wasFinished = t.status != .queued
         guard let at = index(of: id) else { return }
         t.status = .queued
         t.startedAt = nil
-        if wasBlockedOrFailed { t.appendLog(.note, "Re-queued to retry.") }
+        t.finishedAt = nil
+        if wasFinished { t.appendLog(.note, "Re-queued to retry.") }
         _ = tasks.remove(at: at)
         if toFront {
             let front = tasks.firstIndex { $0.status == .queued } ?? tasks.endIndex
@@ -299,7 +386,7 @@ public extension TaskQueue {
     }
 
     mutating func recordRound(_ id: String, round: Int, prompt: Int, completion: Int) {
-        guard var t = task(id) else { return }
+        guard var t = task(id), t.status == .running else { return }
         t.rounds = round
         t.promptTokens += prompt
         t.completionTokens += completion
