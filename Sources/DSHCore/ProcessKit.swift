@@ -462,7 +462,7 @@ public struct ProcessWriteTool: ToolExecutor {
             process_read — pass `wait` to get a short settle before returning.
             """,
         parameters: """
-        {"type":"object","properties":{"id":{"type":"string","description":"Process id"},"input":{"type":"string","description":"Text to type"},"keys":{"type":"array","items":{"type":"string"},"description":"Named keys/controls, e.g. [\"ctrl-c\"] or [\"down\",\"enter\"]"},"enter":{"type":"boolean","description":"Press Enter after input"},"wait":{"type":"integer","description":"Seconds to let it react before returning (default 1)"}},"required":["id"]}
+        {"type":"object","properties":{"id":{"type":"string","description":"Process id"},"input":{"type":"string","description":"Text to type"},"keys":{"type":"array","items":{"type":"string"},"description":"Named keys/controls, e.g. ['ctrl-c'] or ['down','enter']"},"enter":{"type":"boolean","description":"Press Enter after input"},"wait":{"type":"integer","description":"Seconds to let it react before returning (default 1)"}},"required":["id"]}
         """
     )
 

@@ -397,10 +397,13 @@ public struct OpenAIClient: LLMClient {
         applyThinking(request, to: &body)
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map { spec -> [String: Any] in
-                var params: Any = "{}"
+                // SGLang (Pydantic) rejects a bare "{}" string here — it must be
+                // a real schema object, even for parameterless tools.
+                var params: Any = ["type": "object", "properties": [String: Any]()]
                 if let d = spec.parameters.data(using: .utf8),
-                   let o = try? JSONSerialization.jsonObject(with: d) {
-                    params = o
+                   let o = try? JSONSerialization.jsonObject(with: d),
+                   let schema = o as? [String: Any] {
+                    params = schema
                 }
                 return ["type": "function",
                         "function": ["name": spec.name,

@@ -285,6 +285,34 @@ final class MachineRegistryWiringTests: XCTestCase {
         }
     }
 
+    func testEveryToolSpecParametersAreValidJSON() throws {
+        // Regression: SGLang's Pydantic validation 400s when
+        // tools[i].function.parameters is not a JSON-object dict. A Swift
+        // multiline string turns \" into a bare " and silently corrupts the
+        // JSON, so every shipped spec must parse.
+        var tools: [any ToolExecutor] = ToolRegistry.processes()
+        tools += ToolRegistry.machineTools()
+        let registry = ToolRegistry.standard().adding(tools)
+        XCTAssertFalse(registry.specs.isEmpty)
+        for spec in registry.specs {
+            guard let data = spec.parameters.data(using: .utf8) else {
+                XCTFail("\(spec.name): empty parameters"); continue
+            }
+            do {
+                let obj = try JSONSerialization.jsonObject(with: data)
+                let schema = obj as? [String: Any]
+                if schema == nil || schema?["type"] as? String != "object" {
+                    XCTFail("\(spec.name): parameters is not a valid JSON object schema: \(spec.parameters.prefix(160))")
+                }
+                if let props = schema?["properties"] {
+                    XCTAssertTrue(props is [String: Any], "\(spec.name): properties must be an object, got \(type(of: props))")
+                }
+            } catch {
+                XCTFail("\(spec.name): parameters failed JSON parsing: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func testRemovingDropsNamedTools() {
         let registry = ToolRegistry.standard().adding(ToolRegistry.machineTools() + ToolRegistry.processes())
         let sub = registry.removing("agent", "screenshot")

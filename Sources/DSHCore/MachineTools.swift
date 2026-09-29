@@ -308,7 +308,7 @@ public struct UITreeTool: ToolExecutor {
             game/editor viewport, and this for native panels (open-file dialogs, etc.).
             """,
         parameters: """
-        {"type":"object","properties":{"app":{"type":"string","description":"Application/process name (e.g. \"Godot\", \"Finder\")"},"max_depth":{"type":"integer","description":"How deep to walk (default 3, max 6)"}},"required":["app"]}
+        {"type":"object","properties":{"app":{"type":"string","description":"Application/process name (e.g. 'Godot', 'Finder')"},"max_depth":{"type":"integer","description":"How deep to walk (default 3, max 6)"}},"required":["app"]}
         """
     )
 
@@ -427,7 +427,7 @@ public struct InspectProcessTool: ToolExecutor {
             process_read — this one sees everything, including what the user launched.
             """,
         parameters: """
-        {"type":"object","properties":{"match":{"type":"string","description":"Substring to match against the command (e.g. \"Godot\")"},"pid":{"type":"integer","description":"Inspect one pid instead (adds lsof summary)"}},"required":[]}
+        {"type":"object","properties":{"match":{"type":"string","description":"Substring to match against the command (e.g. 'Godot')"},"pid":{"type":"integer","description":"Inspect one pid instead (adds lsof summary)"}},"required":[]}
         """
     )
 
@@ -529,7 +529,7 @@ public struct KeyboardTool: ToolExecutor {
             DSH itself — that route would bypass the shell permission gate.
             """,
         parameters: """
-        {"type":"object","properties":{"text":{"type":"string","description":"Literal text to type"},"keys":{"type":"array","items":{"type":"string"},"description":"Key combos, e.g. [\"cmd,s\",\"return\"]"},"app":{"type":"string","description":"Activate this app first (name)"}},"required":[]}
+        {"type":"object","properties":{"text":{"type":"string","description":"Literal text to type"},"keys":{"type":"array","items":{"type":"string"},"description":"Key combos, e.g. ['cmd,s','return']"},"app":{"type":"string","description":"Activate this app first (name)"}},"required":[]}
         """
     )
 
@@ -665,7 +665,7 @@ public struct FocusAppTool: ToolExecutor {
         name: name,
         description: "Bring an application to the front by name (before screenshotting a game that renders behind other windows, or before keyboard/mouse input).",
         parameters: """
-        {"type":"object","properties":{"app":{"type":"string","description":"Application name (e.g. \"Godot\")"}},"required":["app"]}
+        {"type":"object","properties":{"app":{"type":"string","description":"Application name (e.g. 'Godot')"}},"required":["app"]}
         """
     )
 
