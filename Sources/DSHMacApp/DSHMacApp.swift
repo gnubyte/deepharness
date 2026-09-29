@@ -123,6 +123,11 @@ struct RootView: View {
             detail
                 .toolbar { toolbar }
         }
+        .inspector(isPresented: $model.showQueuePanel) {
+            QueueView()
+                .environment(model)
+                .inspectorColumnWidth(min: 300, ideal: 340, max: 480)
+        }
         .sheet(isPresented: $model.showWizard) {
             SetupWizard().environment(model)
         }
@@ -191,6 +196,17 @@ struct RootView: View {
 
         ToolbarItem {
             PresetMenu()
+        }
+
+        ToolbarItem {
+            Button {
+                model.showQueuePanel.toggle()
+            } label: {
+                Label("Task Queue", systemImage: model.transport.queueRunningNow
+                      ? "play.circle.fill" : "list.bullet.rectangle")
+            }
+            .help("Task queue (⌘⇧Q) — queue up work and let the harness run it unattended")
+            .keyboardShortcut("q", modifiers: [.command, .shift])
         }
 
         ToolbarItem {

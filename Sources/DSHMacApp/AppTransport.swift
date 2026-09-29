@@ -41,6 +41,19 @@ public final class AppTransport {
     /// Route IDs whose probe is already in flight (avoids duplicate requests).
     @ObservationIgnored private var probingContext: Set<String> = []
 
+    // MARK: - Task queue
+
+    /// The unattended work list. One queue per app; persisted so a week-long
+    /// run survives restarts.
+    public var queue: TaskQueue = TaskQueue() {
+        didSet { persistQueue() }
+    }
+    /// While `true`, the runner keeps working queued tasks one after another.
+    public var queueRunning = false
+    @ObservationIgnored private var queueLoop: Task<Void, Never>?
+    /// Sessions created for queue tasks; values are the task id the session served.
+    @ObservationIgnored private var queueSessions: [String: String] = [:]
+
     struct RouteInfo: Hashable {
         var servedModel: String
         var servedModels: [String]
@@ -93,6 +106,7 @@ public final class AppTransport {
         try? SkillBuiltin.install(into: skillLocations.builtinSkills)
         reload()
         refreshDrafts()
+        loadQueue()
     }
 
     public var selected: SessionVM? {
@@ -165,6 +179,270 @@ public final class AppTransport {
         log.delete(id)
         sessions.removeAll { $0.id == id }
         if selectedID == id { selectedID = sessions.first?.id }
+    }
+
+    // MARK: - Task queue
+
+    /// The queue's home for persistence: one JSON file under the app-support
+    /// folder, next to the conversations.
+    private static var queueFile: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("DSHMac", isDirectory: true)
+            .appendingPathComponent("task-queue.json")
+    }
+
+    public var queueRunningNow: Bool { queueRunning }
+
+    /// Number of archived (finished, non-selected) queue sessions currently held.
+    var archivedQueueSessions: [String: String] { queueSessions }
+
+    private func loadQueue() {
+        guard let data = try? Data(contentsOf: Self.queueFile),
+              let q = try? JSONDecoder().decode(TaskQueue.self, from: data) else {
+            self.queue = TaskQueue()
+            return
+        }
+        self.queue = q
+        // A restart mid-task can't leave a task "running" in the file: the
+        // work is lost, so it goes back to the front of the queue.
+        for i in q.tasks.indices where q.tasks[i].status == .running {
+            queue.markStopped(q.tasks[i].id, note: "Was running when the app quit — back in the queue.")
+        }
+    }
+
+    private func persistQueue() {
+        do {
+            let data = try JSONEncoder().encode(queue)
+            try FileManager.default.createDirectory(at: Self.queueFile.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try data.write(to: Self.queueFile, options: .atomic)
+        } catch {
+            // Non-fatal; the in-memory queue keeps working for this session.
+        }
+    }
+
+    // MARK: Queue CRUD
+
+    @discardableResult
+    public func queueAdd(_ title: String, details: String = "", atFront: Bool = false) -> QueueTask {
+        let t = queue.add(title, details: details, atFront: atFront)
+        return queue[t.id] ?? t
+    }
+
+    public func queueUpdate(id: String, title: String?, details: String?) {
+        queue.update(id: id, title: title, details: details)
+    }
+
+    public func queueRemove(id: String) {
+        // If a session is currently working this task, stop it first.
+        if let sessionID = queueSessions.first(where: { $0.value == id })?.key,
+           sessions.first(where: { $0.id == sessionID })?.running == true {
+            stopSession(sessionID)
+        }
+        queue.remove(id: id)
+    }
+
+    public func queueMove(id: String, by offset: Int) { queue.move(id: id, by: offset) }
+    public func queueMove(id: String, before target: String?) { queue.move(id: id, before: target) }
+
+    /// Archive a finished task's session so a long queue doesn't pile up in
+    /// RAM: persist the (possibly auto-compacted) timeline to disk, then drop
+    /// the in-memory model transcript and engine — both of which `turn()` and
+    /// `engine(for:)` rebuild on demand. The session stays in the sidebar with
+    /// its timeline, so the chat is still openable; if we clear the display
+    /// (for non-selected sessions) it re-hydrates from disk on open.
+    public func queueEvict(_ sessionID: String, taskID: String?) {
+        guard let taskID,
+              let task = queue.task(taskID),
+              task.status == .complete || task.status == .failed,
+              let vm = sessions.first(where: { $0.id == sessionID }) else { return }
+        // Save the current display timeline (compaction dividers included) so
+        // a later re-open / resume starts from the compacted summary.
+        log.resync(sessionID, rows: Self.logRows(for: vm.entries, sessionID: sessionID))
+        transcripts[sessionID] = nil
+        engines[sessionID] = nil
+        engineKeys[sessionID] = nil
+        // Release the display entries too unless the user is looking at it —
+        // the next task will select a fresh session, so this rarely fires for
+        // the visible one, and it keeps 100 finished chats from holding 100
+        // full timelines in memory at once.
+        if selectedID != sessionID {
+            vm.entries = []
+            vm.contextUsed = nil
+        }
+    }
+
+    // MARK: Runner
+
+    /// Start the queue: work tasks one at a time until none remain (or the
+    /// user stops it). Idempotent.
+    public func startQueue() {
+        guard !queueRunningNow else { return }
+        guard config.isConfigured else {
+            broadcast("No model is configured — run the setup wizard, then start the queue.", error: true)
+            return
+        }
+        guard queue.nextTask != nil || queue.hasRunning else {
+            broadcast("The queue is empty — add a task first.")
+            return
+        }
+        config.queuePaused = false
+        queueRunning = true
+        queueLoop = Task { [weak self] in
+            await self?.queueRunLoop()
+        }
+    }
+
+    /// Stop the queue: cancel the in-flight task, return it to the queue.
+    public func stopQueue() {
+        guard queueRunningNow else { return }
+        queueRunning = false
+        // Deliberate pause: remember it so a restart doesn't auto-resume.
+        config.queuePaused = true
+        if let running = queue.runningTask {
+            if let sessionID = queueSessions.first(where: { $0.value == running.id })?.key {
+                stopSession(sessionID)   // cancels the run task
+            }
+            queue.markStopped(running.id)
+        }
+        queueSessions = [:]
+    }
+
+    private func queueRunLoop() async {
+        defer { queueRunning = false; queueLoop = nil }
+        while !Task.isCancelled {
+            guard queueRunning else { break }
+            guard let task = queue.nextTask else { break }
+            let outcome = await work(taskID: task.id)
+            if outcome == .stopped || !queueRunning { break }
+        }
+        if queue.stats().finished {
+            let s = queue.stats()
+            broadcast("Queue finished: \(s.completed) complete, \(s.failed) failed, \(s.blocked) blocked.")
+        }
+    }
+
+    private enum WorkOutcome { case done, stopped }
+
+    /// Take the next task and run its unattended goal loop to a conclusion.
+    private func work(taskID: String) async -> WorkOutcome {
+        guard let task = queue.task(taskID) else { return .done }
+        queue.start(taskID)
+
+        // Pick a session: the one this task already used (resume a blocked
+        // task where it stopped), or a fresh chat in the current project.
+        // The preset follows the app's current setting — an unattended week
+        // of work needs the autonomy the user already chose.
+        let sessionID: String
+        if let existing = task.sessionID, sessions.first(where: { $0.id == existing }) != nil {
+            sessionID = existing
+        } else {
+            let cwd = projectContext?.root.path ?? sessions.first?.cwd
+            let vm = newSession(cwd: cwd)
+            sessionID = vm.id
+            renameSession(sessionID, to: "🚀 \(task.title)")
+        }
+        queueSessions[sessionID] = taskID
+        guard let vm = sessions.first(where: { $0.id == sessionID }) else {
+            queueSessions[sessionID] = nil
+            return .done
+        }
+        // An archived task's compacted timeline lives on disk: replay it.
+        if vm.entries.isEmpty { hydrate(vm) }
+
+        let runner = Task { [weak self] in
+            guard let self else { return }
+            await self.runTaskGoal(vm: vm, taskID: taskID, auto: true)
+        }
+        runTasks[sessionID] = runner
+        vm.running = true
+        // Follow the active task, unless the user is deliberately watching a
+        // different running chat (the sidebar's running bar offers a jump back).
+        if let current = selected, !current.running || current.id == sessionID {
+            selectedID = sessionID
+        }
+        _ = await runner.value
+        let wasStopped = queue.task(taskID)?.status == .running
+        finishTaskSession(vm, taskID: taskID)
+        return wasStopped ? .stopped : .done
+    }
+
+    /// Post-goal cleanup shared by the queue runner and interactive resume:
+    /// reset the session's live state and, if the task was cancelled mid-way,
+    /// put it back in the queue exactly once.
+    private func finishTaskSession(_ vm: SessionVM, taskID: String) {
+        vm.running = false
+        vm.stopping = false
+        vm.goal = nil
+        vm.activity = nil
+        vm.clearReasoning()
+        vm.endStreaming()
+        runTasks[vm.id] = nil
+        queueSessions[vm.id] = nil
+        log.touch(vm.id)
+        vm.updatedAt = .now
+        sessions.sort { $0.updatedAt > $1.updatedAt }
+        if queue.task(taskID)?.status == .running {
+            queue.markStopped(taskID)
+        }
+    }
+
+    /// Runs the goal loop for a task — unattended (`auto: true`, the queue
+    /// path) or an interactive resume in the task's own chat — and records
+    /// the outcome in the queue.
+    private func runTaskGoal(vm: SessionVM, taskID: String, auto: Bool) async {
+        guard let task = queue.task(taskID) else { return }
+        do {
+            let outcome = try await goalLoop(vm, goal: task.goalText, auto: auto)
+            switch outcome {
+            case .complete:
+                queue.finish(taskID, status: .complete, sessionID: vm.id)
+            case .blocked(let why):
+                queue.finish(taskID, status: .blocked, reason: why, sessionID: vm.id)
+            case .exhaustedRounds:
+                queue.finish(taskID, status: .failed, reason: "Ran out of rounds without finishing.", sessionID: vm.id)
+            case .stopped:
+                break // cancelled; finishTaskSession puts it back in the queue
+            }
+            settle(taskID: taskID, sessionID: vm.id)
+        } catch is CancellationError {
+            // Stopped by the user; nothing to record.
+        } catch {
+            let why = Self.describe(error)
+            queue.finish(taskID, status: .failed, reason: why, sessionID: vm.id)
+            vm.note(why, role: .error)
+            settle(taskID: taskID, sessionID: vm.id)
+        }
+    }
+
+    private func settle(taskID: String, sessionID: String) {
+        guard let task = queue.task(taskID) else { return }
+        switch task.status {
+        case .complete, .blocked, .failed, .skipped:
+            break
+        default:
+            return
+        }
+        if let vm = sessions.first(where: { $0.id == sessionID }) {
+            switch task.status {
+            case .complete:
+                let d = task.duration?.formattedDuration ?? "?"
+                let rate = task.avgTokensPerSecond.map { "\(Int($0.rounded())) tokens/s avg" } ?? ""
+                vm.note("✅ Task complete — \(task.rounds) round\(task.rounds == 1 ? "" : "s"), \(d)\(rate.isEmpty ? "" : " · \(rate)"). Next up.")
+            case .blocked:
+                vm.note("⏸ Task blocked — the queue is waiting on you. Fix it here, then press ▶ (Resume).")
+            case .failed:
+                vm.note("Task failed. Fix it in this chat, then press ▶ (Resume) to retry it.", role: .error)
+            default: break
+            }
+        }
+        // Archive finished tasks: the transcript stays on disk (auto-compaction
+        // kept it small), the in-memory transcript + engine go — so 100 tasks
+        // over a week don't pile up in RAM. Blocked tasks keep their session
+        // intact so the model resumes with full context.
+        if task.status == .complete || task.status == .failed {
+            queueEvict(sessionID, taskID: taskID)
+        }
     }
 
     public func renameSession(_ id: String, to title: String) {
@@ -338,12 +616,30 @@ public final class AppTransport {
 
     /// Bridge `Engine.permissionGate` to the UI: publish the gate on the
     /// session and await the user's answer.
+    ///
+    /// Queue tasks run unattended — a gate nobody answers would stall the
+    /// whole queue. So for queue sessions the decision times out (auto-deny)
+    /// after a few minutes, and the stall is surfaced in the chat.
     private func askGate(sessionID: String, gateID: String, name: String, detail: String) async -> Bool {
         guard let vm = sessions.first(where: { $0.id == sessionID }) else { return false }
         vm.pendingGates.removeAll { $0.id == gateID }
         vm.pendingGates.append(.init(id: gateID, name: name, detail: detail))
+        let isQueue = queueSessions[sessionID] != nil
         let decision: Bool = await withCheckedContinuation { continuation in
             gates[gateID] = (continuation, sessionID)
+            if isQueue {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                    guard let entry = self.gates[gateID] else { return } // answered or cancelled
+                    self.gates[gateID] = nil
+                    self.sessions.first { $0.id == sessionID }?.pendingGates.removeAll { $0.id == gateID }
+                    if let v = self.sessions.first(where: { $0.id == sessionID }) {
+                        v.note("Permission for \(name) auto-denied after 5 minutes (queue task runs unattended). "
+                               + "Reply 'allow' in this chat and the task can be retried.", role: .error)
+                    }
+                    entry.cont.resume(returning: false)
+                }
+            }
         }
         gates[gateID] = nil
         vm.pendingGates.removeAll { $0.id == gateID }
@@ -452,6 +748,20 @@ public final class AppTransport {
         case .compact(let focus):
             runTasks[vm.id] = Task { await compactNow(vm, focus: focus) }
 
+        case .queue:
+            if queueRunningNow {
+                let s = queue.stats()
+                vm.note("Queue is running — \(s.queued) waiting, \(s.completed) done so far. ⌘⇧Q shows the panel; Stop there (or ⌘.) halts it.")
+            } else {
+                let s = queue.stats()
+                if s.queued > 0 {
+                    vm.note("Starting the queue: \(s.queued) task\(s.queued == 1 ? "" : "s") to go, one at a time, unattended.")
+                    startQueue()
+                } else {
+                    vm.note("The queue is empty. Add tasks from the Task Queue panel (⌘⇧Q), then press Start — or /queue again.")
+                }
+            }
+
         case .goal(let goal):
             guard !goal.isEmpty else {
                 vm.note("Usage: `/goal <what you want done>` — the agent keeps working, round after round, "
@@ -506,6 +816,40 @@ public final class AppTransport {
 
     // MARK: - Turns
 
+    /// Resume a blocked/failed queue task: put it back in the queue (at the
+    /// front, so it is worked next when the queue runs) and open its chat.
+    /// The chat keeps the task's transcript, so the model can pick up where
+    /// the previous attempt stopped.
+    /// Resume a blocked/failed queue task in its own chat: work it as a goal
+    /// (the user is present, so the interactive protocol applies and ⌘. stops).
+    public func resumeTask(_ taskID: String) {
+        guard let task = queue.task(taskID),
+              task.status == .blocked || task.status == .failed
+        else { return }
+        // Find the task's session, or start one in the current project.
+        let vm: SessionVM
+        if let sid = task.sessionID, let existing = sessions.first(where: { $0.id == sid }) {
+            vm = existing
+        } else {
+            let cwd = projectContext?.root.path ?? sessions.first?.cwd
+            vm = newSession(cwd: cwd)
+            renameSession(vm.id, to: "🚀 \(task.title)")
+            if var t = queue.task(taskID) {
+                t.sessionID = vm.id
+                queue[t.id] = t
+            }
+        }
+        guard !vm.running else { return }
+        queue.start(taskID)
+        selectedID = vm.id
+        hydrate(vm)
+        runTasks[vm.id] = Task { [weak self] in
+            guard let self else { return }
+            await self.runTaskGoal(vm: vm, taskID: taskID, auto: true)
+            self.finishTaskSession(vm, taskID: taskID)
+        }
+    }
+
     private func runTurn(_ vm: SessionVM, text: String, attachments: [MessageAttachment] = [],
                          goal: String? = nil, modelText: String? = nil) async {
         let sessionID = vm.id
@@ -557,42 +901,93 @@ public final class AppTransport {
         }
     }
 
+    /// The three ways a goal loop can end.
+    public enum GoalOutcome: Equatable, Sendable {
+        case complete
+        case blocked(String)
+        case exhaustedRounds
+        case stopped   // cancelled by the user
+    }
+
     /// `/goal`: run turns until the model writes GOAL_COMPLETE (or GOAL_BLOCKED),
     /// re-stating the goal every round so it survives compaction.
     private func runGoal(_ vm: SessionVM, goal: String) async throws {
-        let maxRounds = GoalProtocol.defaultMaxRounds
-        vm.goal = .init(text: goal, round: 1, maxRounds: maxRounds)
-        var result = try await turn(vm, modelText: GoalProtocol.kickoff(goal),
-                                    displayText: "🎯 /goal \(goal)", attachments: [])
+        let outcome = try await goalLoop(vm, goal: goal, auto: false)
+        switch outcome {
+        case .complete: break
+        case .blocked(let why):
+            let text = "⏸ Goal paused — the agent needs you: \(why)\nReply, then send `/goal` again to resume."
+            vm.note(text)
+            log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+        case .exhaustedRounds:
+            let text = "Goal stopped after \(GoalProtocol.defaultMaxRounds) rounds without being declared complete. Send `/goal` again to keep going."
+            vm.note(text, role: .error)
+            log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+        case .stopped: break
+        }
+    }
+
+    /// The unattended goal loop used by the task queue. Same protocol, but:
+    /// the kickoff/continuation say "decide and move on", it runs up to the
+    /// higher `defaultMaxRoundsAuto` budget, and every round reports its tokens
+    /// back so the queue can log average speed. Cancellation reads as `.stopped`.
+    private func goalLoop(_ vm: SessionVM, goal: String, auto: Bool) async throws -> GoalOutcome {
+        let maxRounds = auto ? GoalProtocol.defaultMaxRoundsAuto : GoalProtocol.defaultMaxRounds
+        var state = vm.goal ?? SessionVM.GoalState(text: goal, round: 1, maxRounds: maxRounds)
+        state.round = 1
+        state.maxRounds = maxRounds
+        vm.goal = state
+        // Queue turns run outside runTurn, so clean up the same flags it does.
+        defer {
+            vm.goal = nil
+            vm.activity = nil
+            vm.clearReasoning()
+            vm.endStreaming()
+        }
+
+        func report(_ r: Int, _ usage: LLMUsage?) {
+            if auto, let taskID = queueSessions[vm.id] {
+                queue.recordRound(taskID, round: r, prompt: usage?.promptTokens ?? 0,
+                                  completion: usage?.completionTokens ?? 0)
+            }
+        }
+
+        var result = try await turn(vm, modelText: auto ? GoalProtocol.kickoffAuto(goal) : GoalProtocol.kickoff(goal),
+                                    displayText: auto ? "🚀 queue: \(goal)" : "🎯 /goal \(goal)", attachments: [])
+        report(1, result.usage)
         var round = 1
         while true {
             switch GoalProtocol.status(of: result.finalText) {
             case .complete:
-                let text = "✅ Goal complete after \(round) round\(round == 1 ? "" : "s")."
-                vm.note(text)
-                log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
-                return
+                if !auto {
+                    let text = "✅ Goal complete after \(round) round\(round == 1 ? "" : "s")."
+                    vm.note(text)
+                    log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+                }
+                return .complete
             case .blocked(let why):
-                let text = "⏸ Goal paused — the agent needs you: \(why)\nReply, then send `/goal \(goal.prefix(60))…` again to resume."
-                vm.note(text)
-                log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
-                return
+                if !auto {
+                    let text = "⏸ Goal paused — the agent needs you: \(why)\nReply, then send `/goal` again to resume."
+                    vm.note(text)
+                    log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+                }
+                return .blocked(why)
             case .working:
                 break
             }
-            if Task.isCancelled { throw CancellationError() }
-            guard round < maxRounds else {
-                let text = "Goal stopped after \(maxRounds) rounds without being declared complete. Send `/goal` again to keep going."
-                vm.note(text, role: .error)
-                log.recordItem(vm.id, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
-                return
-            }
+            if Task.isCancelled { return .stopped }
+            guard round < maxRounds else { return .exhaustedRounds }
             round += 1
-            vm.goal?.round = round
-            result = try await turn(vm,
-                                    modelText: GoalProtocol.continuation(goal, round: round, maxRounds: maxRounds,
-                                                                         hitIterationLimit: result.hitIterationLimit),
-                                    displayText: "↻ Goal round \(round): keep going", attachments: [])
+            state.round = round
+            vm.goal = state
+            let modelText = auto
+                ? GoalProtocol.continuationAuto(goal, round: round, maxRounds: maxRounds,
+                                                 hitIterationLimit: result.hitIterationLimit)
+                : GoalProtocol.continuation(goal, round: round, maxRounds: maxRounds,
+                                             hitIterationLimit: result.hitIterationLimit)
+            result = try await turn(vm, modelText: modelText,
+                                    displayText: "↻ round \(round): keep going", attachments: [])
+            report(round, result.usage)
         }
     }
 
@@ -600,6 +995,14 @@ public final class AppTransport {
     private func turn(_ vm: SessionVM, modelText: String, displayText: String,
                       attachments: [MessageAttachment]) async throws -> RunResult {
         let sessionID = vm.id
+        // Prime the transcript from the display timeline when it's missing: a
+        // brand-new session (no entries → empty) or an *archived* queue task
+        // whose in-memory transcript was evicted but whose compacted timeline
+        // still lives on disk. This happens before the user entry is appended
+        // so the current turn's text is not sent twice.
+        if transcripts[sessionID] == nil {
+            transcripts[sessionID] = vm.entries.isEmpty ? [] : Self.replayMessages(vm.entries)
+        }
         vm.appendMessage(.user, displayText)
         log.recordItem(sessionID, kind: "user", text: displayText, toolName: nil, argSummary: nil, output: nil, isError: false)
         if vm.title == "New chat" {
@@ -607,7 +1010,6 @@ public final class AppTransport {
             let title = String(first.prefix(48))
             if !title.isEmpty { renameSession(sessionID, to: title) }
         }
-        if transcripts[sessionID] == nil { transcripts[sessionID] = [] }
 
         // Re-read what the server serves right now: the Spark can swap models
         // between turns, and the window/model id must follow.
@@ -907,6 +1309,7 @@ public final class AppTransport {
     }
 
     public func stopAll() {
+        stopQueue()
         for id in runTasks.keys { stopSession(id) }
     }
 

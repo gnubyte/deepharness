@@ -20,6 +20,8 @@ public enum SlashCommand: Equatable, Sendable {
     case skills
     /// "/skill <name>" toggles a skill for this chat; "/skill new <what it should do>" writes one.
     case skill(String?)
+    /// Start (or report) the unattended task queue.
+    case queue
     case help
 
     public struct Info: Sendable {
@@ -39,6 +41,7 @@ public enum SlashCommand: Equatable, Sendable {
         .init(usage: "/swap [model]", summary: "Show the Spark's models, or switch what it serves (e.g. /swap flash)"),
         .init(usage: "/skills", summary: "List skills and what is selected for this chat"),
         .init(usage: "/skill <name>|new <what>", summary: "Select/deselect a skill for this chat, or have the model write a new one"),
+        .init(usage: "/queue", summary: "Start the task queue — it works queued tasks one at a time, unattended"),
         .init(usage: "/help", summary: "List commands"),
     ]
 
@@ -56,6 +59,7 @@ public enum SlashCommand: Equatable, Sendable {
         case "/swap", "/model", "/models", "/serve": return .swap(arg)
         case "/skills": return .skills
         case "/skill": return .skill(arg)
+        case "/queue": return .queue
         case "/help", "/?", "/commands": return .help
         default: return nil
         }
@@ -71,6 +75,9 @@ public enum GoalProtocol {
     public static let completeMarker = "GOAL_COMPLETE"
     public static let blockedMarker = "GOAL_BLOCKED"
     public static let defaultMaxRounds = 40
+    /// Unattended (task-queue) runs get more room: a week of work shouldn't
+    /// need babysitting, and the model still has to declare completion.
+    public static let defaultMaxRoundsAuto = 200
 
     public enum Status: Equatable, Sendable {
         case working
@@ -94,6 +101,31 @@ public enum GoalProtocol {
         or an external blocker), finish with a line:
         \(blockedMarker): <what you need from the user>
         Never write either marker in any other situation.
+        """
+    }
+
+    /// The unattended variant (task queue): the user is not at the keyboard,
+    /// so "blocked" is reserved for true external walls — anything that can
+    /// be decided by reading code, running a build, or checking a state gets
+    /// decided and worked through instead.
+    public static func kickoffAuto(_ goal: String) -> String {
+        kickoff(goal) +
+        """
+
+        This goal is running unattended in the task queue. The user will not see this
+        conversation until it finishes, so never stop to ask a question you can answer \
+        yourself: read the code, run the build, test it, and make the call. If something \
+        truly cannot proceed without them, finish with `\(blockedMarker): <exactly what you \
+        need>` and stop — it will be picked back up later.
+        """
+    }
+
+    public static func continuationAuto(_ goal: String, round: Int, maxRounds: Int,
+                                        hitIterationLimit: Bool) -> String {
+        continuation(goal, round: round, maxRounds: maxRounds, hitIterationLimit: hitIterationLimit) +
+        """
+
+        Reminder: unattended run — decide and move on; only `\(blockedMarker)` stops it.
         """
     }
 

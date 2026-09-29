@@ -33,6 +33,8 @@ final class AppModel {
     var showWizard = false
     var showSettings = false
     var showMemoryAndSkills = false
+    /// The task-queue side panel.
+    var showQueuePanel = false
     /// Which Settings tab is showing; set before `showSettings` to deep-link.
     var settingsTab: SettingsTab = .general
     /// A skills action a caller wants the Skills tab to start with.
@@ -62,6 +64,20 @@ final class AppModel {
         if let recent = config.liveRecentProjects.first {
             openProject(recent, activateSession: false)
         }
+
+        // An interrupted task queue (crash, restart, quit) resumes automatically;
+        // one the user deliberately stopped does not.
+        resumeQueueIfNeeded()
+    }
+
+    /// If the last session left work in the queue and the user didn't explicitly
+    /// stop it, start processing it again. Requires a configured model — we never
+    /// want to auto-fail a whole queue because the Spark is down at launch.
+    func resumeQueueIfNeeded() {
+        guard config.isConfigured,
+              !config.queuePaused,
+              transport.queue.nextTask != nil || transport.queue.hasRunning else { return }
+        transport.startQueue()
     }
 
     var selectedSession: SessionVM? { transport.selected }
@@ -144,6 +160,12 @@ final class AppModel {
     }
 
     func stopAll() { transport.stopAll() }
+
+    /// Jump to a chat by id (used by the queue's "Open chat").
+    func openSession(_ id: String) {
+        mode = .chat
+        select(id)
+    }
 
     var anythingRunning: Bool { !transport.runningSessions.isEmpty }
 }

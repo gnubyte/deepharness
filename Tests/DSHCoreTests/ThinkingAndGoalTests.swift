@@ -110,6 +110,23 @@ final class SlashAndGoalTests: XCTestCase {
         let c = GoalProtocol.continuation("fix the build", round: 3, maxRounds: 40, hitIterationLimit: true)
         XCTAssertTrue(c.contains("fix the build") && c.contains("round 3") && c.contains("cut off"))
     }
+
+    func testAutoGoalProtocol() {
+        XCTAssertEqual(GoalProtocol.defaultMaxRoundsAuto, 200)
+        let k = GoalProtocol.kickoffAuto("refactor the parser")
+        XCTAssertTrue(k.contains("refactor the parser"))
+        XCTAssertTrue(k.contains("GOAL_COMPLETE"))
+        XCTAssertTrue(k.contains("unattended"))
+        // Auto prompts must not promise to ask the user for confirmation.
+        XCTAssertFalse(k.contains("Stop it any time"))
+        let c = GoalProtocol.continuationAuto("refactor the parser", round: 2, maxRounds: 200, hitIterationLimit: false)
+        XCTAssertTrue(c.contains("round 2 of 200"))
+        XCTAssertTrue(c.contains("unattended"))
+        // Blocked marker still recognized after the auto reminder.
+        XCTAssertEqual(GoalProtocol.status(of: c + "\nGOAL_BLOCKED: need the API key"),
+                       .blocked("need the API key"))
+        XCTAssertEqual(GoalProtocol.status(of: "done\nGOAL_COMPLETE"), .complete)
+    }
 }
 
 final class CompactionForceTests: XCTestCase {
