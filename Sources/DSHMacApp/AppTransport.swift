@@ -24,6 +24,13 @@ public final class AppTransport {
     /// Bumped whenever skills change on disk through the app, so open views reload.
     public private(set) var skillsRevision = 0
     @ObservationIgnored public let skillLocations: SkillLocations
+    /// API keys, tokens and passwords the agent uses as `{{vault:NAME}}`.
+    @ObservationIgnored public let vault: CredentialVault
+    /// Bumped when the vault changes through the app, so open views reload
+    /// and engines rebuild their prompt.
+    public private(set) var vaultRevision = 0
+    /// Per chat: credentials set to "ask first" that the user has allowed.
+    @ObservationIgnored private var vaultGrants: [String: VaultGrants] = [:]
     /// Where the task queue is persisted.
     @ObservationIgnored private let queueFile: URL
     /// How engines retry model calls that fail transiently (tests shorten it).
@@ -103,6 +110,8 @@ public final class AppTransport {
         var skills: Int
         var computerTools: Bool
         var vision: Bool
+        /// The vault's names are in the prompt; a change rebuilds it.
+        var vault: Int
     }
 
     /// Everything about skills one turn needs: what exists, what's on, and the prompt text.
@@ -132,11 +141,13 @@ public final class AppTransport {
     }
 
     public init(config: AppConfig, log: ConversationLog = .shared, systemPrompt: String? = nil,
-                queueFile: URL? = nil, skillLocations: SkillLocations = .standard) {
+                queueFile: URL? = nil, skillLocations: SkillLocations = .standard,
+                vault: CredentialVault? = nil) {
         self.config = config
         self.log = log
         self.basePrompt = systemPrompt ?? Self.defaultSystemPrompt
         self.skillLocations = skillLocations
+        self.vault = vault ?? CredentialVault(directory: skillLocations.appSupport)
         self.queueFile = queueFile ?? Self.defaultQueueFile
         // Ship-with-the-app skills (godot-debugging, …) refresh on every launch.
         try? SkillBuiltin.install(into: skillLocations.builtinSkills)
@@ -210,6 +221,7 @@ public final class AppTransport {
         engines[id] = nil
         engineKeys[id] = nil
         computerGrants[id] = nil
+        vaultGrants[id] = nil
         config.sessionSkills[id] = nil
         transcripts[id] = nil
         systemPrompts[id] = nil
@@ -797,6 +809,7 @@ public final class AppTransport {
         // Skills: always-on rules, the ones the user selected for this chat,
         // and a catalog the model can load from with `use_skill`.
         if !skillState.result.text.isEmpty { prompt += "\n\n" + skillState.result.text }
+        prompt += "\n\n" + Self.vaultPrompt(vault.all)
         if vm.preset == .plan {
             prompt += """
 
@@ -810,6 +823,7 @@ public final class AppTransport {
         let builtins = ToolRegistry.standard()
         var extra: [any ToolExecutor] = PluginLoader.tools(from: plugins, reserved: Set(builtins.names))
         if !skillState.active.isEmpty { extra.append(UseSkillTool(skills: skillState.active)) }
+        extra.append(VaultSearchTool(vault: vault))
         if vm.preset != .plan {
             extra.append(ProposeSkillTool(projectRoot: vm.workspaceURL, locations: skillLocations))
         }
@@ -853,10 +867,61 @@ public final class AppTransport {
             computerGrants: grants(for: sessionID),
             reroute: { [weak self] in
                 await self?.rerouteForRetry(sessionID: sessionID)
-            }
+            },
+            vault: vault,
+            vaultGrants: vaultGrants(for: sessionID)
         )
         engines[sessionID] = engine
         return engine
+    }
+
+    private func vaultGrants(for sessionID: String) -> VaultGrants {
+        if let existing = vaultGrants[sessionID] { return existing }
+        let fresh = VaultGrants()
+        vaultGrants[sessionID] = fresh
+        return fresh
+    }
+
+    // MARK: - Credential vault
+
+    /// What the model is told about the vault: which credentials exist (by
+    /// name — never a value) and how to use one.
+    static func vaultPrompt(_ entries: [VaultEntry]) -> String {
+        guard !entries.isEmpty else {
+            return """
+            --- Credential vault ---
+            The user keeps API keys, tokens and passwords in a credential vault (empty right now). If a task needs one, \
+            ask them to add it in the Credentials Vault (⌘⇧K) — never ask them to paste a secret into the chat.
+            """
+        }
+        let usable = entries.filter { $0.access != .never }
+        let listed = usable.prefix(30).map { e -> String in
+            var s = "- \(e.placeholder) (\(e.kind.label)"
+            if !e.description.isEmpty { s += ": \(String(e.description.prefix(80)))" }
+            if e.access == .ask { s += "; asks the user first" }
+            return s + ")"
+        }
+        var text = """
+        --- Credential vault ---
+        The user's credentials are in a vault. You never see their values. To use one, write its placeholder where \
+        the value goes in any tool call — a shell command (`export OPENAI_API_KEY={{vault:OPENAI_API_KEY}}; …`), a \
+        file you write (.env), a URL or header. The harness substitutes the real value when the tool runs and shows \
+        [vault:NAME] in results — that text holds the real value, so write {{vault:NAME}} to refer to it (in an edit, \
+        for instance). Use vault_search to look credentials up; never ask the user to paste a secret.
+        """
+        if listed.isEmpty {
+            text += "\nNo credential is currently available to you."
+        } else {
+            text += "\nAvailable:\n" + listed.joined(separator: "\n")
+            if usable.count > 30 { text += "\n… and \(usable.count - 30) more (vault_search)." }
+        }
+        return text
+    }
+
+    /// The vault changed (added, edited, deleted in the UI): reload views and
+    /// let each chat's next turn pick up the new list.
+    public func vaultDidChange() {
+        vaultRevision += 1
     }
 
     private func grants(for sessionID: String) -> ComputerGrants {
@@ -1355,7 +1420,7 @@ public final class AppTransport {
         let skillState = self.skillState(for: vm)
         let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset,
                             skills: skillState.signature, computerTools: config.computerToolsEnabled,
-                            vision: visionOn(for: profile))
+                            vision: visionOn(for: profile), vault: vault.revision)
         if let previous = engineKeys[sessionID], previous.profile.model != profile.model {
             vm.note("The server is now serving `\(profile.model)` (was `\(previous.profile.model)`) — switched to it, \(window.formatted())-token window.")
         }

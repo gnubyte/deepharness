@@ -11,6 +11,8 @@ enum FakeReply: Sendable {
     case transport(URLError.Code)
     /// Answer `text` after `seconds` (lets a test stop a task mid-request).
     case slow(TimeInterval, String)
+    /// Call one tool (name, JSON arguments).
+    case toolCall(String, String)
 }
 
 /// One chat request as the fake server saw it.
@@ -67,6 +69,12 @@ final class FakeModelServer: URLProtocol, @unchecked Sendable {
             respond(code, body, contentType: "application/json")
         case .transport(let code):
             client?.urlProtocol(self, didFailWithError: URLError(code))
+        case .toolCall(let name, let args):
+            let call: [String: Any] = ["index": 0, "id": "call_\(index)", "type": "function",
+                                       "function": ["name": name, "arguments": args]]
+            let delta = try! JSONSerialization.data(withJSONObject: ["choices": [["delta": ["tool_calls": [call]]]]])
+            respond(200, "data: \(String(decoding: delta, as: UTF8.self))\n\n"
+                    + #"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"# + "\n\n" + "data: [DONE]\n\n")
         case .slow(let seconds, let t):
             let work = DispatchWorkItem { [weak self] in self?.respond(200, Self.sse(t)) }
             pending = work
@@ -145,7 +153,8 @@ final class QueueRunnerTests: XCTestCase {
         config.computerToolsEnabled = false
         let t = AppTransport(config: config, log: ConversationLog(dir: dir.appendingPathComponent("log", isDirectory: true)),
                              queueFile: dir.appendingPathComponent("task-queue.json"),
-                             skillLocations: SkillLocations(home: dir, appSupport: dir.appendingPathComponent("support")))
+                             skillLocations: SkillLocations(home: dir, appSupport: dir.appendingPathComponent("support")),
+                             vault: CredentialVault(directory: dir.appendingPathComponent("vault"), store: MemoryBlobStore()))
         t.retryPolicy = RetryPolicy(delay: { _ in 0.05 })
         t.goalErrorBackoff = { _ in 0.05 }
         return t
@@ -495,6 +504,35 @@ final class QueueRunnerTests: XCTestCase {
         try await waitUntil("relaunched done") { !relaunched.queueRunning }
         XCTAssertEqual(relaunched.queue.task(t.id)?.status, .complete)
         XCTAssertEqual(relaunched.queue.task(t.id)?.sessionID, chat)
+    }
+
+    // MARK: Vault
+
+    func testVaultSecretReachesTheToolButNeverTheModelOrTheLogs() async throws {
+        let secret = "tok-SECRET-9f8e7d6c"
+        try transport.vault.add(name: "DEPLOY_TOKEN", value: secret, description: "Deploys")
+        transport.vaultDidChange()
+        FakeModelServer.reset { _, n in
+            n == 1 ? .toolCall("run_shell_command", #"{"command":"echo token={{vault:DEPLOY_TOKEN}}"}"#) : .text("Deployed.")
+        }
+        let vm = transport.newSession(cwd: project("main").path)
+        transport.send("deploy it", sessionID: vm.id)
+        try await waitUntil("answered") { !vm.running && FakeModelServer.seen.count == 2 }
+
+        let first = try XCTUnwrap(FakeModelServer.seen.first)
+        XCTAssertTrue(first.messages.first?["content"]?.contains("{{vault:DEPLOY_TOKEN}}") ?? false, "the prompt lists the credential")
+        let toolResult = FakeModelServer.seen[1].messages.first { $0["role"] == "tool" }?["content"] ?? ""
+        XCTAssertTrue(toolResult.contains("token=[vault:DEPLOY_TOKEN]"), toolResult)
+        for request in FakeModelServer.seen {
+            XCTAssertFalse(request.messages.contains { $0["content"]?.contains(secret) ?? false }, "the model never sees it")
+        }
+        XCTAssertFalse(vm.entries.contains { "\($0.kind)".contains(secret) }, "not on screen")
+        transport.log.flush(wait: true)
+        let logDir = dir.appendingPathComponent("log")
+        for file in try FileManager.default.contentsOfDirectory(at: logDir, includingPropertiesForKeys: nil) {
+            XCTAssertFalse(try String(contentsOf: file, encoding: .utf8).contains(secret), "not in \(file.lastPathComponent)")
+        }
+        XCTAssertEqual(transport.vault.entry(named: "DEPLOY_TOKEN")?.useCount, 1)
     }
 
     // MARK: /goal

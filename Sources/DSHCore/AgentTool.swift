@@ -72,7 +72,9 @@ public struct AgentTool: ToolExecutor {
                     return messages
                 }
                 return [LLMMessage(role: .system, content: Compaction.summaryHeader + summary)] + plan.toKeep
-            }
+            },
+            vault: context.vault,
+            vaultGrants: context.vaultGrants
         )
 
         do {

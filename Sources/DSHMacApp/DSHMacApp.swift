@@ -83,6 +83,8 @@ struct AppCommands: Commands {
             Divider()
             Button("Memory & Skills…") { model.showMemoryAndSkills = true }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+            Button("Credentials Vault…") { model.showVault = true }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
             Button("Reload Project Context") { model.transport.refreshProjectContext() }
                 .disabled(model.project == nil)
         }
@@ -138,6 +140,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $model.showMemoryAndSkills) {
             MemorySkillsView().environment(model)
+        }
+        .sheet(isPresented: $model.showVault) {
+            VaultView().environment(model)
         }
         .overlay(alignment: .top) { banner }
     }
@@ -198,6 +203,15 @@ struct RootView: View {
 
         ToolbarItem {
             PresetMenu()
+        }
+
+        ToolbarItem {
+            Button {
+                model.showVault = true
+            } label: {
+                Label("Credentials Vault", systemImage: "key.horizontal")
+            }
+            .help("Credentials vault (⌘⇧K) — API keys and passwords the agent can use without seeing them")
         }
 
         ToolbarItem {

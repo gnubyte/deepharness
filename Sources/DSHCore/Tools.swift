@@ -23,11 +23,16 @@ public struct ToolContext: Sendable {
     public let thinking: ThinkingLevel?
     /// Asks the user for permission; subagents inherit the parent's hook.
     public let requestPermission: @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool
+    /// The credential vault and this chat's "ask first" approvals, so a
+    /// subagent can use `{{vault:NAME}}` exactly like its parent.
+    public let vault: CredentialVault?
+    public let vaultGrants: VaultGrants
 
     public init(workspace: URL, policy: PermissionPolicy,
                 client: any LLMClient, registry: ToolRegistry, depth: Int = 0,
                 model: String = "", contextWindow: Int? = nil, thinking: ThinkingLevel? = nil,
-                requestPermission: @escaping @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool = { _, _, _ in true }) {
+                requestPermission: @escaping @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool = { _, _, _ in true },
+                vault: CredentialVault? = nil, vaultGrants: VaultGrants = VaultGrants()) {
         self.workspace = workspace
         self.policy = policy
         self.client = client
@@ -37,6 +42,8 @@ public struct ToolContext: Sendable {
         self.contextWindow = contextWindow
         self.thinking = thinking
         self.requestPermission = requestPermission
+        self.vault = vault
+        self.vaultGrants = vaultGrants
     }
 }
 

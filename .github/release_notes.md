@@ -9,47 +9,33 @@ prompt on first launch — right-click the app and choose **Open**, or run:
 xattr -d com.apple.quarantine /Applications/DSH.app
 ```
 
-## What's new in 0.10.0 — the queue works unattended, goals run to the end
+## What's new in 0.11.0 — the Credentials Vault
 
-**Model outages no longer kill work.** A request that times out, a server
-that's down, restarting, overloaded, or mid-swap on the Spark — the harness
-waits and retries (2s, 4s, 8s, 16s, then every 30s) until the model answers
-or you press Stop. The status line shows the reason and the next attempt, the
-cut-off partial reply is discarded (no doubled text), and after a swap the
-retry follows the model the server now serves. Requests that can't fix
-themselves (bad key, malformed request) still fail right away.
+Keep API keys, tokens and passwords where the agent can use them without ever
+seeing them.
 
-**`/goal` has no round cap.** A goal keeps working, round after round, until
-the model writes `GOAL_COMPLETE` (or `GOAL_BLOCKED`). The end marker is read
-reliably — under markdown, after a "Status:" label, or as the reply's first
-line — and ignored in code blocks, inline thinking and mid-reply recaps. A
-bare `/goal` resumes the chat's unfinished goal.
-
-**Task Queue fixes:**
-- You can add the first task to an empty queue (the add form never appeared).
-- Stop → Start can't run a task twice or overlap two runs; the header shows
-  "Stopping…" while the current task winds down.
-- Resume on a blocked/failed task runs through the queue (just that task when
-  the queue is idle, next in line when it's running) and keeps its history.
-- A stopped or interrupted task resumes in the same chat; each task runs in
-  the project it was queued in.
-- A round that fails on an error is retried; three tasks in a row failing on
-  errors pause the queue instead of failing the rest.
-- Only a queue that was running when the app quit resumes on launch — tasks
-  you merely added never start by themselves.
-- The Mac stays awake while the queue or a goal runs.
-- Put a blocked/failed/skipped task back in line, drag any task to any
-  position, absolute timestamps in the log, and an unreadable queue file is
-  set aside instead of being overwritten.
-
-**Also:** work done before an error or Stop stays in the model's memory;
-SGLang's overflow wording and nginx's 413 trigger compaction; conversation
-logs are written in coalesced batches off the main thread and loaded on
-demand (long runs stay fast and light); permission prompts can't collide
-across chats; screen approvals survive engine rebuilds.
+- **Credentials Vault** (key button in the toolbar, or ⌘⇧K): add, search,
+  edit and delete credentials — name, kind, description, username, URL, tags.
+  Values are encrypted in your macOS Keychain; the list shows each value as a
+  SHA-256 fingerprint. **Reveal** or **Copy** the real value after Touch ID or
+  your login password.
+- **The agent uses credentials by name.** It finds them with `vault_search`
+  and writes `{{vault:NAME}}` where the value goes — a shell command
+  (`export OPENAI_API_KEY={{vault:OPENAI_API_KEY}}`), a `.env` file it writes,
+  a URL or a header. The harness puts the real value in only when the tool
+  runs, and replaces every vault value in every tool result with
+  `[vault:NAME]`. The value never reaches the model, the chat or the logs.
+- **Per-credential access:** *Agent may use*, *Ask first* (once per chat), or
+  *Never*. Use counts and last-used times are shown.
+- **Works with skills:** skills can refer to `{{vault:NAME}}`, and generated
+  skills are told to do so instead of embedding secrets. Subagents use the
+  vault the same way.
 
 ## Earlier
 
+- **0.10.0** — the queue works unattended: model outages retry until the model
+  is back, `/goal` runs with no round cap until the model says it's done, and
+  a long list of Task Queue fixes.
 - **0.9.0** — the Task Queue: queue up work and let the harness run it
   unattended, one task at a time, with a timestamped log.
 

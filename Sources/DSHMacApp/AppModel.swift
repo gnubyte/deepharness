@@ -35,6 +35,8 @@ final class AppModel {
     var showMemoryAndSkills = false
     /// The task-queue side panel.
     var showQueuePanel = false
+    /// The credential vault window.
+    var showVault = false
     /// Which Settings tab is showing; set before `showSettings` to deep-link.
     var settingsTab: SettingsTab = .general
     /// A skills action a caller wants the Skills tab to start with.

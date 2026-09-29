@@ -182,6 +182,10 @@ public struct Engine: Sendable {
     /// provider in Settings) and returns the client + model id to use from now
     /// on, or nil to keep the current ones.
     public let reroute: (@Sendable () async -> (client: any LLMClient, model: String)?)?
+    /// Credentials the agent can use as `{{vault:NAME}}` (substituted when a
+    /// tool runs, scrubbed from every tool result), and this chat's approvals.
+    public let vault: CredentialVault?
+    public let vaultGrants: VaultGrants
 
     public init(client: any LLMClient,
                 registry: ToolRegistry,
@@ -193,7 +197,9 @@ public struct Engine: Sendable {
                 onTodos: @escaping @Sendable ([TodoItem]) -> Void = { _ in },
                 compaction: (@Sendable (Int, [LLMMessage]) async throws -> [LLMMessage])? = nil,
                 computerGrants: ComputerGrants = ComputerGrants(),
-                reroute: (@Sendable () async -> (client: any LLMClient, model: String)?)? = nil) {
+                reroute: (@Sendable () async -> (client: any LLMClient, model: String)?)? = nil,
+                vault: CredentialVault? = nil,
+                vaultGrants: VaultGrants = VaultGrants()) {
         self.client = client
         self.registry = registry
         self.systemPrompt = systemPrompt
@@ -205,6 +211,8 @@ public struct Engine: Sendable {
         self.compaction = compaction
         self.computerGrants = computerGrants
         self.reroute = reroute
+        self.vault = vault
+        self.vaultGrants = vaultGrants
     }
 
     /// Convenience for tests / subagents with auto-approval.
@@ -401,16 +409,35 @@ public struct Engine: Sendable {
                     continue
                 }
 
+                // Credentials: {{vault:NAME}} becomes the real value only now,
+                // after the permission check saw the placeholder.
+                var arguments = call.arguments
+                switch await resolveVault(for: call) {
+                case .none:
+                    break
+                case .substituted(let raw):
+                    arguments = JSONString(raw)
+                case .refused(let msg):
+                    if Task.isCancelled { throw CancellationError() }
+                    messages.append(.toolResult(id: call.id, name: call.name, output: msg))
+                    progress?.update(messages)
+                    sink(.toolFinished(id: call.id, name: call.name, ok: false,
+                                       summary: Self.summary(of: msg), output: msg))
+                    continue
+                }
+                if Task.isCancelled { throw CancellationError() }
+
                 let context = ToolContext(workspace: workspace, policy: policy,
                                           client: client, registry: registry,
                                           depth: 0, model: model,
                                           contextWindow: config.contextWindow,
                                           thinking: config.thinking,
-                                          requestPermission: permissionGate)
+                                          requestPermission: permissionGate,
+                                          vault: vault, vaultGrants: vaultGrants)
                 let executor = registry.tool(named: call.name)
                 let result: ToolResult
                 if let executor {
-                    result = await executeWithTimeout(executor, args: call.arguments, context: context)
+                    result = await executeWithTimeout(executor, args: arguments, context: context)
                 } else {
                     result = ToolResult(output: "Error: unknown tool '\(call.name)'.")
                 }
@@ -418,7 +445,9 @@ public struct Engine: Sendable {
                 if let todos = result.todos {
                     onTodos(todos)
                 }
-                var resultOutput = result.output
+                // No vault value ever reaches the model, the timeline or the logs.
+                let secrets = vault?.valuesForRedaction() ?? []
+                var resultOutput = secrets.isEmpty ? result.output : VaultPlaceholders.redact(result.output, values: secrets)
                 if !result.images.isEmpty {
                     if config.visionEnabled {
                         toolImages.append((call.name, result.images))
@@ -436,8 +465,8 @@ public struct Engine: Sendable {
                 messages.append(.toolResult(id: call.id, name: call.name, output: truncated))
                 progress?.update(messages)
                 sink(.toolFinished(id: call.id, name: call.name,
-                                   ok: !result.output.hasPrefix("Error:"),
-                                   summary: Self.summary(of: result.output),
+                                   ok: !resultOutput.hasPrefix("Error:"),
+                                   summary: Self.summary(of: resultOutput),
                                    output: truncated))
             }
 
@@ -480,6 +509,42 @@ public struct Engine: Sendable {
                                    output: "Not run — the turn was interrupted before this call executed."))
         }
         return out
+    }
+
+    // MARK: - Vault
+
+    enum VaultResolution { case none, substituted(String), refused(String) }
+
+    /// Resolve the `{{vault:NAME}}` placeholders in a call: unknown names and
+    /// credentials the user withheld refuse the call; "ask first" asks once
+    /// per chat; the rest are substituted into the arguments.
+    func resolveVault(for call: ToolCall) async -> VaultResolution {
+        guard let vault else { return .none }
+        let names = VaultPlaceholders.names(in: call.arguments.raw)
+        guard !names.isEmpty else { return .none }
+        var values: [String: String] = [:]
+        for name in names {
+            switch vault.lookup(name) {
+            case .missing:
+                return .refused("Error: there is no credential named \(name) in the vault. Use vault_search to see what's there; if it's missing, ask the user to add it to the Credentials Vault (⌘⇧K) — never to paste it into chat.")
+            case .value(let value, let access):
+                switch access {
+                case .never:
+                    return .refused("Error: the user has made the credential \(name) unavailable to the agent. Tell them what you needed it for.")
+                case .ask where !vaultGrants.has(name):
+                    let approved = await permissionGate(call.id, call.name, "Use the credential \(name) from the vault in \(call.name)")
+                    guard approved else {
+                        return .refused("Permission denied: the user did not allow \(name) to be used. Don't retry with it; say what you needed it for.")
+                    }
+                    vaultGrants.grant(name)
+                case .ask, .allowed:
+                    break
+                }
+                values[name] = value
+            }
+        }
+        names.forEach { vault.noteUse($0) }
+        return .substituted(VaultPlaceholders.substitute(in: call.arguments.raw, values: values))
     }
 
     // MARK: - Permission
