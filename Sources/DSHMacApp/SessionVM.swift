@@ -151,6 +151,21 @@ public final class SessionVM: Identifiable {
     public var retry: RetryState?
     /// Background subagents this chat launched (running and finished).
     public var backgroundJobs: [BackgroundAgents.Job] = []
+    /// Every subagent this chat started — waiting for a server, working, finished — and which model
+    /// server each runs on, so the bar above the composer can show who is doing what, and where.
+    public var agentRuns: [AgentRun] = []
+    public var runningAgentRuns: [AgentRun] { agentRuns.filter(\.isRunning) }
+
+    /// A run started, moved or ended: add it or replace it (the roster keeps them in start order).
+    public func upsertAgent(_ run: AgentRun) {
+        if let index = agentRuns.firstIndex(where: { $0.id == run.id }) {
+            agentRuns[index] = run
+        } else if !run.id.isEmpty {
+            agentRuns.append(run)
+        }
+        // Bounded: the oldest finished runs go first.
+        if agentRuns.count > 60, let old = agentRuns.firstIndex(where: { !$0.isRunning }) { agentRuns.remove(at: old) }
+    }
     public var runningBackgroundJobs: [BackgroundAgents.Job] { backgroundJobs.filter { $0.status == .running } }
     /// The last `/goal` started in this chat and not yet completed; a bare
     /// `/goal` resumes it.

@@ -147,8 +147,8 @@ struct ChatView: View {
             if let goal = session.goal {
                 GoalBanner(goal: goal, session: session)
             }
-            if !session.runningBackgroundJobs.isEmpty {
-                BackgroundAgentsBar(session: session)
+            if !session.runningBackgroundJobs.isEmpty || !session.runningAgentRuns.isEmpty {
+                SubagentsBar(session: session)
             }
             if !slashMatches.isEmpty {
                 SlashHints(matches: slashMatches) { usage in
@@ -882,42 +882,6 @@ private struct ThinkingRow: View {
     private var tail: String {
         let flat = session.reasoning.suffix(400).replacingOccurrences(of: "\n", with: " ")
         return String(flat).trimmingCharacters(in: .whitespaces)
-    }
-}
-
-/// Background subagents still working in this chat, above the composer.
-private struct BackgroundAgentsBar: View {
-    @Environment(AppModel.self) private var model
-    let session: SessionVM
-
-    var body: some View {
-        let jobs = session.runningBackgroundJobs
-        HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text("\(jobs.count) background agent\(jobs.count == 1 ? "" : "s")")
-                .font(.system(size: 11, weight: .semibold))
-            Text(jobs.map { "\($0.id) “\($0.description)”" }.joined(separator: " · "))
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.tail)
-            Spacer()
-            Menu {
-                ForEach(jobs) { job in
-                    Button("Stop \(job.id) “\(job.description)”") {
-                        model.transport.stopBackgroundAgent(sessionID: session.id, id: job.id)
-                    }
-                }
-                Divider()
-                Button("Stop all") { model.transport.stopBackgroundAgents(sessionID: session.id) }
-            } label: {
-                Image(systemName: "stop.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Stop background agents")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

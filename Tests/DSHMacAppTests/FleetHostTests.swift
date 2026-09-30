@@ -1,0 +1,158 @@
+import XCTest
+@testable import DSHMacApp
+@testable import DSHCore
+
+/// The whole path, with two fake model servers: routes → fleet → engine → `agent` tool → the right server.
+/// The fake serves every host; the requests it saw say which server each one went to.
+@MainActor
+final class FleetHostTests: XCTestCase {
+    private var dir: URL!
+    private var defaultsSuite: String!
+    private var transport: AppTransport!
+
+    override func setUp() async throws {
+        try await super.setUp()
+        let base = ProcessInfo.processInfo.environment["TMPDIR"].map(URL.init(fileURLWithPath:)) ?? FileManager.default.temporaryDirectory
+        dir = base.appendingPathComponent("dsh-fleet-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
+    }
+
+    override func tearDown() async throws {
+        transport?.stopAll()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        OpenAIClient.protocolClassesForTesting = nil
+        if let defaultsSuite { UserDefaults.standard.removePersistentDomain(forName: defaultsSuite) }
+        try? FileManager.default.removeItem(at: dir)
+        transport = nil
+        try await super.tearDown()
+    }
+
+    private func route(_ name: String, host: String, worker: Bool = false, parallel: Int? = nil) -> ProviderProfile {
+        ProviderProfile(kind: .openAICompat, name: name, baseURL: "http://\(host)/v1", model: "stub-model",
+                        subagentWorker: worker ? true : nil, subagentParallel: parallel)
+    }
+
+    private func makeTransport(_ routes: [ProviderProfile]) -> AppTransport {
+        defaultsSuite = "dsh-fleet-tests-\(UUID().uuidString)"
+        let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!)
+        config.providers = routes
+        config.activeRoute = routes.first?.routeID
+        config.preset = PermissionPreset.fullAccess.rawValue
+        config.computerToolsEnabled = false
+        let t = AppTransport(config: config, log: ConversationLog(dir: dir.appendingPathComponent("log", isDirectory: true)),
+                             queueFile: dir.appendingPathComponent("task-queue.json"),
+                             skillLocations: SkillLocations(home: dir, appSupport: dir.appendingPathComponent("support")),
+                             vault: CredentialVault(directory: dir.appendingPathComponent("vault"), store: MemoryBlobStore()))
+        t.retryPolicy = RetryPolicy(delay: { _ in 0.02 })
+        transport = t
+        return t
+    }
+
+    private func project() -> URL {
+        let url = dir.appendingPathComponent("project", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func waitUntil(_ what: String, timeout: TimeInterval = 20, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { XCTFail("timed out waiting for: \(what)"); return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    /// Sends one chat message and waits for the main model's closing words; returns the tool results it saw.
+    /// (`send` starts the run asynchronously, so "not running" is true before it begins — wait for the reply.)
+    private func ask(_ text: String, until reply: String = "All done.") async throws -> (vm: SessionVM, toolResults: [String]) {
+        transport.adoptProject(project())
+        let vm = transport.newSession(cwd: project().path)
+        transport.send(text, sessionID: vm.id)
+        try await waitUntil("the chat to finish") {
+            !vm.running && vm.entries.contains { entry in
+                if case .message(let block) = entry.kind { return block.role == .assistant && block.text.contains(reply) }
+                return false
+            }
+        }
+        let results = FakeModelServer.seen.flatMap { $0.messages }.filter { $0["role"] == "tool" }.compactMap { $0["content"] }
+        return (vm, results)
+    }
+
+    private func hosts() -> [String] { FakeModelServer.seen.map(\.host) }
+
+    /// The main model asks for one subagent; every other request just answers.
+    private nonisolated static func delegating(mainHost: String, task: String = "count the files",
+                                   subagentAnswer: String = "There are 3 files.") -> @Sendable (SeenRequest, Int) -> FakeReply {
+        { seen, _ in
+            if seen.host == mainHost, seen.lastUser == "please scan", seen.fresh {
+                return .toolCall("agent", #"{"description":"scan","prompt":"\#(task)"}"#)
+            }
+            if seen.lastUser == task { return .text(subagentAnswer) }
+            return .text("All done.")
+        }
+    }
+
+    // MARK: Tests
+
+    func testASubagentRunsOnTheWorkerAndTheReportNamesTheServer() async throws {
+        _ = makeTransport([route("Main", host: "main.test"), route("Worker", host: "worker.test", worker: true)])
+        FakeModelServer.reset(Self.delegating(mainHost: "main.test"))
+        let (_, results) = try await ask("please scan")
+
+        let subagentRequests = FakeModelServer.seen.filter { $0.lastUser == "count the files" }
+        XCTAssertEqual(subagentRequests.map(\.host), ["worker.test"], "the side task went to the other machine")
+        XCTAssertFalse(hosts().filter { $0 == "main.test" }.isEmpty, "and the chat stayed on the main one")
+        XCTAssertTrue(results.contains { $0.contains("Subagent 'scan' finished") && $0.contains("on Worker") }, "\(results)")
+    }
+
+    func testWithoutAWorkerTheSubagentSharesTheMainServerAndTheReportDoesNotNameOne() async throws {
+        _ = makeTransport([route("Main", host: "main.test")])
+        FakeModelServer.reset(Self.delegating(mainHost: "main.test"))
+        let (_, results) = try await ask("please scan")
+
+        XCTAssertEqual(Set(hosts()), ["main.test"])
+        XCTAssertTrue(results.contains { $0.contains("Subagent 'scan' finished") && !$0.contains(" on Main") }, "\(results)")
+    }
+
+    func testAWorkerThatIsDownHandsItsTaskToTheMainServer() async throws {
+        _ = makeTransport([route("Main", host: "main.test"), route("Worker", host: "worker.test", worker: true)])
+        FakeModelServer.reset { seen, _ in
+            if seen.host == "worker.test", seen.lastUser == "count the files" { return .http(503, "overloaded") }
+            return Self.delegating(mainHost: "main.test")(seen, 0)
+        }
+        let (_, results) = try await ask("please scan")
+
+        XCTAssertTrue(hosts().contains("worker.test"), "it tried the worker first")
+        XCTAssertTrue(FakeModelServer.seen.contains { $0.host == "main.test" && $0.lastUser == "count the files" },
+                      "and then did the work on the main server")
+        XCTAssertTrue(results.contains { $0.contains("Subagent 'scan' finished") && $0.contains("on Main") && $0.contains("1 server failure") },
+                      "the report says where it ran and that a server failed on the way: \(results)")
+        let fleet = transport.fleet.snapshot()
+        XCTAssertEqual(fleet.first { $0.label == "Worker" }?.healthy, false, "the dead worker is skipped for a while")
+    }
+
+    func testMakingAnotherRouteMainSendsTheChatThere() async throws {
+        let t = makeTransport([route("Alpha", host: "alpha.test"), route("Beta", host: "beta.test", worker: true)])
+        FakeModelServer.reset { _, _ in .text("hello") }
+        t.config.makeMain(route("Beta", host: "beta.test").routeID)
+        t.resetRouteCache()
+        _ = try await ask("hi", until: "hello")
+        XCTAssertEqual(Set(hosts().filter { $0 != "" }), ["beta.test"], "the conductor is Beta now: \(hosts())")
+        XCTAssertEqual(t.workerRoutes.map(\.name), ["Alpha"], "Alpha kept helping")
+        let snapshot = t.fleet.snapshot()
+        XCTAssertEqual(snapshot.first { $0.isPrimary }?.label, "Beta")
+        XCTAssertEqual(snapshot.filter { !$0.isPrimary }.map(\.label), ["Alpha"])
+    }
+
+    func testTheFleetFollowsTheRoutesAsTheyChange() {
+        let t = makeTransport([route("Main", host: "main.test"), route("Other", host: "other.test")])
+        XCTAssertEqual(t.fleet.snapshot().map(\.label), ["Main"], "a spare is not in the fleet")
+        t.config.setSubagentWorker(route("Other", host: "other.test").routeID, true)
+        t.config.setSubagentParallel(route("Other", host: "other.test").routeID, 5)
+        XCTAssertEqual(t.fleet.snapshot().map(\.label), ["Main", "Other"])
+        XCTAssertEqual(t.fleet.snapshot().last?.maxParallel, 5)
+        t.config.subagentsUsePrimary = false
+        XCTAssertFalse(t.fleet.usePrimaryWhenWorkersBusy)
+    }
+}

@@ -39,6 +39,15 @@ public final class AppTransport {
     @ObservationIgnored private var vaultGrants: [String: VaultGrants] = [:]
     /// Per chat: background subagents it launched.
     @ObservationIgnored private var backgroundPools: [String: BackgroundAgents] = [:]
+    /// The model servers subagents run on: the main route is the primary, the routes flagged "Use for
+    /// subagents" are workers. One per app, shared by every chat, so two chats can't both fill the same Spark.
+    @ObservationIgnored let fleet = AgentFleet()
+    /// Per chat: every subagent it started — waiting for a server, working, finished.
+    @ObservationIgnored var rosters: [String: AgentRoster] = [:]
+    /// Worker route → what the server said it serves, and when (a Spark may have swapped models since).
+    @ObservationIgnored var workerProbe: [String: (info: ModelInfo, at: Date)] = [:]
+    /// Agent types by project folder, with the stamp of the files they were read from.
+    @ObservationIgnored var agentCatalogs: [String: (catalog: AgentCatalog, stamp: String)] = [:]
     /// Per chat: queue tasks the agent has added (capped, so a runaway loop
     /// can't flood the queue).
     @ObservationIgnored private var agentQueuedCount: [String: Int] = [:]
@@ -127,6 +136,8 @@ public final class AppTransport {
         var vision: Bool
         /// The vault's names are in the prompt; a change rebuilds it.
         var vault: Int
+        /// The subagent types (and the files they come from) are in the tool descriptions.
+        var agents: String
     }
 
     /// Everything about skills one turn needs: what exists, what's on, and the prompt text.
@@ -169,6 +180,8 @@ public final class AppTransport {
         reload()
         refreshDrafts()
         loadQueue()
+        config.onRoutesChanged = { [weak self] in self?.refreshFleet() }
+        refreshFleet()
     }
 
     public var selected: SessionVM? {
@@ -185,10 +198,13 @@ public final class AppTransport {
     read before you edit, and check your work after you change something. When a task needs more than a
     couple of steps, track it with `todo_write` so the user can see the plan.
 
-    Parallel and background work: for a well-scoped side task, launch a subagent with `agent` — with \
-    run_in_background: true it works while you continue (several can run at once); you're told when each \
-    finishes, and agent_status / agent_stop manage them. Long-running programs go in `process_start`. \
-    Follow-up work that can happen later, unattended, goes on the task queue with `queue_task`.
+    Parallel and background work: for a well-scoped side task, launch a subagent with `agent` — pick an \
+    `agent_type` (explore: read-only research; plan; review; worker: makes changes). To fan several \
+    independent tasks out at once use `delegate`; with several model servers configured they run on \
+    different machines. With run_in_background: true a subagent works while you continue (several can run \
+    at once); you're told when each finishes, and agent_status / agent_stop manage them. Long-running \
+    programs go in `process_start`. Follow-up work that can happen later, unattended, goes on the task \
+    queue with `queue_task`.
 
     Rules that matter:
     - Never claim a command succeeded unless you ran it and saw the output.
@@ -844,7 +860,7 @@ public final class AppTransport {
         }
         systemPrompts[sessionID] = prompt
 
-        let builtins = ToolRegistry.standard()
+        let builtins = ToolRegistry.standard(agents: agentCatalog(for: vm))
         var extra: [any ToolExecutor] = PluginLoader.tools(from: plugins, reserved: Set(builtins.names))
         if !skillState.active.isEmpty { extra.append(UseSkillTool(skills: skillState.active)) }
         extra.append(VaultSearchTool(vault: vault))
@@ -901,7 +917,10 @@ public final class AppTransport {
             },
             vault: vault,
             vaultGrants: vaultGrants(for: sessionID),
-            backgroundAgents: backgroundPool(for: sessionID)
+            backgroundAgents: backgroundPool(for: sessionID),
+            fleet: fleet,
+            roster: roster(for: sessionID),
+            agentTypes: agentCatalog(for: vm)
         )
         engines[sessionID] = engine
         return engine
@@ -1553,7 +1572,7 @@ public final class AppTransport {
         let skillState = self.skillState(for: vm)
         let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset,
                             skills: skillState.signature, computerTools: config.computerToolsEnabled,
-                            vision: visionOn(for: profile), vault: vault.revision)
+                            vision: visionOn(for: profile), vault: vault.revision, agents: agentsStamp(for: vm))
         if let previous = engineKeys[sessionID], previous.profile.model != profile.model {
             vm.note("The server is now serving `\(profile.model)` (was `\(previous.profile.model)`) — switched to it, \(window.formatted())-token window.")
         }
@@ -1723,7 +1742,7 @@ public final class AppTransport {
     /// Routes whose server rejected an image (learned at runtime).
     @ObservationIgnored private var noVisionRoutes: Set<String> = []
 
-    fileprivate func visionOn(for profile: ProviderProfile?) -> Bool {
+    func visionOn(for profile: ProviderProfile?) -> Bool {
         guard let profile else { return true }
         if noVisionRoutes.contains(profile.routeID) { return false }
         return profile.vision ?? true
@@ -2032,6 +2051,7 @@ public final class AppTransport {
     @MainActor
     public func resetRouteCache() {
         routeInfo.removeAll()
+        resetWorkerProbes()
         probedContext.removeAll()
         overflowCeiling.removeAll()
         engines.removeAll()
