@@ -97,7 +97,10 @@ final class LiveBedrockBackend: BedrockGuideBackend {
     // MARK: Bedrock
 
     private func setup(_ profile: String, _ region: String) throws -> BedrockSetup {
-        BedrockSetup(cli: try requireCLI(), profile: profile, region: region)
+        // (BedrockSetup traps on a blank profile or Region: never hand it one.)
+        BedrockSetup(cli: try requireCLI(),
+                     profile: profile.trimmingCharacters(in: .whitespaces).isEmpty ? AWSSignIn.defaultProfile : profile,
+                     region: region.trimmingCharacters(in: .whitespaces).isEmpty ? BedrockRegions.defaultRegion : region)
     }
 
     func listModels(profile: String, region: String) async throws -> [BedrockModel] {
