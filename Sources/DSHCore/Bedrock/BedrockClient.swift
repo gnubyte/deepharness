@@ -420,6 +420,14 @@ public struct BedrockClient: ProviderClient {
                     if Task.isCancelled { throw CancellationError() }
                     throw LLMError.connection("the request was cancelled by the system")
                 }
+                // What waiting cannot fix — a certificate this Mac doesn't trust (a proxy that inspects TLS),
+                // a malformed URL — surfaces at once instead of being retried for ever; the rest is an
+                // outage to wait out.
+                if RequestRetry.disposition(for: error) == .fail {
+                    throw LLMError.rejected(status: 0,
+                                            message: "Could not reach Amazon Bedrock: \(error.localizedDescription)",
+                                            body: error.localizedDescription, permanent: true)
+                }
                 throw LLMError.connection(error.code == .timedOut ? "the request timed out" : error.localizedDescription)
             }
             guard let http = response as? HTTPURLResponse else {

@@ -712,6 +712,9 @@ public enum FallbackContextWindow {
 
     /// Look up a context window for a model name, or nil if unknown.
     public static func limit(for modelID: String) -> Int? {
+        // Bedrock ids ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", inference-profile ARNs) carry vendor
+        // and Region prefixes the tables below don't expect.
+        if let bedrock = BedrockModels.contextWindow(modelID) { return bedrock }
         // "meta-llama/Llama-3.3-70B-Instruct" → "Llama-3.3-70B-Instruct" → "llama-3.3-70b-instruct"
         let base = (modelID.components(separatedBy: "/").last ?? modelID).lowercased()
         if let hit = exact[base] { return hit }

@@ -589,6 +589,19 @@ final class BedrockClientTests: XCTestCase {
         XCTAssertEqual(FakeBedrock.requests.count, 1)
     }
 
+    func testACertificateProblemSurfacesAtOnceInsteadOfBeingRetriedForEver() async {
+        // A proxy that inspects TLS, say: nothing that waiting fixes.
+        for code in [URLError.Code.serverCertificateUntrusted, .serverCertificateHasUnknownRoot, .badURL] {
+            FakeBedrock.reset { _ in .fail(code) }
+            guard let error = await failure(client()) else { return }
+            guard case .rejected(_, let message, _, let permanent) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(permanent, "\(code)")
+            XCTAssertTrue(message.hasPrefix("Could not reach Amazon Bedrock"), message)
+            XCTAssertEqual(retry(error), "fail", "\(code)")
+            XCTAssertEqual(FakeBedrock.requests.count, 1)
+        }
+    }
+
     func testATimedOutRequestIsAConnectionErrorToo() async {
         FakeBedrock.reset { _ in .fail(.timedOut) }
         guard let error = await failure(client()) else { return }
@@ -1291,6 +1304,7 @@ final class BedrockClientTests: XCTestCase {
             XCTAssertEqual(info?.id, model)
             XCTAssertEqual(info?.contextWindow, window, model)
             XCTAssertEqual(BedrockModels.contextWindow(model), window, model)
+            XCTAssertEqual(FallbackContextWindow.limit(for: model), window, "the context gauge follows the same table: \(model)")
         }
         XCTAssertTrue(FakeBedrock.requests.isEmpty, "the table needs no network call")
     }
