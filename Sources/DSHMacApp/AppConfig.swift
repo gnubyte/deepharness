@@ -32,6 +32,7 @@ public final class AppConfig {
         static let computerTools = "computer.tools.v1"
         static let queuePaused = "queue.paused.v1"
         static let queueResume = "queue.resumeOnLaunch.v1"
+        static let subagentsUsePrimary = "subagents.usePrimary.v1"
     }
 
     private let defaults: UserDefaults
@@ -39,12 +40,22 @@ public final class AppConfig {
     private var loading = false
 
     public var providers: [ProviderProfile] = [] {
-        didSet { persist() }
+        didSet { persist(); routesChanged() }
     }
-    /// Identity of the active route: `"<provider name>|<model>"`.
+    /// Identity of the active route: `"<provider name>|<model>"`. The active
+    /// route is the *main model*: the chat talks to it and it hands out subagent
+    /// tasks. Routes flagged `subagentWorker` take those tasks (see `AgentFleet`).
     public var activeRoute: String? {
-        didSet { persist() }
+        didSet { persist(); routesChanged() }
     }
+    /// When every subagent server is busy, let subagents use the main model's
+    /// server too. False keeps it free for the main agent.
+    public var subagentsUsePrimary: Bool = true {
+        didSet { persist(); routesChanged() }
+    }
+    /// Called whenever the set of routes, the main model or the subagent
+    /// settings change, so the fleet can be rebuilt. Not called while loading.
+    @ObservationIgnored public var onRoutesChanged: (@MainActor () -> Void)?
     /// A `PermissionPreset` raw value: workspaceWrite | plan | fullAccess.
     public var preset: String = PermissionPreset.workspaceWrite.rawValue {
         didSet { persist() }
@@ -111,17 +122,103 @@ public final class AppConfig {
         activeRoute = provider.routeID
     }
 
+    /// Save a route without changing which one is the main model: a new route is
+    /// added, an existing one (same identity) replaced.
+    public func store(_ provider: ProviderProfile) {
+        if let index = providers.firstIndex(where: { $0.routeID == provider.routeID }) {
+            providers[index] = provider
+        } else {
+            providers.append(provider)
+        }
+    }
+
     public func removeProvider(_ provider: ProviderProfile) {
         providers.removeAll { $0.routeID == provider.routeID }
         if activeRoute == provider.routeID { activeRoute = providers.first?.routeID }
     }
 
+    // MARK: - The fleet
+
+    /// The routes as the user arranged them: which is the main model and which
+    /// serve subagents. Read by the settings and the model menu.
+    public var mainRoute: ProviderProfile? { providers.first { $0.routeID == activeRoute } }
+
+    /// Routes flagged to serve subagents, the main model excluded (it cannot
+    /// be its own worker). The fleet may still collapse machines that are the
+    /// same server — see `AppTransport.workerRoutes`.
+    public var flaggedWorkers: [ProviderProfile] {
+        providers.filter { $0.isSubagentWorker && $0.routeID != activeRoute }
+    }
+
+    /// How a route is named next to a subagent: the route's own name (e.g. "Spark 2").
+    public nonisolated static func routeLabel(_ route: ProviderProfile) -> String {
+        route.name.isEmpty ? route.model : route.name
+    }
+
+    /// The routes subagents currently run on (workers). One self-hosted machine is one worker however
+    /// many models it is listed with (a Spark serves one at a time, so a second route there would only
+    /// queue behind the first), and the main route's own machine is never its own worker. A hosted
+    /// service (Bedrock, OpenAI …) serves every model at once: those are told apart by route, so a
+    /// cheaper model in the same Region can take the side tasks while a stronger one is the main model.
+    public var workerRoutes: [ProviderProfile] {
+        var seen = Set<String>()
+        if let main = mainRoute { seen.insert(Self.machineOf(main)) }
+        return flaggedWorkers.filter { seen.insert(Self.machineOf($0)).inserted }
+    }
+
+    /// What counts as "the same server": a self-hosted route is its base URL; a hosted service
+    /// (Bedrock, OpenAI, …) is its own route.
+    public nonisolated static func machineOf(_ route: ProviderProfile) -> String {
+        route.kind != .bedrock && route.isSelfHosted
+            ? route.baseURL.trimmingCharacters(in: .whitespaces).lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            : "route:" + route.routeID
+    }
+
+    /// Make another route the main model — the *conductor*.
+    ///
+    /// When a fleet is running (some other route serves subagents) the previous
+    /// main model stays in it as a subagent server, so swapping who leads never
+    /// drops a machine: three servers before, three servers after. Its own
+    /// settings are untouched, and a route that was a subagent server keeps
+    /// that flag for when it steps down again.
+    public func makeMain(_ routeID: String) {
+        guard routeID != activeRoute, providers.contains(where: { $0.routeID == routeID }) else { return }
+        if let old = providers.firstIndex(where: { $0.routeID == activeRoute }),
+           !providers[old].isSubagentWorker,
+           // A fleet exists when some route besides the current main serves subagents — the route
+           // about to become main included: {A main, B worker} must stay two servers after B leads.
+           providers.contains(where: { $0.isSubagentWorker && $0.routeID != activeRoute }) {
+            providers[old].subagentWorker = true
+        }
+        activeRoute = routeID
+    }
+
+    /// Tick or untick "use for subagents" on a route.
+    public func setSubagentWorker(_ routeID: String, _ on: Bool) {
+        guard let index = providers.firstIndex(where: { $0.routeID == routeID }),
+              providers[index].isSubagentWorker != on else { return }
+        providers[index].subagentWorker = on ? true : nil
+    }
+
+    /// How many subagents may work on a route at once (nil = the default).
+    public func setSubagentParallel(_ routeID: String, _ count: Int?) {
+        guard let index = providers.firstIndex(where: { $0.routeID == routeID }),
+              providers[index].subagentParallel != count else { return }
+        providers[index].subagentParallel = count
+    }
+
+    private func routesChanged() {
+        guard !loading else { return }
+        onRoutesChanged?()
+    }
+
     /// The client to drive sessions with.
     /// Throws `LLMError.noModel` when nothing is configured, which the UI uses
     /// to route back to the setup wizard.
-    public func makeClient() throws -> any LLMClient {
+    public func makeClient() throws -> any ProviderClient {
         guard let provider = activeProvider else { throw LLMError.noModel }
-        return OpenAIClient(profile: provider)
+        return ProviderClients.make(provider)
     }
 
     public var asPreset: PermissionPreset {
@@ -216,6 +313,7 @@ public final class AppConfig {
         computerToolsEnabled = defaults.object(forKey: Keys.computerTools) as? Bool ?? true
         queuePaused = defaults.bool(forKey: Keys.queuePaused)
         queueResumeOnLaunch = defaults.bool(forKey: Keys.queueResume)
+        subagentsUsePrimary = defaults.object(forKey: Keys.subagentsUsePrimary) as? Bool ?? true
     }
 
     private func persist() {
@@ -238,6 +336,7 @@ public final class AppConfig {
         defaults.set(computerToolsEnabled, forKey: Keys.computerTools)
         defaults.set(queuePaused, forKey: Keys.queuePaused)
         defaults.set(queueResumeOnLaunch, forKey: Keys.queueResume)
+        defaults.set(subagentsUsePrimary, forKey: Keys.subagentsUsePrimary)
     }
 }
 

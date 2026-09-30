@@ -37,6 +37,8 @@ final class AppModel {
     var showQueuePanel = false
     /// The credential vault window.
     var showVault = false
+    /// The Amazon Bedrock guide, when it is open (nil = closed).
+    var bedrockGuide: BedrockGuideRequest?
     /// Which Settings tab is showing; set before `showSettings` to deep-link.
     var settingsTab: SettingsTab = .general
     /// A skills action a caller wants the Skills tab to start with.
@@ -84,6 +86,12 @@ final class AppModel {
     }
 
     var selectedSession: SessionVM? { transport.selected }
+
+    /// Open the Amazon Bedrock guide — from the start, or on one page for an existing route
+    /// (change its model, sign in again).
+    func showBedrockGuide(page: BedrockPage = .welcome, route: ProviderProfile? = nil) {
+        bedrockGuide = BedrockGuideRequest(page: page, route: route)
+    }
 
     // MARK: - Projects
 

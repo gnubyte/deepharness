@@ -487,7 +487,7 @@ struct SetupWizard: View {
     private func detectContext() async {
         detecting = true
         defer { detecting = false }
-        let info = await OpenAIClient(profile: draftProfile).modelInfo()
+        let info = await ProviderClients.make(draftProfile).modelInfo(nil)
         detectedContext = info?.contextWindow
         detectedModel = info?.id
     }
@@ -748,7 +748,7 @@ struct SetupWizard: View {
 
     private func runProbe() async {
         probe = .running
-        let client = OpenAIClient(profile: draftProfile)
+        let client = ProviderClients.make(draftProfile)
         do {
             let models = try await client.listModels()
             discovered = models.sorted()

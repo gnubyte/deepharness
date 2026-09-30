@@ -281,26 +281,19 @@ private struct ModelMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(model.config.providers, id: \.routeID) { provider in
-                Button {
-                    model.config.activeRoute = provider.routeID
-                } label: {
-                    if model.config.activeRoute == provider.routeID {
-                        Label(provider.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(provider.displayName)
-                    }
-                }
-            }
+            RouteMenuSections()
             Divider()
-            Button("Configure…") { model.showSettings = true }
+            Button("Configure…") {
+                model.settingsTab = .models
+                model.showSettings = true
+            }
             Button("Run Setup Wizard…") { model.showWizard = true }
         } label: {
             Label(model.config.activeProvider?.model ?? "No model", systemImage: "cpu")
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help(model.config.activeProvider?.baseURL ?? "No model configured")
+        .help(model.config.activeProvider.map { "Main model: \($0.displayName)" } ?? "No model configured")
     }
 }
 

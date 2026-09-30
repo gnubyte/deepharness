@@ -1188,16 +1188,7 @@ private struct ModelMenu: View {
             } else {
                 Button("Set Up Spark Model Switching…") { model.showSettings = true }
             }
-            Section("Providers") {
-                ForEach(model.config.providers, id: \.routeID) { p in
-                    Button {
-                        model.config.activeRoute = p.routeID
-                        model.transport.resetRouteCache()
-                    } label: {
-                        Label(p.displayName, systemImage: p.routeID == model.config.activeRoute ? "checkmark" : "")
-                    }
-                }
-            }
+            RouteMenuSections()
         } label: {
             Label("\(current) · \(Self.short(limit))", systemImage: spark.isSwitching ? "hourglass" : "cpu")
         }

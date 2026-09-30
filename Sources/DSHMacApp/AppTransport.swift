@@ -812,7 +812,7 @@ public final class AppTransport {
                         window: Int, thinking: ThinkingLevel?, skillState: SkillState) -> Engine {
         let workspace = vm.workspaceURL ?? FileManager.default.homeDirectoryForCurrentUser
         let policy = PermissionPolicy(preset: vm.preset, workspaceRoot: workspace)
-        let model = (client as? OpenAIClient)?.profile.model ?? "model"
+        let model = (client as? any ProviderClient)?.profile.model ?? "model"
 
         // Project instructions + skills + plugin tools are what make this a
         // harness rather than a chat window.
@@ -868,11 +868,11 @@ public final class AppTransport {
             registry: registry,
             systemPrompt: prompt,
             config: .init(model: model,
-                          temperature: (client as? OpenAIClient)?.profile.temperature,
-                          maxOutputTokens: (client as? OpenAIClient)?.profile.maxOutputTokens,
+                          temperature: (client as? any ProviderClient)?.profile.temperature,
+                          maxOutputTokens: (client as? any ProviderClient)?.profile.maxOutputTokens,
                           contextWindow: window,
                           thinking: thinking,
-                          visionEnabled: visionOn(for: (client as? OpenAIClient)?.profile),
+                          visionEnabled: visionOn(for: (client as? any ProviderClient)?.profile),
                           retry: retryPolicy),
             workspace: workspace,
             policy: policy,
@@ -1263,7 +1263,7 @@ public final class AppTransport {
         }
         vm.activity = "Compacting conversation…"
         defer { vm.activity = nil }
-        let client = OpenAIClient(profile: profile)
+        let client = ProviderClients.make(profile)
         guard let summary = await Compaction.summarize(client: client, plan: plan,
                                                        model: profile.model, focus: focus),
               !Task.isCancelled else {
@@ -1540,7 +1540,7 @@ public final class AppTransport {
         if let existing = engines[sessionID], engineKeys[sessionID] == key {
             engine = existing
         } else {
-            engine = self.engine(for: sessionID, vm: vm, client: OpenAIClient(profile: profile),
+            engine = self.engine(for: sessionID, vm: vm, client: ProviderClients.make(profile),
                                  window: window, thinking: thinking, skillState: skillState)
             engineKeys[sessionID] = key
         }
@@ -1853,7 +1853,7 @@ public final class AppTransport {
         let conversation = vm.flatMap { transcripts[$0.id] } ?? []
         let request = SkillGenerationRequest(goal: goal, conversation: conversation,
                                              existingNames: skills(for: vm).map(\.name), improving: improving)
-        return try await SkillGenerator.generate(client: OpenAIClient(profile: profile),
+        return try await SkillGenerator.generate(client: ProviderClients.make(profile),
                                                  model: profile.model, request: request)
     }
 
@@ -1899,6 +1899,14 @@ public final class AppTransport {
     }
 
     public func note(_ message: String) { banner = message }
+
+    // MARK: - The fleet's routes
+
+    /// How a route is named next to a subagent: the route's own name (e.g. "Spark 2").
+    public static func routeLabel(_ route: ProviderProfile) -> String { AppConfig.routeLabel(route) }
+
+    /// The routes subagents currently run on (see `AppConfig.workerRoutes`).
+    public var workerRoutes: [ProviderProfile] { config.workerRoutes }
 
     // MARK: - Context window
 
@@ -1959,7 +1967,7 @@ public final class AppTransport {
         let routeID = provider.routeID
         let fresh = routeInfo[routeID].map { Date().timeIntervalSince($0.at) < 15 } ?? false
         if force || !fresh {
-            if let info = await OpenAIClient(profile: provider).modelInfo(), !info.servedModels.isEmpty {
+            if let info = await ProviderClients.make(provider).modelInfo(nil), !info.servedModels.isEmpty {
                 routeInfo[routeID] = RouteInfo(servedModel: info.id, servedModels: info.servedModels,
                                                context: info.contextWindow, at: .now)
                 if let limit = info.contextWindow, limit > 0, probedContext[routeID] != limit {
@@ -1980,7 +1988,7 @@ public final class AppTransport {
         // Compare with the route the run is on now (a retry may have moved it).
         guard profile != (retryRoute[sessionID] ?? engineKeys[sessionID]?.profile) else { return nil }
         retryRoute[sessionID] = profile
-        return (OpenAIClient(profile: profile), profile.model)
+        return (ProviderClients.make(profile), profile.model)
     }
 
     /// Fire the server probe for the active route so `contextLimit` fills in a
@@ -2089,7 +2097,7 @@ public final class AppTransport {
     private func summarize(sessionID: String, plan: Compaction.Plan) async -> String? {
         await resolveRoute()
         guard let profile = engineKeys[sessionID]?.profile ?? config.activeProvider.map(effective) else { return nil }
-        return await Compaction.summarize(client: OpenAIClient(profile: profile), plan: plan, model: profile.model)
+        return await Compaction.summarize(client: ProviderClients.make(profile), plan: plan, model: profile.model)
     }
 
     /// Rewrite the session's display + persisted log so the summarized part is
