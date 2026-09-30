@@ -132,6 +132,27 @@ public final class AppConfig {
         }
     }
 
+    /// Swap one route for an edited or re-picked one *in place*: it keeps its position and, if it was the
+    /// main model, stays the main model — the guide uses this to change a Bedrock route's model without
+    /// disturbing the arrangement (a route serving subagents keeps serving them, because the new route
+    /// carries the old one's flags). If `new` has the identity of a different existing route, that
+    /// route is the one that remains, updated.
+    public func replace(_ old: ProviderProfile, with new: ProviderProfile) {
+        let wasMain = activeRoute == old.routeID
+        guard let index = providers.firstIndex(where: { $0.routeID == old.routeID }) else {
+            store(new)
+            return
+        }
+        if new.routeID != old.routeID, let clash = providers.firstIndex(where: { $0.routeID == new.routeID }) {
+            // The wanted route already exists: drop the old one and update the other.
+            providers[clash] = new
+            providers.remove(at: index)
+        } else {
+            providers[index] = new
+        }
+        if wasMain { activeRoute = new.routeID }
+    }
+
     public func removeProvider(_ provider: ProviderProfile) {
         providers.removeAll { $0.routeID == provider.routeID }
         if activeRoute == provider.routeID { activeRoute = providers.first?.routeID }

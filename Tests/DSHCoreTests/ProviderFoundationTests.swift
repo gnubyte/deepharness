@@ -124,6 +124,38 @@ final class ProviderFoundationTests: XCTestCase {
         XCTAssertNil(LLMUsage.sum(nil, nil))
     }
 
+    // MARK: The provider factory
+
+    func testTheFactoryPicksTheClientByRouteKind() {
+        let spark = ProviderProfile(kind: .openAICompat, name: "Spark", baseURL: "http://spark:8002/v1", model: "qwen")
+        XCTAssertTrue(ProviderClients.make(spark) is OpenAIClient)
+        let bedrock = ProviderProfile(kind: .bedrock, name: "Bedrock", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+                                      model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", awsProfile: "dsh-bedrock", awsRegion: "us-east-1")
+        XCTAssertTrue(ProviderClients.make(bedrock) is BedrockClient)
+        XCTAssertEqual(ProviderClients.make(bedrock).profile, bedrock, "the client carries the route it was made for")
+    }
+
+    func testTheFactoryAsksForAWSCredentialsExceptForAnAPIKeyRoute() {
+        nonisolated(unsafe) var asked: [String] = []
+        let lock = NSLock()
+        ProviderClients.awsCredentials = { profile in
+            lock.lock(); asked.append(profile.awsProfile ?? "-"); lock.unlock()
+            return StaticAWSCredentialSource(AWSCredentials(accessKeyID: "AKID", secretAccessKey: "secret"))
+        }
+        defer { ProviderClients.awsCredentials = nil }
+        _ = ProviderClients.make(ProviderProfile(kind: .bedrock, name: "B", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+                                                 model: "m", awsProfile: "dsh-bedrock", awsRegion: "us-east-1"))
+        // A route that authenticates with a Bedrock API key never touches the AWS CLI.
+        _ = ProviderClients.make(ProviderProfile(kind: .bedrock, name: "K", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+                                                 model: "m", awsRegion: "us-east-1"))
+        var withKey = ProviderProfile(kind: .bedrock, name: "K2", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+                                      model: "m", awsRegion: "us-east-1")
+        withKey.apiKey = "bedrock-api-key-abc"
+        _ = ProviderClients.make(withKey)
+        lock.lock(); defer { lock.unlock() }
+        XCTAssertEqual(asked, ["dsh-bedrock", "-"], "asked for the profile route, and for the route with neither a profile nor a key; not for the API-key route")
+    }
+
     // MARK: Helpers
 
     private func makeEngine(_ client: any LLMClient, retry: RetryPolicy) -> Engine {

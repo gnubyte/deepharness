@@ -165,6 +165,48 @@ final class FleetConfigTests: XCTestCase {
         XCTAssertEqual(calls, before + 1)
     }
 
+    // MARK: Replacing a route in place
+
+    func testReplacingARouteKeepsItsPlaceAndItsRole() {
+        // Change… on a Bedrock route that serves subagents: a different model, the same seat.
+        let c = config([spark("Spark 1", host: "spark1.local"), bedrock(worker: true), spark("Spark 2", host: "spark2.local", worker: true)])
+        var changed = bedrock(model: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: true)
+        changed.subagentParallel = 4
+        c.replace(bedrock(), with: changed)
+        XCTAssertEqual(c.providers.map(\.name), ["Spark 1", "Amazon Bedrock", "Spark 2"], "same position")
+        XCTAssertEqual(c.providers[1].model, "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+        XCTAssertEqual(c.workerRoutes.map(\.name), ["Amazon Bedrock", "Spark 2"])
+        XCTAssertEqual(c.mainRoute?.name, "Spark 1")
+    }
+
+    func testReplacingTheMainRouteKeepsItTheMainModel() {
+        let c = config([bedrock(), spark("Spark 2", host: "spark2.local", worker: true)])
+        XCTAssertEqual(c.mainRoute?.name, "Amazon Bedrock")
+        c.replace(bedrock(), with: bedrock(model: "amazon.nova-pro-v1:0"))
+        XCTAssertEqual(c.mainRoute?.model, "amazon.nova-pro-v1:0")
+        XCTAssertEqual(c.activeRoute, "Amazon Bedrock|amazon.nova-pro-v1:0")
+        XCTAssertEqual(c.providers.count, 2)
+    }
+
+    func testReplacingWithAModelThatIsAlreadyARouteLeavesOneOfThem() {
+        let sonnet = bedrock(model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+        let haiku = bedrock(model: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: true)
+        let c = config([sonnet, haiku], main: sonnet.routeID)
+        // The user re-picks Haiku for the main route, which already exists as a subagent server.
+        var picked = haiku
+        picked.subagentWorker = nil
+        c.replace(sonnet, with: picked)
+        XCTAssertEqual(c.providers.count, 1, "two routes for one model would collapse into one identity anyway")
+        XCTAssertEqual(c.mainRoute?.model, haiku.model)
+    }
+
+    func testReplacingAnUnknownRouteJustStoresTheNewOne() {
+        let c = config([spark("Spark 1", host: "spark1.local")])
+        c.replace(bedrock(), with: bedrock(model: "amazon.nova-pro-v1:0"))
+        XCTAssertEqual(c.providers.count, 2)
+        XCTAssertEqual(c.mainRoute?.name, "Spark 1")
+    }
+
     // MARK: Persistence
 
     func testTheArrangementSurvivesARestart() {

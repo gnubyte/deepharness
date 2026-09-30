@@ -9,6 +9,8 @@ struct ProviderSettings: View {
     @State private var editing: ProviderProfile?
     @State private var removing: ProviderProfile?
     @State private var status: StatusLine?
+    /// The last "Test All" answer for each route, shown on its row.
+    @State private var results: [String: StatusLine] = [:]
 
     private var config: AppConfig { model.config }
 
@@ -21,7 +23,8 @@ struct ProviderSettings: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                ProviderRoutesList(edit: { editing = $0 },
+                ProviderRoutesList(results: results,
+                                   edit: { editing = $0 },
                                    remove: { removing = $0 },
                                    report: { status = $0 })
                     .padding(20)
@@ -63,6 +66,9 @@ struct ProviderSettings: View {
             }
             Button("Test Main") { Task { await testMain() } }
                 .disabled(config.activeProvider == nil)
+            Button("Test All") { Task { await testAll() } }
+                .disabled(config.providers.count < 2)
+                .help("Ask every route whether it answers, and show the result on each row")
             if let status {
                 Text(status.text)
                     .font(.caption)
@@ -98,14 +104,44 @@ struct ProviderSettings: View {
             return
         }
         status = StatusLine(text: "Testing \(AppTransport.routeLabel(provider))…")
+        status = await Self.check(provider)
+    }
+
+    /// Ask every route at once; each row shows its own answer, so a Spark that is asleep is obvious.
+    private func testAll() async {
+        results = [:]
+        let routes = config.providers.map { route -> ProviderProfile in
+            var probe = route
+            let key = config.apiKey(for: route)
+            probe.apiKey = key.isEmpty ? nil : key
+            return probe
+        }
+        status = StatusLine(text: "Testing \(routes.count) routes…")
+        await withTaskGroup(of: (String, StatusLine).self) { group in
+            for route in routes {
+                group.addTask { (route.routeID, await Self.check(route)) }
+            }
+            for await (id, line) in group { results[id] = line }
+        }
+        let failed = results.values.filter { $0.tone == .failure }.count
+        status = failed == 0
+            ? StatusLine(text: "✔ All \(results.count) routes answered.", tone: .success)
+            : StatusLine(text: "\(failed) of \(results.count) routes did not answer.", tone: .failure)
+    }
+
+    /// Does the route answer, and what does it serve?
+    private static func check(_ provider: ProviderProfile) async -> StatusLine {
         let client = ProviderClients.make(provider)
         do {
             let models = try await client.listModels()
             let info = await client.modelInfo(nil)
             let window = info?.contextWindow.map { ", \($0.formatted())-token window" } ?? ""
-            status = StatusLine(text: "✔ Connected — \(models.count) model(s) served\(window).", tone: .success)
+            if provider.kind == .bedrock {
+                return StatusLine(text: "✔ Connected to Amazon Bedrock — \(models.count) model(s) in \(provider.awsRegion ?? "the Region")\(window).", tone: .success)
+            }
+            return StatusLine(text: "✔ Connected — \(models.count) model(s) served\(window).", tone: .success)
         } catch {
-            status = StatusLine(text: AppTransport.describe(error), tone: .failure)
+            return StatusLine(text: AppTransport.describe(error), tone: .failure)
         }
     }
 }
@@ -122,6 +158,7 @@ struct EditableProvider: Identifiable {
 /// The intro, the fleet card and one row per route: everything that scrolls on the Models page.
 struct ProviderRoutesList: View {
     @Environment(AppModel.self) private var model
+    var results: [String: ProviderSettings.StatusLine] = [:]
     let edit: (ProviderProfile) -> Void
     let remove: (ProviderProfile) -> Void
     let report: (ProviderSettings.StatusLine) -> Void
@@ -142,6 +179,7 @@ struct ProviderRoutesList: View {
             }
             ForEach(config.providers, id: \.routeID) { provider in
                 RouteRow(provider: provider,
+                         result: results[provider.routeID],
                          edit: { edit(provider) },
                          remove: { remove(provider) },
                          report: report)
@@ -212,6 +250,7 @@ struct FleetCard: View {
 struct RouteRow: View {
     @Environment(AppModel.self) private var model
     let provider: ProviderProfile
+    var result: ProviderSettings.StatusLine?
     let edit: () -> Void
     let remove: () -> Void
     let report: (ProviderSettings.StatusLine) -> Void
@@ -239,6 +278,13 @@ struct RouteRow: View {
                     Text(line)
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
+                }
+                if let result {
+                    Text(result.text)
+                        .font(.caption)
+                        .foregroundStyle(result.tone == .success ? Theme.successTint : result.tone == .failure ? Theme.errorTint : .secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
                 }
                 if !isMain { workerControls }
             }

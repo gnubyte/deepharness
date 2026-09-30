@@ -7,7 +7,8 @@
 <p align="center">
   A native SwiftUI coding agent that <em>is</em> the harness. It runs the tool loop itself and talks
   straight to an OpenAI-compatible model server — a DGX Spark on your LAN, a local Ollama or
-  LM Studio, or a hosted provider. No Node, no sidecar process, no web view.
+  LM Studio, a hosted provider — or Amazon Bedrock, and it can put several of them to work at once.
+  No Node, no sidecar process, no web view.
 </p>
 
 <p align="center">
@@ -114,6 +115,69 @@ OpenRouter. API keys go to your login keychain, never into the preferences file.
 
 An agent needs a model that can call tools. Qwen3, Qwen2.5-Coder, and DeepSeek-V3-class models work;
 very small models will flail.
+
+### Two or more model servers
+
+Add a second DGX Spark (or any other OpenAI-compatible server, or Amazon Bedrock) as another route in
+**Settings ▸ Models** and turn on **Use for subagents** on it. The route you chat with is the *main
+model*: the conductor. It talks to you and hands side tasks to the *subagent servers* — the `agent`,
+`delegate` and background agents run on those, least busy first and several at a time (the count is set
+per server), while the main agent carries on with the main model. When every subagent server is busy,
+subagents may use the main server too (a checkbox on the fleet card turns that off).
+
+Who leads is one click: **Make Main** on any route (or the model menu in the toolbar or under the
+composer) swaps the conductor. If a fleet is running, the previous main model stays in it as a subagent
+server, so two Sparks and Bedrock are still three servers afterwards, in different roles.
+
+- A server that stops answering is skipped for a minute and its task moves to another server (told, if
+  the task had already changed things, to look before repeating a step), so one Spark going down doesn't
+  lose a job. With a single server, a subagent waits out an outage as long as the main agent does.
+- One self-hosted machine counts as one subagent server however many of its models are listed (a Spark
+  serves one model at a time), and editing a route never makes it the main model.
+- Each subagent server is asked which model it is serving *right now*, so a Spark that swapped models is
+  still used correctly. A hosted service such as Bedrock serves every model at once, so a cheaper Bedrock
+  model can take the side tasks while a stronger one leads.
+- The bar above the composer shows where the running subagents are ("Spark 2 ×2 · Amazon Bedrock ×1")
+  and, expanded, what each is doing; `/agents` lists the servers with how busy each is.
+
+### Using Amazon Bedrock
+
+On the wizard's backend page choose **Amazon Bedrock with my AWS account (guided)** — or **Settings ▸
+Models ▸ Add Amazon Bedrock…** — for a guide written for people who have never used the AWS CLI. All it
+needs is an AWS account you can sign in to on the website.
+
+1. **The AWS CLI.** DSH looks for it (on your `PATH` and in `/usr/local/bin`, `/opt/homebrew/bin`,
+   `~/.local/bin`, `~/aws-cli`) and installs it if it's missing or too old for the browser sign-in (2.32
+   or later): Amazon's official installer package, downloaded from `awscli.amazonaws.com`, its signature
+   checked (*Amazon Web Services, Inc.*), installed for you alone — no administrator prompt. If that's
+   blocked it can install for everyone (macOS asks for your password) or with Homebrew.
+2. **Sign in.** Pick a Region, then **Sign in with AWS**: DSH runs `aws login` into its own profile,
+   `dsh-bedrock`, so profiles you already have are left alone. Your browser opens the AWS sign-in page;
+   DSH never sees your password. Already set up with IAM Identity Center (SSO), keys or a role? Choose
+   **an AWS CLI profile I already have** — DSH runs `aws sso login` for SSO profiles.
+3. **Pick a model.** The Region's chat models (Claude, Amazon Nova, Llama, Mistral, DeepSeek, …), the best
+   of each family first, using a cross-Region inference profile where the model needs one. Search by
+   name, switch Region without leaving the page, and see at a glance which models are ready to use.
+4. **Enable it** — only when needed; most models are ready immediately:
+   - **Claude** needs Anthropic's one-time *use case* form per AWS account. DSH asks the same questions
+     (company, website, industry, who will use it, what for) and submits it.
+   - **Marketplace models** show their offer first — price per unit, licence (EULA) link, refund policy —
+     and are enabled only after you tick *I accept* and press **Accept and enable**.
+   - Then DSH waits for AWS to finish (usually seconds, up to 15 minutes for a new subscription). If your
+     AWS identity isn't allowed to do something, the page says which permission is missing and has a
+     ready-made IAM policy to copy for your administrator.
+5. **Connect** — saves the route (profile, Region, model), says hello through Bedrock, and asks whether
+   the model should lead (main model) or take subagent tasks.
+
+Requests are signed with SigV4 using short-lived credentials the AWS CLI exports for the profile
+(`aws configure export-credentials`), refreshed before they expire; nothing secret is stored in DSH's
+settings. Chats use Bedrock's Converse API with streaming, tools, images, prompt caching for Claude and
+Nova, and Claude's extended thinking. When the sign-in runs out, the banner offers **Sign in to AWS…**;
+**Settings ▸ Models** has **Sign in** and **Change…** (another model, Region or account) for each Bedrock
+route, and the model menu has **Choose a Bedrock Model…**.
+
+Costs are billed by AWS to your account (Amazon Bedrock, and AWS Marketplace for Marketplace models).
+To remove DSH's sign-in: `aws logout --profile dsh-bedrock`.
 
 ## Tools
 
