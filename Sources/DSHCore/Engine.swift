@@ -292,7 +292,9 @@ public struct Engine: Sendable {
                                   attachments: userAttachments.isEmpty ? nil : userAttachments))
         }
         // Background agents that finished since the last turn report in.
-        progress?.noteReports(Self.takeBackgroundResults(&messages, from: backgroundAgents))
+        // (Taken first, then noted: `progress?.noteReports(take…())` would not take them at all without a tracker.)
+        let reports = Self.takeBackgroundResults(&messages, from: backgroundAgents)
+        progress?.noteReports(reports)
         progress?.update(messages, progressed: false)
         var usage: LLMUsage? = nil
         var denied = 0

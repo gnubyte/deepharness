@@ -54,6 +54,15 @@ final class BackgroundReportsTests: XCTestCase {
         XCTAssertFalse(pool.hasUnreported)
     }
 
+    func testReportsReachTheModelEvenWhenTheCallerTracksNoProgress() async throws {
+        // (A caller without a RunProgress must not lose the reports: taking them cannot depend on having a tracker.)
+        let (pool, _) = await poolWithAFinishedJob()
+        let client = FlakyClient(failures: 0, error: LLMError.noModel, turns: [.init(text: "noted")])
+        let result = try await makeEngine(client, pool: pool).run(messages: [], userText: "carry on", sink: { _ in })
+        XCTAssertTrue(result.messages.contains { ($0.content ?? "").contains("Found 3 flaky tests.") })
+        XCTAssertFalse(pool.hasUnreported)
+    }
+
     func testAStoppedJobIsNeverAnnouncedEvenWhenRequeued() async {
         let pool = BackgroundAgents()
         guard case .success(let job) = pool.launch(description: "slow", work: {

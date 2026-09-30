@@ -149,8 +149,10 @@ needs is an AWS account you can sign in to on the website.
 1. **The AWS CLI.** DSH looks for it (on your `PATH` and in `/usr/local/bin`, `/opt/homebrew/bin`,
    `~/.local/bin`, `~/aws-cli`) and installs it if it's missing or too old for the browser sign-in (2.32
    or later): Amazon's official installer package, downloaded from `awscli.amazonaws.com`, its signature
-   checked (*Amazon Web Services, Inc.*), installed for you alone — no administrator prompt. If that's
-   blocked it can install for everyone (macOS asks for your password) or with Homebrew.
+   checked with `pkgutil` (a Developer ID installer certificate from Amazon's Apple team, `94KV3E626L`),
+   installed for you alone under `~/aws-cli` — no administrator prompt — with `aws` linked from
+   `~/.local/bin`. If that's blocked it can install for everyone (macOS asks for your password) or with
+   Homebrew.
 2. **Sign in.** Pick a Region, then **Sign in with AWS**: DSH runs `aws login` into its own profile,
    `dsh-bedrock`, so profiles you already have are left alone. Your browser opens the AWS sign-in page;
    DSH never sees your password. Already set up with IAM Identity Center (SSO), keys or a role? Choose
@@ -197,6 +199,8 @@ name for name, so prompts, skills, and habits from that ecosystem carry over:
 | `web_fetch` | fetch a URL as text |
 | `todo_write` | publish a task list the UI renders |
 | `exit_plan_mode` | hand back a plan instead of doing the work |
+| `agent` | a subagent for a scoped task; `agent_type` picks the kind (`general`, `explore`, `plan`, `review`, `worker`, or your own agent file), `run_in_background` keeps it working while you carry on |
+| `delegate` | hand out a list of independent tasks and get every report back together; with several model servers they run on different machines |
 | `agent` | spawn a subagent for a scoped task |
 
 **Models without function calling still work.** Many Qwen-class models on Ollama or older vLLM emit
@@ -242,6 +246,7 @@ straight to the editor.
 | `/think off\|low\|medium\|high\|max\|default` | Thinking level for this chat. |
 | `/context` | Window size, usage, and where the window figure came from. |
 | `/swap [model]` | Lists the Spark's models, or switches what it serves. |
+| `/agents` | The kinds of subagent, the model servers they run on with how busy each is, and what is running now. |
 | `/skills` · `/skill <name>` · `/skill new <what>` · `/<name> args` | Skills: list, select for this chat, have the model write one, or run one. |
 | `/help` | Lists these. |
 
@@ -363,7 +368,11 @@ DSHCore/                   the harness. No AppKit, no SwiftUI — headlessly tes
   FileTools.swift          read_file, write_file, edit, list_directory
   QwenTools.swift          glob, grep, read_many_files, exit_plan_mode
   CommandTools.swift       run_shell_command, web_fetch, todo_write
-  AgentTool.swift          subagents
+  AgentTool.swift          subagents (agent types, failover across servers) and delegate
+  Fleet/                   AgentFleet (servers, leases, health), roster, agent definitions, delegate
+  ProviderClients.swift    one factory: OpenAI-compatible routes and Amazon Bedrock
+  AWS/                     SigV4, event streams, the AWS CLI (run, sign in, install), Bedrock setup
+  Bedrock/                 the Converse client, its request mapping and per-model table
   Permissions.swift        presets, path containment, shell gating
   Plugins.swift            JSON manifests → tools
   ProjectContext.swift     instruction files, memory, skill catalog, prompt assembly
@@ -380,6 +389,9 @@ DSHMacApp/                 SwiftUI
   SessionVM.swift          one ordered timeline of messages, tool calls, and todos
   ConversationLog.swift    per-session JSON transcripts
   SetupWizard.swift        first-run configuration
+  ModelRoutesSettings.swift  Settings › Models: the fleet card and a row per route
+  RouteMenu.swift          the main-model / subagent-server menu shared by toolbar and composer
+  Bedrock/                 the Amazon Bedrock guide, its model picker and its backend
   ChatView.swift           transcript, gates, composer
   CodeModeView.swift       tree | editor + terminal | agent
   CodeEditor.swift         NSTextView, line-number ruler
@@ -416,7 +428,10 @@ Verified on macOS 14+ / Apple Silicon:
   full-screen curses app that relies on mouse reporting or sixel is not.
 - **No image attachments.** The old client had them against the harness's attachment API; nothing has
   replaced that here yet.
-- **Subagents are untested against a real child** — nothing local reliably spawned one.
+- **Amazon Bedrock and the multi-server fleet are covered by tests against fakes** (a scripted AWS CLI,
+  stubbed HTTP, two fake model servers); the first run against real AWS and a second real Spark is yours.
+- **Spark model switching (`/swap`) drives one Spark** — the one set up in Settings ▸ Spark. A second Spark
+  is used through its own route and whatever model it is serving.
 - **Reasoning is shown live but not kept** in the transcript once the answer arrives. Servers
   without a reasoning parser leave `<think>` text inline in the answer.
 - **Search across sessions is not implemented.** Transcripts are plain JSON under
