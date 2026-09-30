@@ -362,3 +362,153 @@ final class AWSSignInTests: XCTestCase {
         XCTAssertEqual(signedOut?.profile, "dsh-bedrock")
     }
 }
+
+/// The sign-in against a stand-in `aws` script through the real runner: the URL, the questions and the
+/// cancelling all cross the process boundary.
+final class AWSSignInWithARealProcessTests: XCTestCase {
+    private static let url = "https://us-east-1.signin.aws.amazon.com/v1/authorize?response_type=code&state=abc&redirect_uri=http%3A%2F%2F127.0.0.1%3A53123%2Foauth%2Fcallback"
+
+    private func fakeAWS(_ dir: AWSScratchDirectory, login: String) -> String {
+        dir.write("aws", """
+            #!/bin/sh
+            cd '\(dir.path)' || exit 99
+            case "$1" in
+              login)
+                echo "$@" > login.args
+            \(login)
+                ;;
+              configure)
+                echo "$@" > configure.args
+                ;;
+              *) echo "unexpected: $*" >&2; exit 254 ;;
+            esac
+            """, executable: true)
+    }
+
+    func testABrowserSignInAnswersTheQuestionReportsTheLinkAndSavesTheRegion() async throws {
+        let dir = awsScratch()
+        let aws = fakeAWS(dir, login: """
+                echo "Attempting to open your default browser. If the browser does not open, open the following URL."
+                echo
+                echo "\(Self.url)"
+                echo
+                printf 'Profile p is already configured to use session A. Do you want to overwrite it to use B instead? (y/n): '
+                read answer
+                echo
+                echo "Updated profile p (overwrite=$answer)"
+            """)
+        let links = AWSLockedBox<[AWSSignInLink]>([])
+        let output = AWSLockedBox<[String]>([])
+        let signIn = AWSSignIn(cli: AWSCLI.forPath(aws), loadProfiles: { AWSProfiles.parse(config: "[profile p]\nlogin_session = old\n", credentials: nil) })
+        let result = try await signIn.login(profile: "p", region: "eu-central-1", options: AWSSignInOptions(
+            onOutput: { output.append($0) }, onSignInLink: { links.append($0) }))
+        XCTAssertTrue(result.succeeded, result.message)
+        XCTAssertEqual(links.value.map(\.url), [URL(string: Self.url)!])
+        XCTAssertTrue(output.value.contains("Updated profile p (overwrite=y)"), "\(output.value)")
+        XCTAssertEqual(try String(contentsOfFile: dir["login.args"], encoding: .utf8), "login --profile p --region eu-central-1\n")
+        XCTAssertEqual(try String(contentsOfFile: dir["configure.args"], encoding: .utf8), "configure set region eu-central-1 --profile p\n",
+                       "the profile had no Region, so it is saved")
+    }
+
+    func testARemoteSignInPassesTheCodeThroughToTheCli() async throws {
+        let dir = awsScratch()
+        let aws = fakeAWS(dir, login: """
+                echo "Browser will not be automatically opened."
+                echo "Please visit the following URL:"
+                echo
+                echo "\(Self.url)"
+                echo
+                printf 'Enter the authorization code displayed in your browser: '
+                read code
+                echo
+                echo "code=[$code]"
+            """)
+        let shown = AWSLockedBox<AWSSignInLink?>(nil)
+        let output = AWSLockedBox<[String]>([])
+        let signIn = AWSSignIn(cli: AWSCLI.forPath(aws), loadProfiles: { AWSProfiles.parse(config: nil, credentials: nil) })
+        let result = try await signIn.login(profile: "p", region: "us-east-1", options: AWSSignInOptions(
+            remote: true, onOutput: { output.append($0) },
+            requestAuthorizationCode: { link in
+                shown.mutate { $0 = link }
+                return " abc123== \n"
+            }))
+        XCTAssertTrue(result.succeeded, result.message)
+        XCTAssertEqual(shown.value?.url, URL(string: Self.url))
+        XCTAssertTrue(output.value.contains("code=[abc123==]"), "\(output.value)")
+        XCTAssertEqual(try String(contentsOfFile: dir["login.args"], encoding: .utf8), "login --profile p --region us-east-1 --remote\n")
+    }
+
+    func testGivingUpOnTheCodeStopsTheRealCli() async throws {
+        let dir = awsScratch()
+        let aws = fakeAWS(dir, login: """
+                echo "\(Self.url)"
+                sleep 60 &
+                echo $! > child.pid
+                printf 'Enter the authorization code displayed in your browser: '
+                read code
+                echo "should not get here: $code"
+                touch finished.marker
+            """)
+        let signIn = AWSSignIn(cli: AWSCLI.forPath(aws), loadProfiles: { AWSProfiles.parse(config: nil, credentials: nil) })
+        let task = Task {
+            try await signIn.login(profile: "p", region: "us-east-1", options: AWSSignInOptions(remote: true, requestAuthorizationCode: { _ in nil }))
+        }
+        guard let outcome = await awsOutcome(of: task, within: 30) else { return }
+        let result = try outcome.get()
+        XCTAssertEqual(result.outcome, .cancelled)
+        XCTAssertEqual(result.link?.url, URL(string: Self.url))
+        XCTAssertFalse(dir.exists("finished.marker"))
+        if let text = try? String(contentsOfFile: dir["child.pid"], encoding: .utf8), let child = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            await awsWaitUntil(5, "the CLI's child to be gone") { kill(child, 0) != 0 }
+        }
+    }
+
+    func testCancellingTheSignInStopsTheRealCli() async throws {
+        let dir = awsScratch()
+        let aws = fakeAWS(dir, login: """
+                echo "\(Self.url)"
+                echo $$ > cli.pid
+                sleep 60
+            """)
+        let signIn = AWSSignIn(cli: AWSCLI.forPath(aws), loadProfiles: { AWSProfiles.parse(config: nil, credentials: nil) })
+        let sawLink = AWSLockedBox(false)
+        let task = Task { try await signIn.login(profile: "p", region: "us-east-1", options: AWSSignInOptions(onSignInLink: { _ in sawLink.mutate { $0 = true } })) }
+        await awsWaitUntil(10, "the sign-in link") { sawLink.value }
+        task.cancel()
+        await awsExpectCancelled(task)
+        XCTAssertFalse(dir.exists("configure.args"), "a cancelled sign-in saves nothing")
+        if let text = try? String(contentsOfFile: dir["cli.pid"], encoding: .utf8), let cli = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            await awsWaitUntil(5, "the CLI to be gone") { kill(cli, 0) != 0 }
+        }
+    }
+
+    func testAFailingLoginIsExplainedFromTheRealStandardError() async throws {
+        let dir = awsScratch()
+        let aws = fakeAWS(dir, login: """
+                echo "aws: [ERROR]: Unable to create or refresh login credentials due to insufficient permissions. You may be missing permission for the 'signin:CreateOAuth2Token' action." >&2
+                exit 255
+            """)
+        let signIn = AWSSignIn(cli: AWSCLI.forPath(aws), loadProfiles: { AWSProfiles.parse(config: nil, credentials: nil) })
+        let result = try await signIn.login(profile: "p", region: "us-east-1")
+        XCTAssertEqual(result.outcome, .notAllowed)
+        XCTAssertTrue(result.message.contains("SignInLocalDevelopmentAccess"), result.message)
+        XCTAssertFalse(dir.exists("configure.args"))
+    }
+
+    func testVerifyThroughARealProcess() async throws {
+        let dir = awsScratch()
+        let aws = dir.write("aws", """
+            #!/bin/sh
+            case "$*" in
+              "sts get-caller-identity --profile p --region us-east-1 --output json")
+                echo '{"UserId": "AIDA", "Account": "123456789012", "Arn": "arn:aws:iam::123456789012:user/alice"}' ;;
+              *) echo "Unable to locate credentials. You can configure credentials by running \\"aws login\\"." >&2; exit 253 ;;
+            esac
+            """, executable: true)
+        let signIn = AWSSignIn(cli: AWSCLI.forPath(aws))
+        let identity = try await signIn.verify(profile: "p", region: "us-east-1")
+        XCTAssertEqual(identity.description, "Signed in to AWS account 1234-5678-9012 as alice.")
+        let signedOut = await awsAssertThrows(AWSSignInRequiredError.self) { _ = try await signIn.verify(profile: "other", region: "us-east-1") }
+        XCTAssertEqual(signedOut?.profile, "other")
+    }
+}
