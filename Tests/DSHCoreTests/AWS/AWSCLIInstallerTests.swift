@@ -3,10 +3,14 @@ import XCTest
 
 // MARK: - Fixtures
 
-/// `pkgutil --check-signature` for a package signed by Amazon's Developer ID Installer identity, in
-/// the format Apple documents. (Modelled on Apple's documented output and on the AWS CLI's own
-/// instructions for checking the package — not captured from a real AWS package, which the sandbox
-/// this was written in cannot download; the fingerprints are placeholders.)
+/// `pkgutil --check-signature` for a package signed by Amazon's Developer ID Installer identity. The
+/// layout is the one pkgutil's own format strings give ("Package \"%s\":", "   Status: ", "   Notarization:
+/// trusted by the Apple notary service", "   Signed with a trusted timestamp on: %s", "   Certificate
+/// Chain:", "   %2d. %s", "       Expires: %s", "       SHA256 Fingerprint:", a dashed line between
+/// certificates) and Apple's documentation. It was NOT captured from a real AWS package: this was
+/// written in a sandbox with no network, where pkgutil reported every package tried ("invalid
+/// signature" for the Developer ID ones, "signed by untrusted certificate" for Apple's own), apparently
+/// because it can't evaluate trust there. The fingerprints are placeholders.
 private let installerAmazonSignedReport = """
     Package "AWSCLIV2.pkg":
        Status: signed by a developer certificate issued by Apple for distribution
@@ -572,6 +576,7 @@ final class AWSCLIInstallerTests: XCTestCase {
             (AWSCLIResult(exitCode: 1, stderr: asRoot), false, .needsAdministrator, true),
             (AWSCLIResult(exitCode: 1, stdout: "installer: The install failed. (nope)\n"), false, .failed, true),
             (AWSCLIResult(exitCode: 1, stdout: "installer: The install failed. (nope)\n"), true, .failed, true),
+            (AWSCLIResult(exitCode: 1, stdout: "installer: Error - This package is incompatible with this version of macOS. Contact the developer for support.\n"), false, .notSupported, false),
             (AWSCLIResult(exitCode: 1, stderr: "0:143: execution error: User canceled. (-128)\n"), true, .cancelled, false),
             (AWSCLIResult(exitCode: 1, stderr: "0:143: execution error: The administrator user name or password was incorrect. (-60007)\n"), true, .needsAdministrator, true),
             (AWSCLIResult(exitCode: -1, timedOut: true), false, .failed, true),
@@ -642,13 +647,20 @@ final class AWSCLIInstallerTests: XCTestCase {
         XCTAssertEqual(untrusted.status, "signed by untrusted certificate")
         XCTAssertEqual(untrusted.certificates, ["Software Update"])
         XCTAssertFalse(untrusted.isTrusted, "\"signed by\" alone doesn't make it trusted")
-        // Even with a zero exit, only the known good statuses count.
-        for status in ["no signature", "invalid signature", "signed by untrusted certificate", "signed by a certificate that has since expired", ""] {
+        // Even with a zero exit, only the known good statuses count. These are all the Status texts the pkgutil
+        // of macOS 26 has (read out of the binary), the ones that are not a plain Developer ID signature included.
+        let rejected = ["revoked signature", "invalid signature", "no signature", "signed by untrusted certificate",
+                        "signed by a certificate that has since expired", "signed by a certificate trusted for current user",
+                        "signed by a certificate trusted on this system", "signed by a developer certificate issued by Apple (Development)",
+                        "signed by Apple for TestFlight (Development)", "signed by Apple for TestFlight",
+                        "signed by Apple for the App Store (Development)", "signed by Apple for the App Store",
+                        "signed Apple Software (Development)", "signed Apple Software", ""]
+        for status in rejected {
             XCTAssertFalse(try XCTUnwrap(AWSCLIInstaller.parseSignature("Package \"x\":\n   Status: \(status)\n", exitCode: 0)).isTrusted, status)
         }
-        // Statuses macOS uses for trusted signatures.
+        // Statuses macOS uses for a signature that chains to Apple's Developer ID root.
         for status in ["signed by a developer certificate issued by Apple for distribution", "signed by a certificate trusted by macOS",
-                       "signed by a certificate trusted by Mac OS X", "signed Apple Software"] {
+                       "signed by a certificate trusted by Mac OS X"] {
             XCTAssertTrue(try XCTUnwrap(AWSCLIInstaller.parseSignature("Package \"x\":\n   Status: \(status)\n")).isTrusted, status)
         }
     }

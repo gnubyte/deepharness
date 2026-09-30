@@ -485,6 +485,11 @@ public struct AWSCLIInstaller: Sendable {
                                        message: "Installing the AWS CLI needs administrator rights on this Mac. Choose the install for everyone on this Mac (macOS asks for an administrator's password), or ask an administrator.",
                                        exitCode: code)
         }
+        if lowered.contains("incompatible with this version of macos") {
+            return AWSCLIInstallResult(outcome: .notSupported,
+                                       message: "This version of macOS is too old for the AWS CLI installer. Update macOS, or install the AWS CLI another way.",
+                                       exitCode: code)
+        }
         var message = "The AWS CLI installer stopped with error \(code)."
         if let last = lastLine(of: output) { message += " It said: \(last)" }
         message += " The macOS install log (/var/log/install.log) has the details."
@@ -558,12 +563,21 @@ public struct AWSCLIInstaller: Sendable {
         return AWSPackageSignature(status: status, certificates: certificates, isTrusted: exitCode == 0 && trustedStatus(status))
     }
 
-    /// The Status texts that mean "valid signature from a certificate macOS trusts".
+    /// The Status texts that mean "valid signature, made with a certificate that chains to Apple's
+    /// Developer ID root (or, on older systems, to a root macOS trusts)". These are the strings pkgutil
+    /// itself prints (it has "revoked signature", "invalid signature", "signed by untrusted
+    /// certificate", "signed by a certificate that has since expired" and "no signature" for the bad
+    /// cases, and further "signed by …" texts for development, TestFlight, App Store, user-trusted and
+    /// Apple's own packages, none of which is how Amazon ships the AWS CLI).
     private static func trustedStatus(_ status: String) -> Bool {
-        let lowered = status.lowercased()
-        return lowered.hasPrefix("signed by a developer certificate issued by apple")
-            || lowered.hasPrefix("signed by a certificate trusted by")
-            || lowered == "signed apple software"
+        switch status.lowercased() {
+        case "signed by a developer certificate issued by apple for distribution",
+             "signed by a certificate trusted by macos",
+             "signed by a certificate trusted by mac os x":
+            return true
+        default:
+            return false
+        }
     }
 
     /// The real signature check: `pkgutil --check-signature`. Throws when pkgutil isn't there or doesn't
