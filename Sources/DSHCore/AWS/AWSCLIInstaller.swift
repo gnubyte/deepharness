@@ -153,7 +153,11 @@ public struct AWSCLIInstaller: Sendable {
     /// (whose own exit status is 1 for any failure).
     static let exitMarker = "DSH_EXIT_STATUS="
 
+    /// One line of what a tool printed, as it arrives (on a background queue).
     public typealias LineHandler = @Sendable (String) -> Void
+
+    /// Where the install is, as it goes. Called from whatever thread is doing the work — hop to the main
+    /// actor before touching the UI.
     public typealias Progress = @Sendable (AWSCLIInstallProgress) -> Void
 
     /// The user's home folder: where the current-user package lands (`~/aws-cli`) and where its link

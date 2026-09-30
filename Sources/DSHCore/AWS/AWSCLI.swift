@@ -439,7 +439,7 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
     private func terminateTree() {
         let target: pid_t? = lock.withLock { started && !exited ? pid : nil }
         guard let target else { return }
-        kill(-target, SIGTERM)
+        Self.signalGroup(target, SIGTERM)
         kill(target, SIGTERM)
         DispatchQueue.global().asyncAfter(deadline: .now() + killGrace) { [weak self] in
             self?.forceKill(target)
@@ -449,11 +449,19 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
     private func forceKill(_ target: pid_t) {
         let leaderAlive = lock.withLock { !exited }
         if leaderAlive { kill(target, SIGKILL) }
-        if Self.groupAlive(target) { kill(-target, SIGKILL) }
+        if Self.groupAlive(target) { Self.signalGroup(target, SIGKILL) }
+    }
+
+    /// Signal a whole process group. Only ever a real child's group: kill(-0) would be this process's own
+    /// group and kill(-1) every process there is.
+    private static func signalGroup(_ group: pid_t, _ signal: Int32) {
+        guard group > 1 else { return }
+        kill(-group, signal)
     }
 
     private static func groupAlive(_ group: pid_t) -> Bool {
-        kill(-group, 0) == 0 || errno == EPERM
+        guard group > 1 else { return false }
+        return kill(-group, 0) == 0 || errno == EPERM
     }
 
     // MARK: Running
@@ -649,7 +657,7 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(killGrace)
         while Self.groupAlive(group) && Date() < deadline { await AWSCLIGate.sleep(0.02) }
         if Self.groupAlive(group) {
-            kill(-group, SIGKILL)
+            Self.signalGroup(group, SIGKILL)
             let last = Date().addingTimeInterval(1)
             while Self.groupAlive(group) && Date() < last { await AWSCLIGate.sleep(0.02) }
         }

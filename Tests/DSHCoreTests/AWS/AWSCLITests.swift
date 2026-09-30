@@ -560,7 +560,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
         let dir = awsScratch()
         let aws = script(dir, "echo started; sleep 30")
         let start = Date()
-        let timedOut = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(timeout: 0.5))
+        let timedOut = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(timeout: 1.0))
         XCTAssertTrue(timedOut.timedOut)
         XCTAssertFalse(timedOut.succeeded)
         XCTAssertEqual(timedOut.exitCode, -1)
@@ -586,7 +586,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     func testATimeoutStopsTheChildrenToo() async throws {
         let dir = awsScratch()
         let aws = script(dir, "echo $$ > leader.pid; sleep 30 & echo $! > child.pid; wait")
-        let task = Task { try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(timeout: 0.6)) }
+        let task = Task { try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(timeout: 1.5)) }
         guard let outcome = await awsOutcome(of: task, within: 20) else { return killRecordedProcesses(in: dir) }
         XCTAssertTrue(try outcome.get().timedOut)
         let child = try XCTUnwrap(pid(in: dir, "child.pid"))
@@ -599,7 +599,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
         let aws = script(dir, "trap '' TERM; echo $$ > leader.pid; sleep 30 & echo $! > child.pid; echo started; while true; do sleep 1; done")
         let runner = ProcessAWSCLIRunner(executable: aws, baseEnvironment: nil, killGrace: 0.4, outputGrace: 1)
         let start = Date()
-        let task = Task { try await runner.run([], options: AWSCLIRunOptions(timeout: 0.6)) }
+        let task = Task { try await runner.run([], options: AWSCLIRunOptions(timeout: 1.5)) }
         guard let outcome = await awsOutcome(of: task, within: 20) else { return killRecordedProcesses(in: dir) }
         XCTAssertTrue(try outcome.get().timedOut)
         XCTAssertLessThan(Date().timeIntervalSince(start), 10)
@@ -715,7 +715,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
         let aws = script(dir, #"printf 'Are you sure? (y/n): ' >&2; read x; echo "[$x]""#)
         let offered = AWSLockedBox<[String]>([])
         let result = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(
-            answerPrompt: { text in offered.append(text); return "y" }, timeout: 1.0))
+            answerPrompt: { text in offered.append(text); return "y" }, timeout: 2.0))
         XCTAssertTrue(result.timedOut, "nobody answered a question printed on standard error")
         XCTAssertTrue(offered.value.isEmpty)
         XCTAssertEqual(result.stderr, "Are you sure? (y/n): ")
