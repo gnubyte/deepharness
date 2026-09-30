@@ -116,6 +116,8 @@ struct AppCommands: Commands {
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// The banner's "Sign in to AWS…" is running (the browser is open).
+    @State private var signingInToAWS = false
 
     var body: some View {
         @Bindable var model = model
@@ -143,6 +145,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $model.showVault) {
             VaultView().environment(model)
+        }
+        .sheet(item: $model.bedrockGuide) { request in
+            BedrockGuideView(request: request, appModel: model).environment(model)
         }
         .overlay(alignment: .top) { banner }
     }
@@ -239,6 +244,27 @@ struct RootView: View {
         }
     }
 
+    /// The banner's "Sign in to AWS…": the AWS sign-in behind a Bedrock route ran out. Sign the same
+    /// profile in again (the browser opens), then the next message just works.
+    private func signInToAWS(_ profile: String) {
+        guard !signingInToAWS else { return }
+        let region = model.config.providers.first { $0.kind == .bedrock && ($0.awsProfile ?? AWSSignIn.defaultProfile) == profile }?.awsRegion
+        signingInToAWS = true
+        model.transport.banner = "Finish signing in to AWS in the browser window that just opened…"
+        model.transport.awsSignInProfile = profile
+        Task {
+            let result = await AWSAccounts.signInAgain(profile: profile, region: region)
+            signingInToAWS = false
+            if result.succeeded {
+                model.transport.banner = nil
+                model.transport.broadcast("Signed in to AWS again (profile “\(profile)”). Send your message again to carry on.")
+            } else {
+                model.transport.banner = result.message
+                model.transport.awsSignInProfile = profile
+            }
+        }
+    }
+
     @ViewBuilder
     private var banner: some View {
         if let message = model.transport.banner {
@@ -254,6 +280,12 @@ struct RootView: View {
                         model.showWizard = true
                     }
                     .controlSize(.small)
+                }
+                if let profile = model.transport.awsSignInProfile {
+                    Button(signingInToAWS ? "Signing in…" : "Sign in to AWS…") { signInToAWS(profile) }
+                        .controlSize(.small)
+                        .disabled(signingInToAWS)
+                        .help("Opens your browser to sign in to AWS again; your next message then goes through.")
                 }
                 Button {
                     model.transport.banner = nil

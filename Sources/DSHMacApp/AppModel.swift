@@ -47,6 +47,8 @@ final class AppModel {
     private(set) var project: URL?
 
     init() {
+        // Bedrock routes sign their requests with credentials the AWS CLI exports for their profile.
+        AWSAccounts.install()
         transport = AppTransport(config: config)
         spark = SparkController(config: config, transport: transport)
         mode = WorkspaceMode(rawValue: config.lastMode) ?? .chat
