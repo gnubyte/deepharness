@@ -85,6 +85,9 @@ public final class RunProgress: @unchecked Sendable {
     /// result, a compaction) — tracked as a flag, not by length, because an
     /// in-run compaction shrinks the list below where it started.
     private var progressed = false
+    /// Background agents' reports this run took to give the model. If the run dies before the model
+    /// has seen them, the host puts them back (`BackgroundAgents.requeue`) so they are not lost.
+    private var taken: [BackgroundAgents.Job] = []
 
     public init() {}
 
@@ -92,6 +95,19 @@ public final class RunProgress: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         latest = nil
         progressed = false
+        taken = []
+    }
+
+    func noteReports(_ jobs: [BackgroundAgents.Job]) {
+        guard !jobs.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        taken.append(contentsOf: jobs)
+    }
+
+    /// The finished background agents' reports this run took for the model (see `noteReports`).
+    public var takenReports: [BackgroundAgents.Job] {
+        lock.lock(); defer { lock.unlock() }
+        return taken
     }
 
     func update(_ messages: [LLMMessage], progressed: Bool = true) {
@@ -276,7 +292,7 @@ public struct Engine: Sendable {
                                   attachments: userAttachments.isEmpty ? nil : userAttachments))
         }
         // Background agents that finished since the last turn report in.
-        Self.appendBackgroundResults(&messages, from: backgroundAgents)
+        progress?.noteReports(Self.takeBackgroundResults(&messages, from: backgroundAgents))
         progress?.update(messages, progressed: false)
         var usage: LLMUsage? = nil
         var denied = 0
@@ -548,7 +564,9 @@ public struct Engine: Sendable {
                     imageSource: names))
                 progress?.update(messages)
             }
-            if Self.appendBackgroundResults(&messages, from: backgroundAgents) {
+            let reports = Self.takeBackgroundResults(&messages, from: backgroundAgents)
+            if !reports.isEmpty {
+                progress?.noteReports(reports)
                 progress?.update(messages)
             }
         }
@@ -736,9 +754,15 @@ public struct Engine: Sendable {
     /// never stack). Returns true when something was added.
     @discardableResult
     static func appendBackgroundResults(_ messages: inout [LLMMessage], from pool: BackgroundAgents?) -> Bool {
-        guard let pool else { return false }
+        !takeBackgroundResults(&messages, from: pool).isEmpty
+    }
+
+    /// Like `appendBackgroundResults`, returning the jobs whose reports were taken.
+    @discardableResult
+    static func takeBackgroundResults(_ messages: inout [LLMMessage], from pool: BackgroundAgents?) -> [BackgroundAgents.Job] {
+        guard let pool else { return [] }
         let finished = pool.takeUnreported()
-        guard !finished.isEmpty else { return false }
+        guard !finished.isEmpty else { return [] }
         let notice = BackgroundAgents.notice(for: finished)
         if let last = messages.indices.last, messages[last].role == .user {
             messages[last].content = (messages[last].content ?? "") + "\n\n" + notice
@@ -747,7 +771,7 @@ public struct Engine: Sendable {
             // with no display entry (compaction's user-count mapping skips it).
             messages.append(LLMMessage(role: .user, content: notice, imageSource: "background agents"))
         }
-        return true
+        return finished
     }
 
     /// Tools with no permission prompt and no vault substitution that may run side by side when the

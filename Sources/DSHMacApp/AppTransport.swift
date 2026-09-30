@@ -1609,6 +1609,8 @@ public final class AppTransport {
                 // The model never saw this message: say so, and keep it out of
                 // the replayed conversation (and compaction's counting).
                 markUndelivered(vm, entryID: userEntryID)
+                // Nor the finished background agents' reports that rode on it: announce them with the next message.
+                backgroundPools[sessionID]?.requeue(progress.takenReports)
             }
             vm.endStreaming()
             // A server overflow that still surfaced tells us the real window is
