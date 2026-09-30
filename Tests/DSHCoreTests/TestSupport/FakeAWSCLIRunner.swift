@@ -267,13 +267,15 @@ extension XCTestCase {
         return outcome.value
     }
 
-    /// The task must end by throwing `CancellationError` (and must end at all).
-    func awsExpectCancelled<Value: Sendable>(_ task: Task<Value, any Error>, file: StaticString = #filePath, line: UInt = #line) async {
-        guard let outcome = await awsOutcome(of: task, file: file, line: line) else { return }
+    /// The task must end by throwing `CancellationError` (and must end at all: false when it didn't).
+    @discardableResult
+    func awsExpectCancelled<Value: Sendable>(_ task: Task<Value, any Error>, file: StaticString = #filePath, line: UInt = #line) async -> Bool {
+        guard let outcome = await awsOutcome(of: task, file: file, line: line) else { return false }
         switch outcome {
         case .success: XCTFail("expected CancellationError, but the task succeeded", file: file, line: line)
         case .failure(let error): XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)", file: file, line: line)
         }
+        return true
     }
 
     /// Polls until `condition` holds (up to `seconds`).

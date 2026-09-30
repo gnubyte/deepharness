@@ -438,6 +438,17 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
 
     private func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
 
+    /// When a test finds the runner didn't stop something, don't leave it running: kill every process
+    /// (and group) whose pid a script wrote into a .pid file.
+    private func killRecordedProcesses(in dir: AWSScratchDirectory) {
+        for name in dir.files() where name.hasSuffix(".pid") {
+            if let text = try? String(contentsOfFile: dir[name], encoding: .utf8), let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                kill(-pid, SIGKILL)
+                kill(pid, SIGKILL)
+            }
+        }
+    }
+
     func testPassesArgumentsVerbatimAndSetsTheEnvironment() async throws {
         let dir = awsScratch()
         let aws = script(dir, #"""
@@ -560,23 +571,24 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
 
     func testCancellingStopsTheCliAndEverythingItStarted() async throws {
         let dir = awsScratch()
-        let aws = script(dir, "sleep 30 & echo $! > child.pid; echo started; wait")
+        let aws = script(dir, "echo $$ > leader.pid; sleep 30 & echo $! > child.pid; echo started; wait")
         let task = Task { try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions()) }
         await awsWaitUntil(10, "the script to start its child") { pid(in: dir, "child.pid") != nil }
         let child = try XCTUnwrap(pid(in: dir, "child.pid"))
         XCTAssertTrue(isAlive(child))
         let start = Date()
         task.cancel()
-        await awsExpectCancelled(task)
+        guard await awsExpectCancelled(task) else { return killRecordedProcesses(in: dir) }
         XCTAssertLessThan(Date().timeIntervalSince(start), 10)
         await awsWaitUntil(5, "the child to be gone") { !isAlive(child) }
     }
 
     func testATimeoutStopsTheChildrenToo() async throws {
         let dir = awsScratch()
-        let aws = script(dir, "sleep 30 & echo $! > child.pid; wait")
-        let result = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(timeout: 0.6))
-        XCTAssertTrue(result.timedOut)
+        let aws = script(dir, "echo $$ > leader.pid; sleep 30 & echo $! > child.pid; wait")
+        let task = Task { try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(timeout: 0.6)) }
+        guard let outcome = await awsOutcome(of: task, within: 20) else { return killRecordedProcesses(in: dir) }
+        XCTAssertTrue(try outcome.get().timedOut)
         let child = try XCTUnwrap(pid(in: dir, "child.pid"))
         await awsWaitUntil(5, "the child to be gone") { !isAlive(child) }
     }
@@ -584,14 +596,16 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     func testAChildThatIgnoresSigtermIsKilled() async throws {
         let dir = awsScratch()
         // "trap '' TERM" is inherited by the sleeps it starts: only SIGKILL stops any of this.
-        let aws = script(dir, "trap '' TERM; sleep 30 & echo $! > child.pid; echo started; while true; do sleep 1; done")
+        let aws = script(dir, "trap '' TERM; echo $$ > leader.pid; sleep 30 & echo $! > child.pid; echo started; while true; do sleep 1; done")
         let runner = ProcessAWSCLIRunner(executable: aws, baseEnvironment: nil, killGrace: 0.4, outputGrace: 1)
         let start = Date()
-        let result = try await runner.run([], options: AWSCLIRunOptions(timeout: 0.6))
-        XCTAssertTrue(result.timedOut)
+        let task = Task { try await runner.run([], options: AWSCLIRunOptions(timeout: 0.6)) }
+        guard let outcome = await awsOutcome(of: task, within: 20) else { return killRecordedProcesses(in: dir) }
+        XCTAssertTrue(try outcome.get().timedOut)
         XCTAssertLessThan(Date().timeIntervalSince(start), 10)
         let child = try XCTUnwrap(pid(in: dir, "child.pid"))
         await awsWaitUntil(5, "the stubborn child to be gone") { !isAlive(child) }
+        if let leader = pid(in: dir, "leader.pid") { XCTAssertFalse(isAlive(leader), "the shell that ignored SIGTERM is gone too") }
     }
 
     func testACancelledTaskNeverStartsTheProgram() async {
