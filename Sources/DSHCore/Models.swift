@@ -22,6 +22,14 @@ public struct LLMMessage: Codable, Hashable, Sendable {
     /// (names of the tools). Such messages are pruned to the newest few so a
     /// long debugging session doesn't fill the window with old screenshots.
     public var imageSource: String?
+    /// For assistant messages: opaque provider data that must be sent back
+    /// verbatim with this message (copied from `LLMStreamEvent.done`'s
+    /// `providerState`) — e.g. Claude's signed reasoning on Bedrock, which
+    /// Claude insists on seeing again while it works through the tool calls of
+    /// that turn. Only the client that wrote it reads it; the others ignore
+    /// it. Lost when a transcript is rebuilt from text (compaction, replay),
+    /// which every reader must tolerate.
+    public var providerState: String?
 
     public init(role: Role,
                 content: String? = nil,
@@ -29,7 +37,8 @@ public struct LLMMessage: Codable, Hashable, Sendable {
                 toolCallID: String? = nil,
                 name: String? = nil,
                 attachments: [MessageAttachment]? = nil,
-                imageSource: String? = nil) {
+                imageSource: String? = nil,
+                providerState: String? = nil) {
         self.role = role
         self.content = content
         self.toolCalls = toolCalls
@@ -37,6 +46,7 @@ public struct LLMMessage: Codable, Hashable, Sendable {
         self.name = name
         self.attachments = attachments
         self.imageSource = imageSource
+        self.providerState = providerState
     }
 
     public static func user(_ text: String, attachments: [MessageAttachment]? = nil) -> LLMMessage {
@@ -130,6 +140,13 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         case openAICompat  // any OpenAI-compatible server (vLLM, DGX Spark, ...)
         case openAI
         case openRouter
+        /// Amazon Bedrock: the Converse API, signed with AWS credentials (the
+        /// AWS CLI's sign-in) or authorised with a Bedrock API key.
+        case bedrock
+
+        /// The kinds the editor offers for a route made by hand. A Bedrock
+        /// route comes from its guide (profile, Region and model together).
+        public static var manual: [Kind] { [.openAICompat, .ollama, .lmStudio, .openAI, .openRouter] }
     }
 
     public var kind: Kind
@@ -153,12 +170,28 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     /// Whether the model can take images (screenshots from the screen tools).
     /// nil = assume yes; false makes tools return text only.
     public var vision: Bool?
+    /// Bedrock: the AWS CLI profile whose sign-in is used (e.g. "dsh-bedrock").
+    /// Nil together with an API key = authenticate with that Bedrock API key.
+    public var awsProfile: String?
+    /// Bedrock: the AWS Region to call (e.g. "us-east-1").
+    public var awsRegion: String?
+    /// Use this server for subagents while another route is the main model —
+    /// a second DGX Spark takes the side tasks so they run in parallel with
+    /// the main one. Kept on every route, including the main one, so swapping
+    /// the main model never forgets which servers were helping; it only takes
+    /// effect while the route is not the main one. Nil = not a worker.
+    public var subagentWorker: Bool?
+    /// How many subagents may work on this server at once (nil = 2 for a
+    /// worker, 4 for the main route).
+    public var subagentParallel: Int?
 
     public init(kind: Kind, name: String, baseURL: String, apiKey: String? = nil,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
                 contextWindow: Int? = nil,
                 customHeaders: [String: String]? = nil, reasoningEffort: String? = nil,
-                vision: Bool? = nil) {
+                vision: Bool? = nil,
+                awsProfile: String? = nil, awsRegion: String? = nil,
+                subagentWorker: Bool? = nil, subagentParallel: Int? = nil) {
         self.kind = kind
         self.name = name
         self.baseURL = baseURL
@@ -170,7 +203,14 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         self.customHeaders = customHeaders
         self.reasoningEffort = reasoningEffort
         self.vision = vision
+        self.awsProfile = awsProfile
+        self.awsRegion = awsRegion
+        self.subagentWorker = subagentWorker
+        self.subagentParallel = subagentParallel
     }
+
+    /// Whether this route is flagged to serve subagents (see `subagentWorker`).
+    public var isSubagentWorker: Bool { subagentWorker ?? false }
 
     public static let presets: [ProviderProfile] = [
         .init(kind: .ollama, name: "Ollama (local)", baseURL: "http://127.0.0.1:11434/v1", model: "qwen3:8b"),
@@ -198,7 +238,8 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         guard let host = URL(string: baseURL)?.host?.lowercased() else { return true }
         let hosted = ["openai.com", "openrouter.ai", "anthropic.com", "groq.com", "together.xyz",
                       "together.ai", "fireworks.ai", "mistral.ai", "deepseek.com", "x.ai",
-                      "googleapis.com", "azure.com", "cerebras.ai", "perplexity.ai"]
+                      "googleapis.com", "azure.com", "cerebras.ai", "perplexity.ai",
+                      "amazonaws.com", "api.aws"]
         return !hosted.contains { host == $0 || host.hasSuffix("." + $0) }
     }
 }
@@ -328,9 +369,23 @@ public struct LLMRequest: Sendable {
 public struct LLMUsage: Codable, Hashable, Sendable {
     public var promptTokens: Int
     public var completionTokens: Int
-    public init(promptTokens: Int, completionTokens: Int) {
+    /// How much of the prompt the server served from its prompt cache, when it
+    /// says so (nil = unknown).
+    public var cachedTokens: Int?
+    public init(promptTokens: Int, completionTokens: Int, cachedTokens: Int? = nil) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
+        self.cachedTokens = cachedTokens
+    }
+
+    /// This usage plus `other` (nil-safe on either side).
+    public static func sum(_ a: LLMUsage?, _ b: LLMUsage?) -> LLMUsage? {
+        guard let a else { return b }
+        guard let b else { return a }
+        let cached = (a.cachedTokens == nil && b.cachedTokens == nil) ? nil : (a.cachedTokens ?? 0) + (b.cachedTokens ?? 0)
+        return LLMUsage(promptTokens: a.promptTokens + b.promptTokens,
+                        completionTokens: a.completionTokens + b.completionTokens,
+                        cachedTokens: cached)
     }
 }
 
@@ -345,7 +400,10 @@ public enum LLMStreamEvent: Sendable {
     /// reasoning parser, or OpenRouter's `reasoning`. Shown live, never sent back.
     case reasoning(String)
     /// The stream finished: complete tool calls (may be empty) + metadata.
-    case done(calls: [ToolCall], finish: String?, usage: LLMUsage?)
+    /// `providerState` is opaque data the caller must store on the assistant
+    /// message this turn becomes (`LLMMessage.providerState`) so it is sent
+    /// back verbatim — e.g. signed reasoning. Nil for providers that need nothing.
+    case done(calls: [ToolCall], finish: String?, usage: LLMUsage?, providerState: String? = nil)
 }
 
 /// Transport errors with user-actionable guidance (wizard smoke test uses this).
@@ -360,6 +418,11 @@ public enum LLMError: LocalizedError, Sendable {
     case overflow(limit: Int, detail: String)
     case sse(String)
     case unsupported(String)
+    /// An HTTP-class refusal the provider client has already put into plain
+    /// words (Bedrock's AccessDenied → "enable access to the model"; an AWS
+    /// sign-in that ran out). Retried by `status` like `.http` unless
+    /// `permanent`; `body` is the server's own wording, for the retry status line.
+    case rejected(status: Int, message: String, body: String, permanent: Bool)
 
     public var errorDescription: String? {
         switch self {
@@ -367,6 +430,7 @@ public enum LLMError: LocalizedError, Sendable {
         case .connection(let why):
             "Could not reach the model server (\(why)). Is it running and is the address right?"
         case .http(let code, let body): "The model server replied \(code): \(String(body.prefix(300)))"
+        case .rejected(_, let message, _, _): message
         case .overflow(let limit, let detail):
             limit > 0
                 ? "Conversation is too long for the \(limit.formatted())-token window (\(detail.prefix(120)))."

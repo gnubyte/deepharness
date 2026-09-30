@@ -263,6 +263,8 @@ public extension ProviderProfile {
         case .ollama, .lmStudio: return false
         case .openAICompat: return !isLoopbackOrLAN
         case .openAI, .openRouter: return true
+        // A Bedrock route signs with an AWS sign-in; only one without a profile uses a Bedrock API key.
+        case .bedrock: return awsProfile == nil
         }
     }
 

@@ -145,6 +145,7 @@ extension ProviderProfile.Kind {
         case .openAICompat: "OpenAI-compatible server"
         case .openAI: "OpenAI"
         case .openRouter: "OpenRouter"
+        case .bedrock: "Amazon Bedrock"
         }
     }
 
@@ -153,6 +154,7 @@ extension ProviderProfile.Kind {
         case .ollama, .lmStudio: "desktopcomputer"
         case .openAICompat: "server.rack"
         case .openAI, .openRouter: "cloud"
+        case .bedrock: "cloud.bolt"
         }
     }
 }

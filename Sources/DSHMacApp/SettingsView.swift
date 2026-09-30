@@ -200,7 +200,7 @@ private struct ProviderEditor: View {
             Form {
                 Section("API") {
                     Picker("Kind", selection: $draft.kind) {
-                        ForEach(ProviderProfile.Kind.allCases, id: \.self) { kind in
+                        ForEach(draft.kind == .bedrock ? [ProviderProfile.Kind.bedrock] : ProviderProfile.Kind.manual, id: \.self) { kind in
                             Text(kind.label).tag(kind)
                         }
                     }

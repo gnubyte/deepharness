@@ -271,6 +271,7 @@ public struct Engine: Sendable {
             var text = ""
             var calls: [ToolCall] = []
             var turnUsage: LLMUsage? = nil
+            var providerState: String? = nil
             var failures = 0
             // HTTP 500s get a bounded number of tries of their own — counted
             // apart from outage retries, so a 500 after a long outage still
@@ -316,6 +317,7 @@ public struct Engine: Sendable {
                 text = ""
                 calls = []
                 turnUsage = nil
+                providerState = nil
                 do {
                     for try await event in client.stream(request) {
                         if Task.isCancelled { throw CancellationError() }
@@ -325,9 +327,10 @@ public struct Engine: Sendable {
                             sink(.textDelta(d))
                         case .reasoning(let r):
                             sink(.reasoningDelta(r))
-                        case .done(let c, _, let u):
+                        case .done(let c, _, let u, let state):
                             calls = c
                             turnUsage = u
+                            providerState = state
                         }
                     }
                     // A stream cancelled by Stop ends quietly rather than
@@ -359,6 +362,8 @@ public struct Engine: Sendable {
                     // wait and try again until it answers or the user stops.
                     failures += 1
                     if case .limited = RequestRetry.disposition(for: error) { limitedFailures += 1 }
+                    // A subagent on a fleet gives up early so its task can move to another server.
+                    if let cap = config.retry.maxFailures, failures > cap { throw error }
                     guard config.retry.shouldRetry(error, attempt: max(1, limitedFailures)) else { throw error }
                     let delay = max(0, config.retry.delay(failures))
                     sink(.retrying(attempt: failures, delay: delay, reason: RequestRetry.reason(for: error)))
@@ -373,18 +378,17 @@ public struct Engine: Sendable {
                 }
             }
 
-            if let u = turnUsage {
-                usage = usage.map {
-                    LLMUsage(promptTokens: $0.promptTokens + u.promptTokens,
-                             completionTokens: $0.completionTokens + u.completionTokens)
-                } ?? u
-            }
+            usage = LLMUsage.sum(usage, turnUsage)
             if let u = turnUsage { lastPromptTokens = u.promptTokens }
             finalText = text
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { lastReplyText = text }
 
             let assistantID = "m\(iteration)"
-            messages.append(.assistant(text, calls: calls))
+            // The provider's opaque state (signed reasoning) rides on the
+            // message so the next request can send it back.
+            var assistant = LLMMessage.assistant(text, calls: calls)
+            assistant.providerState = providerState
+            messages.append(assistant)
             progress?.update(messages)
             sink(.assistantMessage(id: assistantID, text: text, calls: calls))
 

@@ -158,7 +158,7 @@ struct SetupWizard: View {
             Text("You can change this later, and keep more than one configured.")
                 .font(.callout).foregroundStyle(.secondary)
 
-            ForEach(ProviderProfile.Kind.allCases, id: \.self) { candidate in
+            ForEach(ProviderProfile.Kind.manual, id: \.self) { candidate in
                 Button {
                     kind = candidate
                     applyDefaults(for: candidate)
@@ -207,6 +207,7 @@ struct SetupWizard: View {
         case .lmStudio: "Models running locally through LM Studio on this Mac."
         case .openAI: "OpenAI's hosted API. Needs an API key."
         case .openRouter: "Many hosted models behind one API. Needs an API key."
+        case .bedrock: "Claude, Amazon Nova, Llama and more through your AWS account. Set up by its own guide."
         }
     }
 
@@ -280,6 +281,8 @@ struct SetupWizard: View {
             "Start LM Studio's local server (Developer ▸ Start Server) and load a model, then test the connection."
         case .openAI, .openRouter:
             "Paste an API key. It is stored in your login keychain, never in the app's preferences file."
+        case .bedrock:
+            "Amazon Bedrock is set up by its own guide: Settings ▸ Models ▸ Add Amazon Bedrock…"
         }
     }
 
@@ -289,6 +292,7 @@ struct SetupWizard: View {
         case .ollama, .lmStudio: "127.0.0.1"
         case .openAI: "https://api.openai.com/v1"
         case .openRouter: "https://openrouter.ai/api/v1"
+        case .bedrock: "https://bedrock-runtime.us-east-1.amazonaws.com"
         }
     }
 
@@ -327,6 +331,8 @@ struct SetupWizard: View {
             "In LM Studio, open the Developer tab, load a model, and press Start Server."
         case .openAI, .openRouter:
             "Check the key is current and has credit or quota on the account."
+        case .bedrock:
+            "Sign in to AWS again and check that your account is allowed to use the model."
         }
     }
 
@@ -716,6 +722,8 @@ struct SetupWizard: View {
             host = "https://api.openai.com/v1"; port = ""; modelID = "gpt-4o"
         case .openRouter:
             host = "https://openrouter.ai/api/v1"; port = ""; modelID = "qwen/qwen3-32b"
+        case .bedrock:
+            host = "https://bedrock-runtime.us-east-1.amazonaws.com"; port = ""; modelID = ""
         }
     }
 
