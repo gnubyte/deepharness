@@ -13,7 +13,13 @@ public final class AppTransport {
 
     public private(set) var sessions: [SessionVM] = []
     public var selectedID: String?
-    public var banner: String?
+    public var banner: String? {
+        // A banner about something else is no longer about the AWS sign-in.
+        didSet { awsSignInProfile = nil }
+    }
+    /// Set right after a banner that says a Bedrock route's AWS sign-in ran out: the AWS CLI profile
+    /// the banner's "Sign in to AWS…" button signs in again.
+    public var awsSignInProfile: String?
     /// Plugin manifests loaded for the current project, and any that failed.
     public private(set) var plugins: [PluginManifest] = []
     public private(set) var pluginErrors: [String] = []
@@ -1196,6 +1202,9 @@ public final class AppTransport {
                 }
             }
 
+        case .agents:
+            agentsCommand(vm)
+
         case .goal(let goal):
             if isServerSwitching?() == true {
                 vm.note("The Spark is switching models right now — send again once it says it's ready.")
@@ -1351,7 +1360,19 @@ public final class AppTransport {
             vm.note(message, role: .error)
             log.recordItem(sessionID, kind: "error", text: message, toolName: nil, argSummary: nil, output: nil, isError: true)
             banner = message
+            awsSignInProfile = Self.expiredAWSProfile(for: error, route: config.activeProvider)
         }
+    }
+
+    /// The AWS CLI profile to sign in again when `error` means a Bedrock route's sign-in ran out or was
+    /// refused; nil for anything else. A Bedrock client marks exactly those refusals permanent with a
+    /// 401/403 (a missing model or a busy service are not), so on a route that signs in with an AWS
+    /// profile the remedy is always "sign in again" — and one click, not a cryptic error.
+    static func expiredAWSProfile(for error: Error, route: ProviderProfile?) -> String? {
+        guard let route, route.kind == .bedrock, let profile = route.awsProfile, !profile.isEmpty,
+              case LLMError.rejected(let status, _, _, let permanent) = error,
+              permanent, status == 401 || status == 403 else { return nil }
+        return profile
     }
 
     /// How a goal loop ends. There is no round cap: only the model's verdict,

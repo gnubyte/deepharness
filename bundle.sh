@@ -44,6 +44,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <dict>
     <key>NSAllowsLocalNetworking</key> <true/>
   </dict>
+  <!-- Newer macOS asks before an app talks to other machines on your network.
+       This is the wording of that prompt. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>DSH connects to the model servers you set up on your network — DGX Sparks, Ollama or LM Studio — and to the Spark Swapper that switches their models.</string>
   <!-- The agent reads and writes the project folder you open, and the
        integrated terminal runs your login shell there. -->
   <key>NSDesktopFolderUsageDescription</key>

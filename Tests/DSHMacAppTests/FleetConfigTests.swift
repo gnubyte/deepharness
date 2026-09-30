@@ -192,4 +192,41 @@ final class FleetConfigTests: XCTestCase {
         XCTAssertTrue(c.subagentsUsePrimary, "on by default")
         XCTAssertTrue(c.workerRoutes.isEmpty)
     }
+
+    // MARK: AWS sign-in expiry
+
+    func testAnExpiredAWSSignInOnTheMainBedrockRouteOffersASignIn() {
+        let route = bedrock()
+        let expired = LLMError.rejected(status: 401, message: "The AWS sign-in for profile \"dsh-bedrock\" has expired.",
+                                        body: "sign-in expired", permanent: true)
+        XCTAssertEqual(AppTransport.expiredAWSProfile(for: expired, route: route), "dsh-bedrock")
+        let refused = LLMError.rejected(status: 403, message: "AWS did not accept the credentials", body: "", permanent: true)
+        XCTAssertEqual(AppTransport.expiredAWSProfile(for: refused, route: route), "dsh-bedrock")
+    }
+
+    func testOtherFailuresDoNotOfferASignIn() {
+        let route = bedrock()
+        // Access to one model being denied, throttling and a missing model are not about the sign-in.
+        for error in [LLMError.rejected(status: 403, message: "no access to this model", body: "", permanent: false),
+                      LLMError.rejected(status: 429, message: "throttled", body: "", permanent: false),
+                      LLMError.rejected(status: 404, message: "no such model", body: "", permanent: true),
+                      LLMError.http(401, "nope"), LLMError.connection("down")] as [Error] {
+            XCTAssertNil(AppTransport.expiredAWSProfile(for: error, route: route), "\(error)")
+        }
+    }
+
+    func testNoSignInIsOfferedForARouteWithoutAnAWSProfile() {
+        let expired = LLMError.rejected(status: 401, message: "x", body: "", permanent: true)
+        XCTAssertNil(AppTransport.expiredAWSProfile(for: expired, route: spark("Spark 1", host: "h")), "not a Bedrock route")
+        var apiKeyRoute = bedrock()
+        apiKeyRoute.awsProfile = nil   // authenticates with a Bedrock API key: signing in again would not help
+        XCTAssertNil(AppTransport.expiredAWSProfile(for: expired, route: apiKeyRoute))
+        XCTAssertNil(AppTransport.expiredAWSProfile(for: expired, route: nil))
+    }
+
+    func testTheAgentsCommandIsRecognisedWithItsAliases() {
+        XCTAssertEqual(SlashCommand.parse("/agents"), .agents)
+        XCTAssertEqual(SlashCommand.parse("/fleet"), .agents)
+        XCTAssertTrue(SlashCommand.catalog.contains { $0.usage == "/agents" })
+    }
 }

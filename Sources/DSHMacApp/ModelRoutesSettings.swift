@@ -21,26 +21,10 @@ struct ProviderSettings: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Any OpenAI-compatible server works — a DGX Spark, vLLM or SGLang on your network, a local Ollama or LM Studio, a hosted API — and so does Amazon Bedrock with your AWS sign-in. Use several at once: one is the main model you talk to, the others take subagent tasks in parallel.")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    FleetCard()
-                    if config.providers.isEmpty {
-                        Text("No routes yet. Add a server, add Amazon Bedrock, or run the setup wizard.")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(14)
-                            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
-                    }
-                    ForEach(config.providers, id: \.routeID) { provider in
-                        RouteRow(provider: provider,
-                                 edit: { editing = provider },
-                                 remove: { removing = provider },
-                                 report: { status = $0 })
-                    }
-                }
-                .padding(20)
+                ProviderRoutesList(edit: { editing = $0 },
+                                   remove: { removing = $0 },
+                                   report: { status = $0 })
+                    .padding(20)
             }
             Divider()
             footer
@@ -133,11 +117,44 @@ struct EditableProvider: Identifiable {
     init(_ profile: ProviderProfile) { self.profile = profile }
 }
 
+// MARK: - The routes
+
+/// The intro, the fleet card and one row per route: everything that scrolls on the Models page.
+struct ProviderRoutesList: View {
+    @Environment(AppModel.self) private var model
+    let edit: (ProviderProfile) -> Void
+    let remove: (ProviderProfile) -> Void
+    let report: (ProviderSettings.StatusLine) -> Void
+
+    var body: some View {
+        let config = model.config
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Any OpenAI-compatible server works — a DGX Spark, vLLM or SGLang on your network, a local Ollama or LM Studio, a hosted API — and so does Amazon Bedrock with your AWS sign-in. Use several at once: one is the main model you talk to, the others take subagent tasks in parallel.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            FleetCard()
+            if config.providers.isEmpty {
+                Text("No routes yet. Add a server, add Amazon Bedrock, or run the setup wizard.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
+            }
+            ForEach(config.providers, id: \.routeID) { provider in
+                RouteRow(provider: provider,
+                         edit: { edit(provider) },
+                         remove: { remove(provider) },
+                         report: report)
+            }
+        }
+    }
+}
+
 // MARK: - The fleet at a glance
 
 /// Who leads and who helps, drawn as a line of chips, with the one switch that applies to the whole
 /// fleet. Hidden with a single route (there is nothing to arrange).
-private struct FleetCard: View {
+struct FleetCard: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
@@ -168,6 +185,10 @@ private struct FleetCard: View {
                                          set: { config.subagentsUsePrimary = $0 }))
                         .toggleStyle(.checkbox)
                         .font(.caption)
+                    if workers.contains(where: { $0.kind == .bedrock }) {
+                        Label("Subagent tasks sent to Amazon Bedrock are billed to your AWS account.", systemImage: "creditcard")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
             .padding(14)
@@ -188,7 +209,7 @@ private struct FleetCard: View {
 
 // MARK: - One route
 
-private struct RouteRow: View {
+struct RouteRow: View {
     @Environment(AppModel.self) private var model
     let provider: ProviderProfile
     let edit: () -> Void
@@ -214,9 +235,11 @@ private struct RouteRow: View {
                     if isMain { badge("Main model", tint: .accentColor, filled: true) }
                     else if isEffectiveWorker { badge("Subagents", tint: .secondary, filled: false) }
                 }
-                Text(detail)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(2).truncationMode(.middle)
+                ForEach(detailLines, id: \.self) { line in
+                    Text(line)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
                 if !isMain { workerControls }
             }
 
@@ -252,17 +275,17 @@ private struct RouteRow: View {
         .onTapGesture(count: 2, perform: edit)
     }
 
-    private var detail: String {
-        var text: String
+    /// What the route points at, one fact per line so a long model id never hides the rest.
+    private var detailLines: [String] {
+        var lines: [String]
         if provider.kind == .bedrock {
-            let region = provider.awsRegion ?? "no Region"
             let auth = provider.awsProfile.map { "AWS profile \($0)" } ?? "Bedrock API key"
-            text = "\(provider.model) · \(region) · \(auth)"
+            lines = [provider.model, "\(provider.awsRegion ?? "no Region") · \(auth)"]
         } else {
-            text = "\(provider.model) · \(provider.baseURL)"
+            lines = ["\(provider.model) · \(provider.baseURL)"]
         }
-        if let window = provider.contextWindow { text += " · \(window.formatted()) ctx" }
-        return text
+        if let window = provider.contextWindow { lines[lines.count - 1] += " · \(window.formatted()) ctx" }
+        return lines
     }
 
     /// Subagent settings for a route that is not the main model. (The flag is kept while a route is

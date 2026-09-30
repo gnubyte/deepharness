@@ -189,6 +189,37 @@ struct SetupWizard: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            // Bedrock has its own step-by-step guide (AWS CLI, sign-in, model, access), so it is not a
+            // "kind" to fill a form for: choosing it hands over to the guide.
+            Button {
+                dismiss()
+                Task { @MainActor in
+                    // Let this sheet finish closing before the next one opens.
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    model.showBedrockGuide()
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: ProviderProfile.Kind.bedrock.icon)
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Amazon Bedrock with my AWS account (guided)").font(.callout.weight(.medium))
+                        Text("Claude, Amazon Nova, Llama and more from your own AWS account. A guide installs what's needed, signs you in and helps you pick and enable a model.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
+                .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Theme.hairline))
+            }
+            .buttonStyle(.plain)
         }
     }
 

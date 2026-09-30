@@ -22,6 +22,8 @@ public enum SlashCommand: Equatable, Sendable {
     case skill(String?)
     /// Start (or report) the unattended task queue.
     case queue
+    /// The model servers subagents run on, how busy each is, and what is running.
+    case agents
     case help
 
     public struct Info: Sendable {
@@ -42,6 +44,7 @@ public enum SlashCommand: Equatable, Sendable {
         .init(usage: "/skills", summary: "List skills and what is selected for this chat"),
         .init(usage: "/skill <name>|new <what>", summary: "Select/deselect a skill for this chat, or have the model write a new one"),
         .init(usage: "/queue", summary: "Start the task queue — it works queued tasks one at a time, unattended"),
+        .init(usage: "/agents", summary: "Show the model servers subagents run on, how busy each is, and what is running now"),
         .init(usage: "/help", summary: "List commands"),
     ]
 
@@ -60,6 +63,7 @@ public enum SlashCommand: Equatable, Sendable {
         case "/skills": return .skills
         case "/skill": return .skill(arg)
         case "/queue": return .queue
+        case "/agents", "/fleet", "/servers": return .agents
         case "/help", "/?", "/commands": return .help
         default: return nil
         }
