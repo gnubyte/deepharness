@@ -96,7 +96,7 @@ final class AWSCLITests: XCTestCase {
     }
 
     func testTheRealSearchFindsExecutablesAndIgnoresLookAlikes() {
-        let dir = makeScratch()
+        let dir = awsScratch()
         dir.write("first/aws", "#!/bin/sh\n", executable: true)
         dir.write("notexec/aws", "#!/bin/sh\n", executable: false)
         try? FileManager.default.createDirectory(atPath: dir["adir/aws"], withIntermediateDirectories: true) // a folder called aws
@@ -235,10 +235,10 @@ final class AWSCLITests: XCTestCase {
         XCTAssertEqual(identity["Account"]?.string, "123456789012")
         let empty = try await cli.runJSON(["bedrock", "put-use-case-for-model-access"], profile: "p", region: "us-east-1")
         XCTAssertEqual(empty, .object([:]))
-        let bad = await assertThrows(AWSCLIException.self) { _ = try await cli.runJSON(["bedrock", "weird"], profile: "p", region: "us-east-1") }
+        let bad = await awsAssertThrows(AWSCLIException.self) { _ = try await cli.runJSON(["bedrock", "weird"], profile: "p", region: "us-east-1") }
         XCTAssertTrue(bad?.localizedDescription.contains("couldn't read") == true)
         XCTAssertEqual(bad?.error.details, "not json")
-        let signIn = await assertThrows(AWSSignInRequiredError.self) {
+        let signIn = await awsAssertThrows(AWSSignInRequiredError.self) {
             _ = try await cli.runJSON(["bedrock", "list-foundation-models"], profile: "dsh-bedrock", region: "us-east-1")
         }
         XCTAssertEqual(signIn?.profile, "dsh-bedrock")
@@ -262,7 +262,7 @@ final class AWSCLITests: XCTestCase {
         let cli = AWSCLI(runner: runner)
         let ok = try await cli.runChecked(["ok"], profile: "p", region: nil)
         XCTAssertEqual(ok.stdout, "fine")
-        let failed = await assertThrows(AWSCLIException.self) { _ = try await cli.runChecked(["nope"], profile: nil, region: nil) }
+        let failed = await awsAssertThrows(AWSCLIException.self) { _ = try await cli.runChecked(["nope"], profile: nil, region: nil) }
         XCTAssertEqual(failed?.kind, .other)
         XCTAssertEqual(failed?.localizedDescription, "Something nobody expected happened.")
     }
@@ -439,7 +439,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     private func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
 
     func testPassesArgumentsVerbatimAndSetsTheEnvironment() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"""
             for a in "$@"; do echo "arg=[$a]"; done
             echo "pager=[${AWS_PAGER-unset}] hint=[$AWS_CLI_AGENT_TOOLKIT_HINT_DISABLED] prompt=[$AWS_CLI_AUTO_PROMPT] enc=[$AWS_CLI_OUTPUT_ENCODING] fmt=[$AWS_CLI_ERROR_FORMAT] py=[$PYTHONUTF8]"
@@ -482,7 +482,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testTheRunnerUsesThisProcessesEnvironmentAndAGoodPath() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"echo "path=[$PATH]"; echo "marker=[$DSH_TEST_MARKER]""#)
         let runner = ProcessAWSCLIRunner(executable: aws, baseEnvironment: ["PATH": "/usr/bin:/bin", "DSH_TEST_MARKER": "inherited"], killGrace: 1, outputGrace: 1)
         let result = try await runner.run(["x"], options: AWSCLIRunOptions())
@@ -491,7 +491,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testAnswersPromptsThatHaveNoNewline() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"""
             echo "Attempting to open your default browser."
             printf 'Do you want to overwrite it to use B instead? (y/n): '
@@ -510,7 +510,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testAPromptIsAnsweredOnceButOfferedAgainWhileItIsNotUnderstood() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         // The question arrives in pieces; only the whole of it is one the answerer knows.
         let aws = script(dir, #"""
             printf 'Enter the authorization'
@@ -537,7 +537,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testStandardInputIsClosedUnlessSomethingAnswers() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"if read line; then echo "in [$line]"; else echo eof; fi"#)
         let closed = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions())
         XCTAssertEqual(closed.stdout, "eof\n")
@@ -546,7 +546,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testTimesOutKeepingTheOutputSoFar() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, "echo started; sleep 30")
         let start = Date()
         let timedOut = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(timeout: 0.5))
@@ -559,30 +559,30 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testCancellingStopsTheCliAndEverythingItStarted() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, "sleep 30 & echo $! > child.pid; echo started; wait")
         let task = Task { try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions()) }
-        await waitUntil(10, "the script to start its child") { pid(in: dir, "child.pid") != nil }
+        await awsWaitUntil(10, "the script to start its child") { pid(in: dir, "child.pid") != nil }
         let child = try XCTUnwrap(pid(in: dir, "child.pid"))
         XCTAssertTrue(isAlive(child))
         let start = Date()
         task.cancel()
-        _ = await assertThrows(CancellationError.self) { _ = try await task.value }
+        await awsExpectCancelled(task)
         XCTAssertLessThan(Date().timeIntervalSince(start), 10)
-        await waitUntil(5, "the child to be gone") { !isAlive(child) }
+        await awsWaitUntil(5, "the child to be gone") { !isAlive(child) }
     }
 
     func testATimeoutStopsTheChildrenToo() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, "sleep 30 & echo $! > child.pid; wait")
         let result = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(timeout: 0.6))
         XCTAssertTrue(result.timedOut)
         let child = try XCTUnwrap(pid(in: dir, "child.pid"))
-        await waitUntil(5, "the child to be gone") { !isAlive(child) }
+        await awsWaitUntil(5, "the child to be gone") { !isAlive(child) }
     }
 
     func testAChildThatIgnoresSigtermIsKilled() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         // "trap '' TERM" is inherited by the sleeps it starts: only SIGKILL stops any of this.
         let aws = script(dir, "trap '' TERM; sleep 30 & echo $! > child.pid; echo started; while true; do sleep 1; done")
         let runner = ProcessAWSCLIRunner(executable: aws, baseEnvironment: nil, killGrace: 0.4, outputGrace: 1)
@@ -591,11 +591,11 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
         XCTAssertTrue(result.timedOut)
         XCTAssertLessThan(Date().timeIntervalSince(start), 10)
         let child = try XCTUnwrap(pid(in: dir, "child.pid"))
-        await waitUntil(5, "the stubborn child to be gone") { !isAlive(child) }
+        await awsWaitUntil(5, "the stubborn child to be gone") { !isAlive(child) }
     }
 
     func testACancelledTaskNeverStartsTheProgram() async {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, "touch ran.marker")
         let task = Task { () -> Bool in
             withUnsafeCurrentTask { $0?.cancel() }
@@ -615,18 +615,18 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
 
     func testAFailingAnswererStopsTheCliAndItsErrorSurfaces() async throws {
         struct Closed: Error, Equatable {}
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"printf 'Enter the authorization code displayed in your browser: '; sleep 30 & echo $! > child.pid; read code; echo done"#)
-        let thrown = await assertThrows(Closed.self) {
+        let thrown = await awsAssertThrows(Closed.self) {
             _ = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(
                 answerPrompt: { _ in throw Closed() }, timeout: 30))
         }
         XCTAssertNotNil(thrown)
-        if let child = pid(in: dir, "child.pid") { await waitUntil(5, "the child to be gone") { !isAlive(child) } }
+        if let child = pid(in: dir, "child.pid") { await awsWaitUntil(5, "the child to be gone") { !isAlive(child) } }
     }
 
     func testAnAnswererSeesTheCancellationOfTheRun() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"printf 'Enter the authorization code displayed in your browser: '; read code; echo done"#)
         let sawCancellation = AWSLockedBox(false)
         let asked = AWSLockedBox(false)
@@ -643,14 +643,14 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
                     return nil
                 }, timeout: 60))
         }
-        await waitUntil(10, "the prompt") { asked.value }
+        await awsWaitUntil(10, "the prompt") { asked.value }
         task.cancel()
-        _ = await assertThrows(CancellationError.self) { _ = try await task.value }
+        await awsExpectCancelled(task)
         XCTAssertTrue(sawCancellation.value)
     }
 
     func testAnAnswerToACliThatAlreadyLeftDoesNotKillTheApp() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         // The CLI asks and exits without reading; by the time the code is typed there is nobody to hear it
         // (writing to a closed pipe would otherwise raise SIGPIPE and end the app).
         let aws = script(dir, "printf 'Enter the authorization code displayed in your browser: '; sleep 0.1")
@@ -663,11 +663,11 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
             }, timeout: 30))
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertTrue(result.succeeded)
-        await waitUntil(5, "the late answer") { answered.value }
+        await awsWaitUntil(5, "the late answer") { answered.value }
     }
 
     func testALargeStandardInputIsDeliveredWhileTheOutputIsDrained() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, "cat")
         let input = (0..<20_000).map { "line \($0) of the input\n" }.joined()
         XCTAssertGreaterThan(input.utf8.count, 300_000)
@@ -677,7 +677,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testATimeoutEndsAWaitingAnswerer() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"printf 'Enter the authorization code displayed in your browser: '; read code; echo done"#)
         let cancelled = AWSLockedBox(false)
         let start = Date()
@@ -697,7 +697,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testOnlyStandardOutputIsOfferedToTheAnswerer() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"printf 'Are you sure? (y/n): ' >&2; read x; echo "[$x]""#)
         let offered = AWSLockedBox<[String]>([])
         let result = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(
@@ -708,7 +708,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testBigOutputOnBothStreamsDoesNotDeadlock() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, "yes abcdefghijklmnopqrstuvwxyz | head -n 60000; yes 0123456789 | head -n 60000 >&2")
         let lines = AWSLockedBox(0)
         let result = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(
@@ -720,7 +720,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testLinesArriveInOrder() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, "i=0; while [ $i -lt 500 ]; do echo \"line $i\"; i=$((i+1)); done")
         let lines = AWSLockedBox<[String]>([])
         _ = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(onLine: { lines.append($0.text) }))
@@ -728,7 +728,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testMultibyteCharactersSplitAcrossReadsSurvive() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"printf '\360\237'; sleep 0.3; printf '\230\200 done\n'"#)
         let lines = AWSLockedBox<[AWSCLILine]>([])
         let result = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(onLine: { lines.append($0) }))
@@ -737,7 +737,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testAGrandchildHoldingThePipeDoesntHangTheRun() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         // The CLI opens a browser (here: a sleeping child holding stdout) and exits at once.
         let aws = script(dir, "sleep 10 & echo $! > child.pid; echo bye")
         let runner = ProcessAWSCLIRunner(executable: aws, baseEnvironment: nil, killGrace: 0.4, outputGrace: 0.5)
@@ -753,7 +753,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testLinesAreCleanedAndTheLastOneWithoutANewlineIsDelivered() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"printf 'one\r\n\033[31mtwo\033[0m\n\nlast'; printf 'err1\nerr2' >&2"#)
         let lines = AWSLockedBox<[AWSCLILine]>([])
         let result = try await ProcessAWSCLIRunner(executable: aws).run([], options: AWSCLIRunOptions(onLine: { lines.append($0) }))
@@ -763,14 +763,14 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testAProgramKilledBySignalLooksLikeItDoesInAShell() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let result = try await ProcessAWSCLIRunner(executable: script(dir, "kill -9 $$")).run([], options: AWSCLIRunOptions())
         XCTAssertEqual(result.exitCode, 137)
         XCTAssertFalse(result.succeeded)
     }
 
     func testConcurrentRunsDontShareOutputOrHoldEachOthersPipesOpen() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let slow = script(dir, "echo slow-start; sleep 3; echo slow-end", name: "slow")
         let fast = script(dir, #"echo "fast [$1]""#, name: "fast")
         // Slow and fast runs starting at the same moments: a pipe end leaking into a sibling child would
@@ -799,21 +799,21 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testAMissingOrUnrunnableProgramIsAStartError() async {
-        let missing = await assertThrows(AWSCLIStartError.self) {
+        let missing = await awsAssertThrows(AWSCLIStartError.self) {
             _ = try await ProcessAWSCLIRunner(executable: "/nonexistent/dsh/aws").run(["--version"], options: AWSCLIRunOptions())
         }
         XCTAssertEqual(missing?.executable, "/nonexistent/dsh/aws")
         XCTAssertEqual(missing?.localizedDescription, "Couldn't start the AWS CLI (/nonexistent/dsh/aws): the file doesn't exist.")
-        let dir = makeScratch()
+        let dir = awsScratch()
         let plain = dir.write("plain", "not a program")
-        let notExecutable = await assertThrows(AWSCLIStartError.self) { _ = try await ProcessAWSCLIRunner(executable: plain).run([], options: AWSCLIRunOptions()) }
+        let notExecutable = await awsAssertThrows(AWSCLIStartError.self) { _ = try await ProcessAWSCLIRunner(executable: plain).run([], options: AWSCLIRunOptions()) }
         XCTAssertEqual(notExecutable?.reason, "it isn't an executable file.")
         let brokenScript = dir.write("broken", "#!/nonexistent/interpreter\n", executable: true)
-        _ = await assertThrows(AWSCLIStartError.self) { _ = try await ProcessAWSCLIRunner(executable: brokenScript).run([], options: AWSCLIRunOptions()) }
+        _ = await awsAssertThrows(AWSCLIStartError.self) { _ = try await ProcessAWSCLIRunner(executable: brokenScript).run([], options: AWSCLIRunOptions()) }
     }
 
     func testChecksARealExecutable() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, "echo 'aws-cli/2.37.5 Python/3.13.9 Darwin/25.2.0 exe/arm64'")
         let status = await AWSCLI.check(search: AWSCLISearch(explicitPath: aws, fileName: "aws"))
         XCTAssertEqual(status, .ready(version: SemanticVersion(2, 37, 5), path: aws))
@@ -825,14 +825,14 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
     }
 
     func testARealBrokenCliIsReportedWithWhatItSaid() async {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, "echo 'Fatal Python error: init_fs_encoding' >&2; exit 1")
         let status = await AWSCLI.check(search: AWSCLISearch(explicitPath: aws, fileName: "aws"))
         XCTAssertEqual(status, .broken(path: aws, problem: "Fatal Python error: init_fs_encoding"))
     }
 
     func testRunJSONThroughARealProcess() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = script(dir, #"""
             case "$*" in
               *"sts get-caller-identity --profile dsh --region us-east-1 --output json"*) echo '{"Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/alice"}' ;;
@@ -842,7 +842,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
         let cli = AWSCLI.forPath(aws)
         let identity = try await cli.runJSON(["sts", "get-caller-identity"], profile: "dsh", region: "us-east-1")
         XCTAssertEqual(identity["Account"]?.string, "123456789012")
-        let failure = await assertThrows(AWSCLIException.self) { _ = try await cli.runJSON(["sts", "other"], profile: "dsh", region: "us-east-1") }
+        let failure = await awsAssertThrows(AWSCLIException.self) { _ = try await cli.runJSON(["sts", "other"], profile: "dsh", region: "us-east-1") }
         XCTAssertEqual(failure?.kind, .invalid)
     }
 }

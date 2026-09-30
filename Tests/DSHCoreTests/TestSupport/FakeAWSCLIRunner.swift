@@ -228,7 +228,7 @@ final class AWSScratchDirectory: @unchecked Sendable {
 
 extension XCTestCase {
     /// A scratch folder that goes away when the test ends.
-    func makeScratch(_ label: String = "dsh-aws") -> AWSScratchDirectory {
+    func awsScratch(_ label: String = "dsh-aws") -> AWSScratchDirectory {
         let directory = AWSScratchDirectory(label)
         addTeardownBlock { directory.remove() }
         return directory
@@ -236,7 +236,7 @@ extension XCTestCase {
 
     /// Runs `body`, which must throw an error of type `Expected`; returns it (nil, after recording a
     /// failure, when nothing or something else was thrown).
-    func assertThrows<Expected: Error>(_ type: Expected.Type, file: StaticString = #filePath, line: UInt = #line,
+    func awsAssertThrows<Expected: Error>(_ type: Expected.Type, file: StaticString = #filePath, line: UInt = #line,
                                        _ body: () async throws -> Void) async -> Expected? {
         do {
             try await body()
@@ -249,8 +249,35 @@ extension XCTestCase {
         return nil
     }
 
+    /// Waits for `task` and says how it ended; a task that never ends fails the test (instead of hanging
+    /// the run) and returns nil.
+    func awsOutcome<Value: Sendable>(of task: Task<Value, any Error>, within seconds: TimeInterval = 30,
+                                     file: StaticString = #filePath, line: UInt = #line) async -> Result<Value, any Error>? {
+        let finished = AWSCLIGate()
+        let outcome = AWSLockedBox<Result<Value, any Error>?>(nil)
+        Task {
+            let result = await task.result
+            outcome.mutate { $0 = result }
+            finished.open()
+        }
+        guard await finished.wait(upTo: seconds) else {
+            XCTFail("the task hadn't ended after \(Int(seconds)) seconds", file: file, line: line)
+            return nil
+        }
+        return outcome.value
+    }
+
+    /// The task must end by throwing `CancellationError` (and must end at all).
+    func awsExpectCancelled<Value: Sendable>(_ task: Task<Value, any Error>, file: StaticString = #filePath, line: UInt = #line) async {
+        guard let outcome = await awsOutcome(of: task, file: file, line: line) else { return }
+        switch outcome {
+        case .success: XCTFail("expected CancellationError, but the task succeeded", file: file, line: line)
+        case .failure(let error): XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)", file: file, line: line)
+        }
+    }
+
     /// Polls until `condition` holds (up to `seconds`).
-    func waitUntil(_ seconds: TimeInterval = 5, _ message: @autoclosure () -> String = "condition", file: StaticString = #filePath,
+    func awsWaitUntil(_ seconds: TimeInterval = 5, _ message: @autoclosure () -> String = "condition", file: StaticString = #filePath,
                    line: UInt = #line, _ condition: () -> Bool) async {
         let deadline = Date().addingTimeInterval(seconds)
         while !condition() && Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }

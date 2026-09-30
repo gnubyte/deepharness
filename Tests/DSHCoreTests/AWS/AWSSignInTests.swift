@@ -116,10 +116,10 @@ final class AWSSignInTests: XCTestCase {
         let runner = FakeAWSCLIRunner().onInteractive(["login"], sameDeviceOutput(.prompt("Proceed with the unexpected? ")), final: loggedIn)
         let signIn = makeSignIn(runner, profiles(nil))
         let task = Task { try await signIn.login(profile: "dsh-bedrock", region: "us-east-1") }
-        await waitUntil(10, "the question") { !runner.answers.isEmpty }
+        await awsWaitUntil(10, "the question") { !runner.answers.isEmpty }
         XCTAssertNil(runner.answers.first?.answer, "no guessing at questions the app doesn't know")
         task.cancel()
-        _ = await assertThrows(CancellationError.self) { _ = try await task.value }
+        await awsExpectCancelled(task)
     }
 
     func testRemoteSignInAsksForTheCode() async throws {
@@ -173,7 +173,7 @@ final class AWSSignInTests: XCTestCase {
         let signIn = makeSignIn(runner, profiles(nil))
         let login = Task { try await signIn.login(profile: "dsh-bedrock", region: "us-east-1", options: AWSSignInOptions(onSignInLink: { _ in stop.fire() })) }
         stop.arm { login.cancel() }
-        _ = await assertThrows(CancellationError.self) { _ = try await login.value }
+        await awsExpectCancelled(login)
         XCTAssertTrue(runner.calls(to: ["configure"]).isEmpty)
     }
 
@@ -181,7 +181,7 @@ final class AWSSignInTests: XCTestCase {
         struct WindowClosed: Error {}
         let runner = FakeAWSCLIRunner().onInteractive(["login"],
             [.line(Self.remoteURL), .prompt("\nEnter the authorization code displayed in your browser: ")], final: loggedIn)
-        let thrown = await assertThrows(WindowClosed.self) {
+        let thrown = await awsAssertThrows(WindowClosed.self) {
             _ = try await makeSignIn(runner, profiles(nil)).login(profile: "dsh-bedrock", region: "us-east-1", options: AWSSignInOptions(
                 remote: true, requestAuthorizationCode: { _ in throw WindowClosed() }))
         }
@@ -213,11 +213,11 @@ final class AWSSignInTests: XCTestCase {
 
     func testBlankNamesAreRefused() async {
         let signIn = makeSignIn(FakeAWSCLIRunner(), profiles(nil))
-        let noProfile = await assertThrows(AWSCLIException.self) { _ = try await signIn.login(profile: "  ", region: "us-east-1") }
+        let noProfile = await awsAssertThrows(AWSCLIException.self) { _ = try await signIn.login(profile: "  ", region: "us-east-1") }
         XCTAssertEqual(noProfile?.kind, .invalid)
-        let noRegion = await assertThrows(AWSCLIException.self) { _ = try await signIn.login(profile: "p", region: "") }
+        let noRegion = await awsAssertThrows(AWSCLIException.self) { _ = try await signIn.login(profile: "p", region: "") }
         XCTAssertEqual(noRegion?.kind, .invalid)
-        _ = await assertThrows(AWSCLIException.self) { _ = try await signIn.ssoLogin(profile: "") }
+        _ = await awsAssertThrows(AWSCLIException.self) { _ = try await signIn.ssoLogin(profile: "") }
     }
 
     func testExplainsFailures() {
@@ -334,7 +334,7 @@ final class AWSSignInTests: XCTestCase {
 
     func testAnAnswerWithoutAnAccountIsAnError() async {
         let runner = FakeAWSCLIRunner().on(["sts"], stdout: #"{"UserId":"X"}"#)
-        let failure = await assertThrows(AWSCLIException.self) { _ = try await makeSignIn(runner, profiles(nil)).verify() }
+        let failure = await awsAssertThrows(AWSCLIException.self) { _ = try await makeSignIn(runner, profiles(nil)).verify() }
         XCTAssertEqual(failure?.localizedDescription, "AWS didn't say who is signed in.")
         XCTAssertEqual(failure?.error.details, #"{"UserId":"X"}"#)
     }
@@ -358,7 +358,7 @@ final class AWSSignInTests: XCTestCase {
         let runner = FakeAWSCLIRunner().fail(["sts"],
             stderr: "aws: [ERROR]: Unable to retrieve credentials: Error loading login session token: Unable to load a existing login session for session arn:aws:iam::1:user/a, Please reauthenticate with 'aws login'.",
             exitCode: 253)
-        let signedOut = await assertThrows(AWSSignInRequiredError.self) { _ = try await makeSignIn(runner, profiles(nil)).verify(profile: "dsh-bedrock") }
+        let signedOut = await awsAssertThrows(AWSSignInRequiredError.self) { _ = try await makeSignIn(runner, profiles(nil)).verify(profile: "dsh-bedrock") }
         XCTAssertEqual(signedOut?.profile, "dsh-bedrock")
     }
 }

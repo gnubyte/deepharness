@@ -184,8 +184,8 @@ private final class InstallerHarness: @unchecked Sendable {
     let choicesFile = AWSLockedBox<Data?>(nil)
 
     init(test: XCTestCase) {
-        work = test.makeScratch("dsh-aws-install")
-        home = test.makeScratch("dsh-aws-home")
+        work = test.awsScratch("dsh-aws-install")
+        home = test.awsScratch("dsh-aws-home")
     }
 
     var requested: [URL] { AWSDownloadStub.requested }
@@ -370,9 +370,9 @@ final class AWSCLIInstallerTests: XCTestCase {
         let installer = h.installer()
         AWSDownloadStub.configure(.init(body: installerFakePackage(size: 4_000_000), stallAfter: 300_000))
         let task = Task { try await installer.install(scope: .currentUser, progress: h.progress.handler) }
-        await waitUntil(10, "some of the download") { h.progress.items.contains { $0.done > 0 } }
+        await awsWaitUntil(10, "some of the download") { h.progress.items.contains { $0.done > 0 } }
         task.cancel()
-        _ = await assertThrows(CancellationError.self) { _ = try await task.value }
+        await awsExpectCancelled(task)
         XCTAssertTrue(h.signatureChecks.value.isEmpty)
         XCTAssertTrue(h.userLaunches.value.isEmpty)
         XCTAssertTrue(h.filesLeft().isEmpty, "\(h.filesLeft())")
@@ -484,7 +484,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     // MARK: Upgrading
 
     func testUpgradesInTheScopeItWasInstalledIn() throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         dir.write("system/aws-cli/aws", "", executable: true)
         try FileManager.default.createDirectory(atPath: dir["system/bin"], withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: dir["system/bin/aws"], withDestinationPath: "../aws-cli/aws")
@@ -523,7 +523,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     // MARK: The link in ~/.local/bin
 
     func testTheUserLinkIsCreatedReplacedAndLeftAloneWhenItIsNotALink() throws {
-        let home = makeScratch("dsh-aws-home")
+        let home = awsScratch("dsh-aws-home")
         var installer = AWSCLIInstaller(homeDirectory: home.path, workFolder: home["work"])
         installer.platformProblem = nil
         let link = home[".local/bin/aws"]
@@ -684,18 +684,18 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testTheRealSignatureCheckReportsWhatPkgutilSays() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         // The real /usr/sbin/pkgutil, on things that are not packages: its own error is passed on.
         let text = dir.write("notapkg.pkg", "just text")
-        let notAPackage = await assertThrows(AWSCLIInstallerError.self) { _ = try await AWSCLIInstaller.pkgutilSignature(of: text) }
+        let notAPackage = await awsAssertThrows(AWSCLIInstallerError.self) { _ = try await AWSCLIInstaller.pkgutilSignature(of: text) }
         XCTAssertTrue(notAPackage?.message.contains("Could not open package") == true, "\(String(describing: notAPackage))")
-        let missing = await assertThrows(AWSCLIInstallerError.self) { _ = try await AWSCLIInstaller.pkgutilSignature(of: dir["nothing.pkg"]) }
+        let missing = await awsAssertThrows(AWSCLIInstallerError.self) { _ = try await AWSCLIInstaller.pkgutilSignature(of: dir["nothing.pkg"]) }
         XCTAssertTrue(missing?.message.contains("Package does not exist") == true, "\(String(describing: missing))")
-        _ = await assertThrows(AWSCLIStartError.self) { _ = try await AWSCLIInstaller.pkgutilSignature(of: text, tool: "/nonexistent/pkgutil") }
+        _ = await awsAssertThrows(AWSCLIStartError.self) { _ = try await AWSCLIInstaller.pkgutilSignature(of: text, tool: "/nonexistent/pkgutil") }
     }
 
     func testTheSignatureCheckPassesPkgutilsExitCodeAlong() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let good = dir.write("pkgutil-good", "#!/bin/sh\ncat <<'REPORT'\n\(installerAmazonSignedReport)REPORT\nexit 0\n", executable: true)
         let signature = try await AWSCLIInstaller.pkgutilSignature(of: "/some/AWSCLIV2.pkg", tool: good)
         XCTAssertTrue(signature.isTrusted)
@@ -712,7 +712,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     // MARK: Files
 
     func testKnowsAPackageWhenItSeesOne() throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         XCTAssertTrue(AWSCLIInstaller.hasPackageHeader(dir.writeData("real.pkg", installerFakePackage(size: 100))))
         XCTAssertFalse(AWSCLIInstaller.hasPackageHeader(dir.write("html.pkg", "<html>proxy says no</html>")))
         XCTAssertFalse(AWSCLIInstaller.hasPackageHeader(dir.write("short.pkg", "xar")))
@@ -748,7 +748,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testCleanupKeepsOnlyWhatItIsToldTo() throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         dir.write("job/a.pkg", "a")
         dir.write("job/install.log", "log")
         dir.write("job/sub/b", "b")
@@ -762,7 +762,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     // MARK: The download
 
     func testDownloadReportsProgressAsItGoes() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let package = installerFakePackage(size: 1_000_000)
         AWSDownloadStub.configure(.init(body: package))
         let reports = AWSLockedBox<[(Int64, Int64?)]>([])
@@ -784,7 +784,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testDownloadWithoutALengthReportsWhatItGot() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let package = installerFakePackage(size: 200_000)
         AWSDownloadStub.configure(.init(body: package, sendLength: false))
         let reports = AWSLockedBox<[(Int64, Int64?)]>([])
@@ -797,9 +797,9 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testDownloadRefusesAnErrorPageAndKeepsNothing() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         AWSDownloadStub.configure(.init(status: 403, body: Data("Forbidden".utf8)))
-        let failure = await assertThrows(AWSCLIInstallerError.self) {
+        let failure = await awsAssertThrows(AWSCLIInstallerError.self) {
             try await AWSCLIInstaller.downloadFile(from: URL(string: "https://awscli.amazonaws.com/AWSCLIV2.pkg")!, to: dir["p.pkg"],
                                                    using: AWSDownloadStub.session()) { _, _ in }
         }
@@ -808,7 +808,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testDownloadReplacesAnOlderFileAtomically() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         dir.write("p.pkg", "old contents")
         let package = installerFakePackage(size: 70_000)
         AWSDownloadStub.configure(.init(body: package))
@@ -820,7 +820,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     // MARK: Running the installer for real (stand-in programs)
 
     func testTheInstallerRunsToTheEndEvenIfTheTaskIsCancelled() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let tool = dir.write("installer", """
             #!/bin/sh
             cd '\(dir.path)' || exit 99
@@ -833,16 +833,17 @@ final class AWSCLIInstallerTests: XCTestCase {
         let lines = AWSLockedBox<[String]>([])
         let launch = AWSCLIInstallerLaunch(executable: tool, arguments: ["-pkg", "/a b.pkg", "-target", "/"], packagePath: "/a b.pkg", elevated: false)
         let task = Task { try await AWSCLIInstaller.runToCompletion(launch) { lines.append($0) } }
-        await waitUntil(10, "the installer to start") { !lines.value.isEmpty }
+        await awsWaitUntil(10, "the installer to start") { !lines.value.isEmpty }
         task.cancel() // half an installation is worse than waiting
-        let result = try await task.value
+        guard let outcome = await awsOutcome(of: task) else { return }
+        let result = try outcome.get()
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertTrue(dir.exists("finished.marker"), "cancelling must not stop a running installer")
         XCTAssertEqual(lines.value, ["installer: Package name is AWS Command Line Interface", "args=[-pkg /a b.pkg -target /]", "installer: The install was successful."])
     }
 
     func testTheAdministratorPromptRunsTheCommandAndReportsItsExitStatus() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         // Stand-ins for osascript: they record the script they were given and answer the way it does.
         let succeeds = dir.write("osascript-ok", """
             #!/bin/sh
@@ -875,7 +876,7 @@ final class AWSCLIInstallerTests: XCTestCase {
         XCTAssertNotEqual(unclear.exitCode, 0, "without the exit status marker the install can't be called a success")
         XCTAssertEqual(AWSCLIInstaller.mapInstallerResult(unclear, elevated: true).outcome, .failed)
 
-        _ = await assertThrows(AWSCLIStartError.self) {
+        _ = await awsAssertThrows(AWSCLIStartError.self) {
             _ = try await AWSCLIInstaller.runWithAdministratorPrivileges(launch, osascript: "/nonexistent/osascript") { _ in }
         }
     }
@@ -915,7 +916,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testTheAdministratorScriptQuotesEverythingAndKeepsTheExitStatus() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         // A stand-in `installer` that prints its arguments one per line and fails with 7.
         let tool = dir.write("it's an installer", #"""
             #!/bin/sh
@@ -1027,7 +1028,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testTheRealBrewRunnerStreamsLinesAndReturnsTheExitCode() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let brew = dir.write("brew", "#!/bin/sh\necho \"args=[$*] hints=[$HOMEBREW_NO_ENV_HINTS]\"\necho '==> done'\nexit 3\n", executable: true)
         let h = InstallerHarness(test: self)
         h.after = .missing
@@ -1041,7 +1042,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testHomebrewUpgradesItsOwnCliInsteadOfInstallingAgain() throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         dir.write("prefix/Cellar/awscli/2.31.0/bin/aws", "", executable: true)
         try FileManager.default.createDirectory(atPath: dir["prefix/bin"], withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: dir["prefix/bin/aws"], withDestinationPath: "../Cellar/awscli/2.31.0/bin/aws")
@@ -1053,7 +1054,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testFindsHomebrewOnPathOrAtItsUsualPlaces() {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let onPath = dir.write("bin/brew", "", executable: true)
         XCTAssertEqual(AWSCLIInstaller.locateBrew(environment: ["PATH": dir["bin"]]), onPath)
         // Not on PATH (a GUI app's minimal PATH): the standard prefixes are looked in.

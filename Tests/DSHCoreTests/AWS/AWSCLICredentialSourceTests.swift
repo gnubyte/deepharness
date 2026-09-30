@@ -175,7 +175,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
         for (stderr, exitCode) in cases {
             let runner = FakeAWSCLIRunner().fail(["configure", "export-credentials"], stderr: stderr, exitCode: exitCode)
             let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock")
-            let signIn = await assertThrows(AWSSignInRequiredError.self) { _ = try await source.credentials(forceRefresh: false) }
+            let signIn = await awsAssertThrows(AWSSignInRequiredError.self) { _ = try await source.credentials(forceRefresh: false) }
             XCTAssertEqual(signIn?.profile, "dsh-bedrock", stderr)
             XCTAssertFalse(signIn?.message.contains("aws: [ERROR]") ?? true, stderr)
         }
@@ -187,7 +187,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
             AWSCLIResult(exitCode: 0, stdout: awsProcessOutput("ASIA1", expires: now.addingTimeInterval(3600))),
         ])
         let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock", now: AWSTestClock().reader)
-        let failure = await assertThrows(AWSCLIException.self) { _ = try await source.credentials() }
+        let failure = await awsAssertThrows(AWSCLIException.self) { _ = try await source.credentials() }
         XCTAssertEqual(failure?.kind, .network)
         let recovered = try await source.credentials()
         XCTAssertEqual(recovered.accessKeyID, "ASIA1")
@@ -196,7 +196,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
     func testAnExportThatPrintsNothingUsableIsASignInProblem() async {
         let runner = FakeAWSCLIRunner().on(["configure", "export-credentials"], stdout: "no credentials here")
         let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock")
-        let signIn = await assertThrows(AWSSignInRequiredError.self) { _ = try await source.credentials() }
+        let signIn = await awsAssertThrows(AWSSignInRequiredError.self) { _ = try await source.credentials() }
         XCTAssertEqual(signIn?.profile, "dsh-bedrock")
     }
 
@@ -208,7 +208,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
             return AWSCLIResult(exitCode: 0, stdout: awsProcessOutput("ASIA1", expires: now.addingTimeInterval(3600)))
         }
         let source = AWSCLICredentialSource(runner: runner, profile: "p", now: AWSTestClock().reader)
-        let failure = await assertThrows(AWSCLIStartError.self) { _ = try await source.credentials() }
+        let failure = await awsAssertThrows(AWSCLIStartError.self) { _ = try await source.credentials() }
         XCTAssertEqual(failure?.executable, "/x/aws")
         let credentials = try await source.credentials()
         XCTAssertEqual(credentials.accessKeyID, "ASIA1")
@@ -222,14 +222,22 @@ final class AWSCLICredentialSourceTests: XCTestCase {
         }
         let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock", now: AWSTestClock().reader)
         let callers = (0..<8).map { index in Task { try await source.credentials(forceRefresh: index % 2 == 0) } }
+        // One who gives up before it has even started waiting, and one who gives up while waiting.
+        let early = Task { try await source.credentials() }
+        early.cancel()
+        await awsExpectCancelled(early)
+        await awsWaitUntil(5, "the export to start") { runner.calls.count == 1 }
         let impatient = Task { try await source.credentials() }
+        try await Task.sleep(nanoseconds: 100_000_000)
         impatient.cancel()
-        _ = await assertThrows(CancellationError.self) { _ = try await impatient.value }
-        await waitUntil(5, "the export to start") { runner.calls.count == 1 }
+        await awsExpectCancelled(impatient)
 
         release.open()
         var keys: [String] = []
-        for caller in callers { keys.append(try await caller.value.accessKeyID) }
+        for caller in callers {
+            guard let outcome = await awsOutcome(of: caller) else { continue }
+            keys.append(try outcome.get().accessKeyID)
+        }
         XCTAssertEqual(keys, Array(repeating: "ASIA1", count: 8))
         XCTAssertEqual(runner.calls.count, 1)
         let afterwards = try await source.credentials()
@@ -245,14 +253,14 @@ final class AWSCLICredentialSourceTests: XCTestCase {
         }
         let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock", now: AWSTestClock().reader)
         let starter = Task { try await source.credentials() }
-        await waitUntil(5, "the export to start") { runner.calls.count == 1 }
+        await awsWaitUntil(5, "the export to start") { runner.calls.count == 1 }
         let staying = Task { try await source.credentials() }
         try await Task.sleep(nanoseconds: 100_000_000)
         starter.cancel() // the caller that started the export walks away
-        _ = await assertThrows(CancellationError.self) { _ = try await starter.value }
+        await awsExpectCancelled(starter)
         release.open()
-        let credentials = try await staying.value
-        XCTAssertEqual(credentials.accessKeyID, "ASIA1")
+        guard let outcome = await awsOutcome(of: staying) else { return }
+        XCTAssertEqual(try outcome.get().accessKeyID, "ASIA1")
         XCTAssertEqual(runner.calls.count, 1)
     }
 
@@ -264,12 +272,16 @@ final class AWSCLICredentialSourceTests: XCTestCase {
         }
         let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock")
         let callers = (0..<3).map { _ in Task { try await source.credentials() } }
-        await waitUntil(5, "the export to start") { runner.calls.count == 1 }
+        await awsWaitUntil(5, "the export to start") { runner.calls.count == 1 }
         try await Task.sleep(nanoseconds: 100_000_000)
         release.open()
         for caller in callers {
-            let signIn = await assertThrows(AWSSignInRequiredError.self) { _ = try await caller.value }
-            XCTAssertEqual(signIn?.profile, "dsh-bedrock")
+            guard let outcome = await awsOutcome(of: caller) else { continue }
+            guard case .failure(let error) = outcome, let signIn = error as? AWSSignInRequiredError else {
+                XCTFail("expected a sign-in request, got \(outcome)")
+                continue
+            }
+            XCTAssertEqual(signIn.profile, "dsh-bedrock")
         }
         XCTAssertEqual(runner.calls.count, 1)
     }
@@ -290,7 +302,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
     }
 
     func testAnExportThroughARealProcess() async throws {
-        let dir = makeScratch()
+        let dir = awsScratch()
         let aws = dir.write("aws", """
             #!/bin/sh
             case "$*" in
