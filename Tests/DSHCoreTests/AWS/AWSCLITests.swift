@@ -785,7 +785,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
 
     func testConcurrentRunsDontShareOutputOrHoldEachOthersPipesOpen() async throws {
         let dir = awsScratch()
-        let slow = script(dir, "echo slow-start; sleep 3; echo slow-end", name: "slow")
+        let slow = script(dir, "echo slow-start; sleep 5; echo slow-end", name: "slow")
         let fast = script(dir, #"echo "fast [$1]""#, name: "fast")
         // Slow and fast runs starting at the same moments: a pipe end leaking into a sibling child would
         // keep a fast run's output open until the slow one exits.
@@ -808,7 +808,7 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
         XCTAssertEqual(outcomes.filter { $0.0 == "slow" }.map(\.1), Array(repeating: "slow-start\nslow-end\n", count: 4))
         XCTAssertEqual(outcomes.filter { $0.0 == "fast" }.map(\.1).sorted(), (0..<4).map { "fast [\($0)]\n" })
         for fastRun in outcomes where fastRun.0 == "fast" {
-            XCTAssertLessThan(fastRun.2, 2.5, "a run that is still going must not keep another run's pipes open")
+            XCTAssertLessThan(fastRun.2, 4, "a run that is still going must not keep another run's pipes open")
         }
     }
 
