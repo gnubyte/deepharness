@@ -405,10 +405,15 @@ DSHMacApp/                 SwiftUI
 swift test
 ```
 
-113 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
+1,110 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
 cancellation), permission containment, the Qwen XML fallback, glob, markdown, plugin interpolation
 and quoting, prompt assembly, editor-buffer conflict resolution, 34 over the terminal emulator, and 8
-that spawn a real shell on a real pty and assert on what lands on the screen.
+that spawn a real shell on a real pty and assert on what lands on the screen — plus the fleet (server
+choice, failover, agent types, `delegate`), the AWS layer (SigV4 and Bedrock API keys against
+botocore's own values, the event stream, the CLI runner driven through stand-in `aws` scripts, sign-in,
+the installer), Amazon Bedrock (request mapping, streaming, every error path, the model catalog and
+access checks), the Bedrock guide as a state machine over a scripted AWS, and the app host against
+two fake model servers.
 
 ## Status
 
