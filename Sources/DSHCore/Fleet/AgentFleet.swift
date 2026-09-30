@@ -1,0 +1,439 @@
+import Foundation
+
+// MARK: - The fleet
+//
+// With more than one model server (say two DGX Sparks), one is the *primary*: the main agent talks to
+// it. The others are *workers*: subagents run on them, so a fan-out of tasks spreads across machines
+// instead of queueing on one. The fleet hands out leases on servers — the least loaded worker first, the
+// primary only as overflow — and steers away from a server that has just failed. With a single server
+// the fleet is just a concurrency limit on it.
+
+/// Where one subagent runs: the server's client and model, its context window, and — when they differ
+/// from the parent's — the settings of that server's route (nil = inherit the parent's). Resolved when a
+/// lease is granted, not when the fleet is configured: a Spark may have swapped models since.
+public struct FleetTarget: Sendable {
+    public var client: any LLMClient
+    public var model: String
+    public var contextWindow: Int?
+    public var vision: Bool?
+    public var temperature: Double?
+    public var maxOutputTokens: Int?
+
+    public init(client: any LLMClient, model: String, contextWindow: Int? = nil,
+                vision: Bool? = nil, temperature: Double? = nil, maxOutputTokens: Int? = nil) {
+        self.client = client
+        self.model = model
+        self.contextWindow = contextWindow
+        self.vision = vision
+        self.temperature = temperature
+        self.maxOutputTokens = maxOutputTokens
+    }
+}
+
+/// One model server as the fleet sees it.
+public struct FleetServer: Sendable, Identifiable {
+    /// Stable identity (the route id).
+    public var id: String
+    /// What the user calls it ("spark-2"); shown next to a subagent that ran on it.
+    public var label: String
+    /// The server the main agent talks to.
+    public var isPrimary: Bool
+    /// How many subagents may work on it at once.
+    public var maxParallel: Int
+    /// Probe the server and return its live client and model. Throws if it can't be reached — a server
+    /// that answers no model list at all counts as unreachable. Cancelled with the task that is leasing.
+    public var resolve: @Sendable () async throws -> FleetTarget
+
+    public init(id: String, label: String, isPrimary: Bool = false, maxParallel: Int = 2,
+                resolve: @escaping @Sendable () async throws -> FleetTarget) {
+        self.id = id
+        self.label = label
+        self.isPrimary = isPrimary
+        self.maxParallel = maxParallel
+        self.resolve = resolve
+    }
+}
+
+/// A server's standing, for the UI ("spark-2 — 1/2 busy, 14 done").
+public struct FleetStatus: Sendable, Hashable, Identifiable {
+    public var id: String
+    public var label: String
+    public var isPrimary: Bool
+    public var inFlight: Int
+    public var maxParallel: Int
+    public var healthy: Bool
+    /// When a server that just failed is trusted again; nil while it is healthy.
+    public var unhealthyUntil: Date?
+    public var completed: Int
+    public var failed: Int
+
+    public init(id: String, label: String, isPrimary: Bool, inFlight: Int, maxParallel: Int,
+                healthy: Bool, unhealthyUntil: Date? = nil, completed: Int, failed: Int) {
+        self.id = id
+        self.label = label
+        self.isPrimary = isPrimary
+        self.inFlight = inFlight
+        self.maxParallel = maxParallel
+        self.healthy = healthy
+        self.unhealthyUntil = unhealthyUntil
+        self.completed = completed
+        self.failed = failed
+    }
+}
+
+/// No configured server answered.
+public struct FleetUnavailableError: Error, LocalizedError, Sendable {
+    public let message: String
+    /// The last server's own error, when there was one.
+    public let underlying: (any Error)?
+
+    public init(_ message: String, underlying: (any Error)? = nil) {
+        self.message = message
+        self.underlying = underlying
+    }
+
+    public var errorDescription: String? { message }
+}
+
+/// A slot on one server. Call `release()` when the work is over (`defer` is the usual place) and
+/// `fail(_:)` first if the server itself was the problem, so the next task goes elsewhere.
+///
+/// Swift has no `IDisposable`, so release is explicit and idempotent. It deliberately does not happen in
+/// `deinit`: the optimizer may drop a reference right after its last use, and a slot must be held for as
+/// long as the caller says, not as long as the compiler happens to keep the object.
+public final class FleetLease: @unchecked Sendable {
+    public let server: FleetServer
+    public let target: FleetTarget
+    public var label: String { server.label }
+
+    private let fleet: AgentFleet
+    private let lock = NSLock()
+    private var released = false
+    private var failed = false
+    private var abandoned = false
+
+    init(fleet: AgentFleet, server: FleetServer, target: FleetTarget) {
+        self.fleet = fleet
+        self.server = server
+        self.target = target
+    }
+
+    /// The server misbehaved (unreachable, overloaded, erroring): keep new work away from it for a while.
+    /// An error that is the request's own (a malformed prompt) is counted but does not blacklist the server.
+    public func fail(_ error: Error) {
+        lock.withLock { failed = true }
+        fleet.markFailed(server.id, error)
+    }
+
+    /// The work was stopped rather than finished or failed: free the slot without counting a success
+    /// (which would also clear a blacklisting the server earned).
+    public func abandon() {
+        lock.withLock { abandoned = true }
+    }
+
+    /// Give the slot back. Only the first call does anything.
+    public func release() {
+        let outcome: (failed: Bool, counted: Bool)? = lock.withLock {
+            guard !released else { return nil }
+            released = true
+            return (failed, !abandoned)
+        }
+        guard let outcome else { return }
+        fleet.release(server.id, failed: outcome.failed, counted: outcome.counted)
+    }
+}
+
+/// Thread-safe; one per app, shared by every chat so two chats can't both fill the same Spark.
+public final class AgentFleet: @unchecked Sendable {
+    private struct State {
+        var inFlight = 0
+        var completed = 0
+        var failed = 0
+        var unhealthyUntil: Date?
+    }
+
+    /// One task parked in `acquire`, woken by a release, a reconfiguration, a blacklisted server's
+    /// recovery, or its own cancellation. `wake()` may come before `wait()` (the wake is remembered) and
+    /// may come twice (the second is a no-op), which is what lets all three race safely.
+    private final class Waiter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var woken = false
+
+        func wait() async {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let alreadyWoken: Bool = lock.withLock {
+                    if woken { return true }
+                    self.continuation = continuation
+                    return false
+                }
+                if alreadyWoken { continuation.resume() }
+            }
+        }
+
+        func wake() {
+            let parked: CheckedContinuation<Void, Never>? = lock.withLock {
+                woken = true
+                defer { continuation = nil }
+                return continuation
+            }
+            parked?.resume()
+        }
+    }
+
+    private let lock = NSLock()
+    private let now: @Sendable () -> Date
+    private var configured: [FleetServer] = []
+    private var states: [String: State] = [:]
+    private var waiters: [Waiter] = []
+    private var unhealthyForSeconds: TimeInterval = 60
+    private var primaryTakesOverflow = true
+    private var changeHandler: (@Sendable () -> Void)?
+
+    /// `now` is injectable so a test can move past a blacklisting without waiting a minute.
+    public init(now: @escaping @Sendable () -> Date = { Date() }) {
+        self.now = now
+    }
+
+    /// A server that just failed is left alone this long (unless every server is down).
+    public var unhealthyFor: TimeInterval {
+        get { lock.withLock { unhealthyForSeconds } }
+        set { lock.withLock { unhealthyForSeconds = newValue } }
+    }
+
+    /// When every worker is busy, let subagents run on the primary too (a vLLM server batches requests,
+    /// so this is usually a gain). False keeps the primary free for the main agent.
+    public var usePrimaryWhenWorkersBusy: Bool {
+        get { lock.withLock { primaryTakesOverflow } }
+        set { lock.withLock { primaryTakesOverflow = newValue } }
+    }
+
+    /// Called (on any thread, never with the fleet's lock held — a handler may call `snapshot()`) when a
+    /// lease is granted or released, a server fails, or the set changes.
+    public var onChange: (@Sendable () -> Void)? {
+        get { lock.withLock { changeHandler } }
+        set { lock.withLock { changeHandler = newValue } }
+    }
+
+    public var servers: [FleetServer] { lock.withLock { configured } }
+
+    public var hasWorkers: Bool { lock.withLock { configured.contains { !$0.isPrimary } } }
+
+    /// Replace the set of servers (Settings changed, the route was switched). Work already leased carries
+    /// on; counters of servers that stay are kept.
+    public func configure(_ servers: [FleetServer]) {
+        let wake: [Waiter] = lock.withLock {
+            configured = servers
+            for server in servers where states[server.id] == nil { states[server.id] = State() }
+            for gone in Array(states.keys) where !servers.contains(where: { $0.id == gone }) {
+                if states[gone]?.inFlight == 0 { states[gone] = nil }
+            }
+            return takeWaitersLocked()
+        }
+        wake.forEach { $0.wake() }
+        raiseChanged()
+    }
+
+    public func snapshot() -> [FleetStatus] {
+        lock.withLock {
+            let at = now()
+            return configured.map { server in
+                let state = states[server.id] ?? State()
+                let pending = state.unhealthyUntil.flatMap { $0 > at ? $0 : nil }
+                return FleetStatus(id: server.id, label: server.label, isPrimary: server.isPrimary,
+                                   inFlight: state.inFlight, maxParallel: server.maxParallel,
+                                   healthy: isHealthyLocked(state, at), unhealthyUntil: pending,
+                                   completed: state.completed, failed: state.failed)
+            }
+        }
+    }
+
+    // MARK: Leasing
+
+    private enum Step {
+        case chosen(FleetServer)
+        case wait(Waiter, recovery: TimeInterval?)
+    }
+
+    /// Wait for a free slot on a suitable server and lease it. `preferred` names a server the caller would
+    /// like (matched against the label and id); it is a preference, not a demand. Throws
+    /// `FleetUnavailableError` when no server can be reached, and `CancellationError` when the task is
+    /// cancelled while it waits (a lease already being resolved is given back).
+    public func acquire(preferred: String? = nil) async throws -> FleetLease {
+        var tried = Set<String>()
+        var lastError: (any Error)?
+        while true {
+            try Task.checkCancellation()
+            let step: Step = try lock.withLock {
+                if configured.isEmpty { throw FleetUnavailableError("No model server is configured.") }
+                if configured.allSatisfy({ tried.contains($0.id) }) {
+                    throw FleetUnavailableError("No model server answered"
+                                                + (lastError.map { ": \($0.localizedDescription)" } ?? "."),
+                                                underlying: lastError)
+                }
+                if let chosen = chooseLocked(preferred: preferred, tried: tried) {
+                    states[chosen.id, default: State()].inFlight += 1
+                    return .chosen(chosen)
+                }
+                let waiter = Waiter()
+                waiters.append(waiter)
+                return .wait(waiter, recovery: nextRecoveryLocked(tried: tried))
+            }
+
+            switch step {
+            case .wait(let waiter, let recovery):
+                // A blacklisted server comes back by itself when its time is up, with nothing else to wake us.
+                let timer: Task<Void, Never>? = recovery.map { seconds in
+                    Task {
+                        if (try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))) != nil {
+                            waiter.wake()
+                        }
+                    }
+                }
+                await withTaskCancellationHandler {
+                    await waiter.wait()
+                } onCancel: {
+                    waiter.wake()
+                }
+                timer?.cancel()
+                lock.withLock { waiters.removeAll { $0 === waiter } }
+
+            case .chosen(let server):
+                raiseChanged()
+                do {
+                    let target = try await server.resolve()
+                    return FleetLease(fleet: self, server: server, target: target)
+                } catch {
+                    if Task.isCancelled {
+                        release(server.id, failed: false, counted: false)
+                        throw CancellationError()
+                    }
+                    // Couldn't reach it: note that, free the slot, and try the next server.
+                    lastError = error
+                    tried.insert(server.id)
+                    markFailed(server.id, error)
+                    release(server.id, failed: true, counted: true)
+                }
+            }
+        }
+    }
+
+    /// Whether `error` is the server's fault rather than the request's — the kind of failure another
+    /// server might not have.
+    public static func isServerFault(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        // Credentials that one server rejects may be fine on another (a worker with a stale key, a
+        // Bedrock sign-in that expired).
+        if let llm = error as? LLMError {
+            switch llm {
+            case .http(let status, _), .rejected(let status, _, _, _):
+                if status == 401 || status == 403 { return true }
+            default:
+                break
+            }
+        }
+        // Whatever the retry policy would wait out — unreachable, overloaded, restarting, swapping models,
+        // "still loading" — is that server's problem, and another server may not have it. What it would give
+        // up on at once is the request's.
+        return RequestRetry.disposition(for: error) != .fail
+    }
+
+    func markFailed(_ id: String, _ error: Error) {
+        guard Self.isServerFault(error) || error is FleetUnavailableError else { return }
+        lock.withLock {
+            if states[id] != nil { states[id]?.unhealthyUntil = now().addingTimeInterval(unhealthyForSeconds) }
+        }
+        raiseChanged()
+    }
+
+    func release(_ id: String, failed: Bool, counted: Bool) {
+        let wake: [Waiter] = lock.withLock {
+            if var state = states[id] {
+                state.inFlight = max(0, state.inFlight - 1)
+                if failed {
+                    state.failed += 1
+                } else if counted {
+                    state.completed += 1
+                    state.unhealthyUntil = nil   // it just did real work
+                }
+                if state.inFlight == 0, !configured.contains(where: { $0.id == id }) {
+                    states[id] = nil
+                } else {
+                    states[id] = state
+                }
+            }
+            return takeWaitersLocked()
+        }
+        wake.forEach { $0.wake() }
+        raiseChanged()
+    }
+
+    // MARK: Choosing
+
+    private func chooseLocked(preferred: String?, tried: Set<String>) -> FleetServer? {
+        let at = now()
+        let candidates = configured.filter { !tried.contains($0.id) }
+        if candidates.isEmpty { return nil }
+        // Skip servers that just failed — unless that would leave none.
+        var healthy = candidates.filter { isHealthyLocked(states[$0.id], at) }
+        if healthy.isEmpty { healthy = candidates }
+
+        func pick(from pool: [FleetServer]) -> FleetServer? {
+            var best: (server: FleetServer, load: Double, index: Int)?
+            for server in pool where hasCapacityLocked(server) {
+                let load = Double(states[server.id]?.inFlight ?? 0) / Double(max(1, server.maxParallel))
+                let index = configured.firstIndex { $0.id == server.id } ?? Int.max
+                if let current = best, (current.load, current.index) <= (load, index) { continue }
+                best = (server, load, index)
+            }
+            return best?.server
+        }
+
+        if let wanted = preferred?.trimmingCharacters(in: .whitespacesAndNewlines), !wanted.isEmpty {
+            let matches = healthy.filter {
+                $0.label.range(of: wanted, options: .caseInsensitive) != nil
+                    || $0.id.range(of: wanted, options: .caseInsensitive) != nil
+            }
+            if let favourite = pick(from: matches) { return favourite }
+        }
+        let workers = healthy.filter { !$0.isPrimary }
+        if let worker = pick(from: workers) { return worker }
+        let primaries = healthy.filter(\.isPrimary)
+        // No workers at all, or the primary may take overflow: use it. Otherwise wait for a worker.
+        if workers.isEmpty || primaryTakesOverflow { return pick(from: primaries) }
+        return nil
+    }
+
+    /// How long until the first blacklisted server (one not yet tried) is trusted again; nil if none is
+    /// waiting out a ban.
+    private func nextRecoveryLocked(tried: Set<String>) -> TimeInterval? {
+        let at = now()
+        var soonest: TimeInterval?
+        for server in configured where !tried.contains(server.id) {
+            guard let until = states[server.id]?.unhealthyUntil, until > at else { continue }
+            let left = until.timeIntervalSince(at) + 0.05
+            if soonest == nil || left < soonest! { soonest = left }
+        }
+        return soonest
+    }
+
+    private func hasCapacityLocked(_ server: FleetServer) -> Bool {
+        (states[server.id]?.inFlight ?? 0) < max(1, server.maxParallel)
+    }
+
+    private func isHealthyLocked(_ state: State?, _ at: Date) -> Bool {
+        guard let until = state?.unhealthyUntil else { return true }
+        return until <= at
+    }
+
+    private func takeWaitersLocked() -> [Waiter] {
+        defer { waiters.removeAll() }
+        return waiters
+    }
+
+    /// Outside the lock, always: the state is settled before anyone is told, so a listener can look at the
+    /// fleet (or even lease from it) without deadlocking or losing a slot.
+    private func raiseChanged() {
+        onChange?()
+    }
+}

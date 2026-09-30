@@ -29,17 +29,25 @@ public final class BackgroundAgents: @unchecked Sendable {
 
     /// How many may run at once — a local model server has finite throughput.
     public let maxConcurrent: Int
-    /// Called (on any thread) whenever a job starts, finishes or is stopped.
+    /// Called (on any thread, never with the pool's lock held) whenever a job starts, finishes or is
+    /// stopped. A job's "started" always arrives before its "finished", however quickly it ends.
     public var onChange: (@Sendable (Job) -> Void)? {
         get { lock.withLock { _onChange } }
         set { lock.withLock { _onChange = newValue } }
+    }
+
+    /// What `stop` needs to reach a job's task, registered together with the job — the task itself
+    /// only exists a moment later, and a stop in that moment must still take effect.
+    private final class Handle: @unchecked Sendable {
+        var task: Task<Void, Never>?
+        var stopRequested = false
     }
 
     private let lock = NSLock()
     private var _onChange: (@Sendable (Job) -> Void)?
     private var jobs: [String: Job] = [:]
     private var order: [String] = []
-    private var tasks: [String: Task<Void, Never>] = [:]
+    private var handles: [String: Handle] = [:]
     /// Finished jobs whose result the main agent hasn't been given yet.
     private var unreported: [String] = []
     private var counter = 0
@@ -52,39 +60,53 @@ public final class BackgroundAgents: @unchecked Sendable {
     public var running: [Job] { all.filter { $0.status == .running } }
     public func job(_ id: String) -> Job? { lock.withLock { jobs[id] } }
 
-    /// Start `work` in the background. Returns the job, or an error message
-    /// when too many are already running.
+    /// Start `work` in the background. Returns the job, or an error message when too many are already
+    /// running. `work` may throw: a job that throws is reported as failed with the error's message, and
+    /// one that was stopped as stopped.
     public func launch(description: String,
-                       work: @escaping @Sendable () async -> (ok: Bool, report: String)) -> Result<Job, BackgroundAgentsError> {
-        let job: Job = lock.withLock {
+                       work: @escaping @Sendable () async throws -> (ok: Bool, report: String)) -> Result<Job, BackgroundAgentsError> {
+        let handle = Handle()
+        // The limit is checked and the id taken in one step, so a refused launch doesn't use up an id.
+        let registered: Job? = lock.withLock {
+            guard jobs.values.count(where: { $0.status == .running }) < maxConcurrent else { return nil }
             counter += 1
-            return Job(id: "bg-\(counter)", description: description, startedAt: .now, status: .running)
-        }
-        let started: Bool = lock.withLock {
-            guard jobs.values.count(where: { $0.status == .running }) < maxConcurrent else { return false }
+            let job = Job(id: "bg-\(counter)", description: description, startedAt: .now, status: .running)
             jobs[job.id] = job
             order.append(job.id)
-            return true
+            handles[job.id] = handle
+            return job
         }
-        guard started else { return .failure(.tooMany(maxConcurrent)) }
+        guard let job = registered else { return .failure(.tooMany(maxConcurrent)) }
+        // Told before the work starts, so a job that ends at once can't be announced finished first.
+        onChange?(job)
         let task = Task { [weak self] in
-            let outcome = await work()
+            let outcome: (ok: Bool, report: String)
+            do {
+                outcome = try await work()
+            } catch {
+                outcome = (false, Task.isCancelled ? "Stopped before it finished." : error.localizedDescription)
+            }
             self?.finish(job.id, status: Task.isCancelled ? .stopped : (outcome.ok ? .done : .failed), report: outcome.report)
         }
-        lock.withLock { tasks[job.id] = task }
-        onChange?(job)
+        let stopMeanwhile: Bool = lock.withLock {
+            handle.task = task
+            return handle.stopRequested
+        }
+        if stopMeanwhile { task.cancel() }
         return .success(job)
     }
 
     /// Stop one job. Returns false when there is no such running job.
     @discardableResult
     public func stop(_ id: String) -> Bool {
-        let task: Task<Void, Never>? = lock.withLock {
-            guard jobs[id]?.status == .running else { return nil }
-            return tasks[id]
+        let found: (task: Task<Void, Never>?, running: Bool) = lock.withLock {
+            guard jobs[id]?.status == .running else { return (nil, false) }
+            guard let handle = handles[id] else { return (nil, true) }
+            handle.stopRequested = true
+            return (handle.task, true)
         }
-        guard let task else { return false }
-        task.cancel()
+        guard found.running else { return false }
+        found.task?.cancel()
         finish(id, status: .stopped, report: "Stopped before it finished.")
         return true
     }
@@ -111,6 +133,21 @@ public final class BackgroundAgents: @unchecked Sendable {
         }
     }
 
+    /// Jobs that were taken for the main agent but never reached it (the request failed before the model
+    /// saw them): announce them again with the next message. A stopped job is never announced, and a job
+    /// is never queued twice.
+    public func requeue(_ jobs: [Job]) {
+        lock.withLock {
+            for job in jobs {
+                guard let current = self.jobs[job.id], current.status != .running, current.status != .stopped else { continue }
+                if !unreported.contains(job.id) { unreported.append(job.id) }
+            }
+        }
+    }
+
+    /// True when finished jobs are waiting to be handed to the main agent.
+    public var hasUnreported: Bool { lock.withLock { !unreported.isEmpty } }
+
     /// The main agent read this job's result (agent_status): don't announce it again.
     public func markReported(_ id: String) {
         lock.withLock { unreported.removeAll { $0 == id } }
@@ -123,7 +160,7 @@ public final class BackgroundAgents: @unchecked Sendable {
             job.finishedAt = .now
             job.report = report
             jobs[id] = job
-            tasks[id] = nil
+            handles[id] = nil
             if status != .stopped { unreported.append(id) }
             return job
         }
@@ -167,13 +204,13 @@ public struct AgentStatusTool: ToolExecutor {
         guard let pool = context.backgroundAgents else {
             return ToolResult(output: "Error: background agents aren't available here.")
         }
-        let id = (Self.string(args, "id") ?? "").trimmingCharacters(in: .whitespaces)
+        let id = (Self.string(args, "id") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else {
             let jobs = pool.all
             guard !jobs.isEmpty else { return ToolResult(output: "No background agents have been started in this chat.") }
             let lines = jobs.map { j -> String in
                 var line = "- \(j.id) “\(j.description)”: \(j.status.rawValue), \(j.elapsed.formattedDuration)"
-                if j.status != .running, let r = j.report { line += " — " + (r.split(separator: "\n").first.map(String.init) ?? "").prefix(120) }
+                if j.status != .running, let r = j.report { line += " — " + String((r.components(separatedBy: "\n").first ?? "").prefix(120)) }
                 return line
             }
             return ToolResult(output: "Background agents:\n" + lines.joined(separator: "\n")
@@ -207,7 +244,7 @@ public struct AgentStopTool: ToolExecutor {
         guard let pool = context.backgroundAgents else {
             return ToolResult(output: "Error: background agents aren't available here.")
         }
-        let id = (Self.string(args, "id") ?? "").trimmingCharacters(in: .whitespaces)
+        let id = (Self.string(args, "id") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return ToolResult(output: pool.stop(id) ? "Stopped \(id)." : "Error: \(id) isn't a running background agent.")
     }
 }
