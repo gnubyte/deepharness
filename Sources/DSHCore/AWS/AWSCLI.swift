@@ -386,6 +386,9 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
     private var exited = false
     private var exitCode = 0
     private var cancelRequested = false
+    /// Cancelled before the child had exited. (A cancel that arrives while the run is only waiting for
+    /// the last output doesn't throw away a result that is already complete.)
+    private var cancelledWhileRunning = false
     private var timedOut = false
     private var answerError: (any Error)?
     private var consumer: Task<Void, Never>?
@@ -408,6 +411,7 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
     func cancel() {
         let task: Task<Void, Never>? = lock.withLock {
             cancelRequested = true
+            if !exited { cancelledWhileRunning = true }
             return consumer
         }
         task?.cancel()
@@ -595,7 +599,7 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
         // be gone, so nothing it started outlives the call.
         await exitGate.wait()
         limit?.cancel()
-        let stoppedByUs = lock.withLock { cancelRequested || timedOut || answerError != nil }
+        let stoppedByUs = lock.withLock { cancelledWhileRunning || timedOut || answerError != nil }
         if stoppedByUs { await waitForGroupToDie() }
 
         // A grandchild (a browser the CLI opened) can inherit the pipes and hold them open, so the last
@@ -615,7 +619,7 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
         await consumerDone.wait(upTo: 1)
         stdin.close()
 
-        let (code, cancelled, didTimeOut, failure) = lock.withLock { (exitCode, cancelRequested, timedOut, answerError) }
+        let (code, cancelled, didTimeOut, failure) = lock.withLock { (exitCode, cancelledWhileRunning, timedOut, answerError) }
         if cancelled { throw CancellationError() }
         if let failure { throw failure }
         if didTimeOut { return AWSCLIResult(exitCode: -1, stdout: outPump.text, stderr: errPump.text, timedOut: true) }

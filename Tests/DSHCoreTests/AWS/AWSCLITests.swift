@@ -766,6 +766,23 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
         }
     }
 
+    func testCancellingAfterTheCliFinishedKeepsItsResult() async throws {
+        let dir = awsScratch()
+        // The CLI is done at once; a child holding the pipe keeps the run waiting for the last output.
+        let aws = script(dir, "sleep 10 & echo $! > child.pid; echo bye")
+        let runner = ProcessAWSCLIRunner(executable: aws, baseEnvironment: nil, killGrace: 0.4, outputGrace: 3)
+        let lines = AWSLockedBox<[String]>([])
+        let task = Task { try await runner.run([], options: AWSCLIRunOptions(onLine: { lines.append($0.text) })) }
+        await awsWaitUntil(10, "the CLI's output") { lines.value == ["bye"] }
+        try await Task.sleep(nanoseconds: 200_000_000) // the CLI has exited by now; the run is waiting for the pipe
+        task.cancel()
+        guard let outcome = await awsOutcome(of: task, within: 20) else { return killRecordedProcesses(in: dir) }
+        let result = try outcome.get()
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "bye\n", "a run that had already finished is not thrown away")
+        killRecordedProcesses(in: dir)
+    }
+
     func testLinesAreCleanedAndTheLastOneWithoutANewlineIsDelivered() async throws {
         let dir = awsScratch()
         let aws = script(dir, #"printf 'one\r\n\033[31mtwo\033[0m\n\nlast'; printf 'err1\nerr2' >&2"#)
