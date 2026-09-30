@@ -187,8 +187,9 @@ public struct BedrockClient: ProviderClient {
         let model = BedrockConverse.modelID(request, profile)
         if BedrockConverse.isBlank(model) { throw LLMError.noModel }
         let (bytes, response) = try await openStream(request, model: model)
-        // Dropping the byte sequence does not end the HTTP request: cancel it explicitly whenever we
-        // stop reading (Stop, a dead stream, an error), or the model keeps generating for nobody.
+        // End the HTTP request whenever we stop reading (Stop, a dead stream, an error) instead of
+        // leaving that to whoever releases the byte sequence last — the frame reader may still hold
+        // it — or the model keeps generating for nobody.
         defer { bytes.task.cancel() }
 
         if let contentType = response.value(forHTTPHeaderField: "Content-Type") {
@@ -502,9 +503,8 @@ public struct BedrockClient: ProviderClient {
     }
 
     /// The AWS profile whose sign-in ran out, when `error` is the rejection this client raises for
-    /// that. The Windows client carries the sign-in error along as the exception's inner exception,
-    /// which the host reads to offer "Sign in"; `LLMError` has no room for one, so the profile is read
-    /// back from the message instead.
+    /// that; the host uses it to offer "Sign in". `LLMError` has no room for the underlying
+    /// `AWSSignInRequiredError`, so the profile is read back from the message.
     public static func expiredSignInProfile(in error: Error) -> String? {
         guard case LLMError.rejected(let status, let message, _, let permanent) = error,
               status == 401, permanent, message.hasPrefix(signInExpiredStart) else { return nil }

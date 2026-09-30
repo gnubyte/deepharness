@@ -38,9 +38,19 @@ final class BedrockConverseTests: XCTestCase {
             profile: profile ?? Self.profile(model), replayReasoning: replay)
     }
 
-    private func turns(_ body: JSONValue) -> [JSONValue] { body["messages"]?.array ?? [] }
+    /// A list of JSON values that gives `.null` for a missing index instead of trapping, so a request with
+    /// too few turns or blocks fails an assertion rather than crashing the whole test run.
+    private struct Blocks: RandomAccessCollection {
+        let items: [JSONValue]
+        var startIndex: Int { 0 }
+        var endIndex: Int { items.count }
+        subscript(position: Int) -> JSONValue { items.indices.contains(position) ? items[position] : .null }
+        var value: JSONValue { .array(items) }
+    }
+
+    private func turns(_ body: JSONValue) -> Blocks { Blocks(items: body["messages"]?.array ?? []) }
     private func role(_ body: JSONValue, _ turn: Int) -> String? { turns(body)[turn]["role"]?.string }
-    private func content(_ body: JSONValue, _ turn: Int) -> [JSONValue] { turns(body)[turn]["content"]?.array ?? [] }
+    private func content(_ body: JSONValue, _ turn: Int) -> Blocks { Blocks(items: turns(body)[turn]["content"]?.array ?? []) }
     private func maxTokens(_ body: JSONValue) -> Int? { body["inferenceConfig"]?["maxTokens"]?.int }
     private func temperature(_ body: JSONValue) -> Double? { body["inferenceConfig"]?["temperature"]?.double }
     private func thinking(_ body: JSONValue) -> JSONValue? { body["additionalModelRequestFields"] }
@@ -84,16 +94,16 @@ final class BedrockConverseTests: XCTestCase {
     func testConsecutiveSameRoleMessagesMerge() {
         let body = makeBody([.user("one"), .user("two"), .assistant("a"), .assistant("b")])
         XCTAssertEqual(turns(body).count, 3)
-        XCTAssertEqual(JSONValue.array(content(body, 0)), json(#"[{"text":"one"},{"text":"two"}]"#))
-        XCTAssertEqual(JSONValue.array(content(body, 1)), json(#"[{"text":"a"},{"text":"b"}]"#))
+        XCTAssertEqual(content(body, 0).value, json(#"[{"text":"one"},{"text":"two"}]"#))
+        XCTAssertEqual(content(body, 1).value, json(#"[{"text":"a"},{"text":"b"}]"#))
         XCTAssertEqual(role(body, 2), "user") // never end on an assistant turn
-        XCTAssertEqual(JSONValue.array(content(body, 2)), json(#"[{"text":"Continue."}]"#))
+        XCTAssertEqual(content(body, 2).value, json(#"[{"text":"Continue."}]"#))
     }
 
     func testConversationStartingWithTheAssistantGetsAUserTurnFirst() {
         let body = makeBody([.system("summary"), .assistant("where were we"), .user("go on")])
         XCTAssertEqual(role(body, 0), "user")
-        XCTAssertEqual(JSONValue.array(content(body, 0)), json(#"[{"text":"(continuing the conversation)"}]"#))
+        XCTAssertEqual(content(body, 0).value, json(#"[{"text":"(continuing the conversation)"}]"#))
         XCTAssertEqual(role(body, 1), "assistant")
     }
 
@@ -106,19 +116,19 @@ final class BedrockConverseTests: XCTestCase {
             .assistant(""),
             .user("and?"),
         ], tools: [Self.echo])
-        XCTAssertEqual(JSONValue.array(content(body, 1)), json(#"[{"toolUse":{"toolUseId":"c1","name":"echo","input":{"text":"x"}}}]"#))
-        XCTAssertEqual(JSONValue.array(content(body, 3)), json(#"[{"text":"(no reply)"}]"#))
+        XCTAssertEqual(content(body, 1).value, json(#"[{"toolUse":{"toolUseId":"c1","name":"echo","input":{"text":"x"}}}]"#))
+        XCTAssertEqual(content(body, 3).value, json(#"[{"text":"(no reply)"}]"#))
     }
 
     func testAnEmptyTranscriptIsAStubUserTurn() {
         let body = makeBody([])
         XCTAssertEqual(turns(body).count, 1)
-        XCTAssertEqual(JSONValue.array(content(body, 0)), json(#"[{"text":"(continuing the conversation)"}]"#))
+        XCTAssertEqual(content(body, 0).value, json(#"[{"text":"(continuing the conversation)"}]"#))
     }
 
     func testAnEmptyUserMessageIsNotSentBlank() {
         let body = makeBody([.user("  ")])
-        XCTAssertEqual(JSONValue.array(content(body, 0)), json(#"[{"text":"(empty message)"}]"#))
+        XCTAssertEqual(content(body, 0).value, json(#"[{"text":"(empty message)"}]"#))
     }
 
     // MARK: Tools
@@ -177,6 +187,7 @@ final class BedrockConverseTests: XCTestCase {
                                    ToolCall(id: "c5", name: "a", arguments: #"{"n":1,"s":"é","nested":{"k":[true,null]}}"#)]),
         ], tools: [Self.echo])
         let uses = content(body, 1).map { $0["toolUse"]?["input"] }
+        guard uses.count == 5 else { return XCTFail("expected five tool calls, got \(uses.count)") }
         XCTAssertEqual(uses[0], json("{}"))
         XCTAssertEqual(uses[1], json("{}"))
         XCTAssertEqual(uses[2], json(#"{"value":7}"#))
@@ -502,6 +513,19 @@ final class BedrockConverseTests: XCTestCase {
         XCTAssertNil(temperature(opus5), "a model that thinks by default takes no temperature")
     }
 
+    func testAModelThatThinksByDefaultKeepsReplayingItsReasoningWithoutALevel() {
+        // Claude 5 thinks unless told not to, so with no level set its signed reasoning still goes back;
+        // Claude 4.6 – 4.8 don't think unless asked, so theirs does not.
+        let opus5 = makeBody(toolTurn(Self.state), model: Self.opus5, tools: [Self.echo])
+        XCTAssertTrue(opus5.serialized().contains("reasoningContent"))
+        XCTAssertNil(thinking(opus5))
+        let opus46 = makeBody(toolTurn(Self.state), model: Self.opus46, tools: [Self.echo])
+        XCTAssertFalse(opus46.serialized().contains("reasoningContent"))
+        // With thinking asked for, the 4.6 model replays it too.
+        let asked = makeBody(toolTurn(Self.state), model: Self.opus46, tools: [Self.echo], thinking: .low)
+        XCTAssertTrue(asked.serialized().contains("reasoningContent"))
+    }
+
     func testClaude46KeepsTemperatureWhenNotThinking() {
         XCTAssertEqual(temperature(makeBody([.user("hi")], model: Self.opus46, temperature: 0.7)), 0.7)
         XCTAssertNil(temperature(makeBody([.user("hi")], model: Self.opus46, thinking: .low, temperature: 0.7)))
@@ -526,7 +550,7 @@ final class BedrockConverseTests: XCTestCase {
 
     func testSignedReasoningIsReplayedInItsOriginalOrder() {
         let body = makeBody(toolTurn(Self.state), model: Self.sonnet45, tools: [Self.echo], thinking: .high)
-        XCTAssertEqual(JSONValue.array(content(body, 1)), json("""
+        XCTAssertEqual(content(body, 1).value, json("""
             [{"reasoningContent":{"reasoningText":{"text":"let me think","signature":"sig-1"}}},{"text":"Checking."},
              {"toolUse":{"toolUseId":"tooluse_1","name":"echo","input":{"text":"hi"}}}]
             """))
@@ -666,7 +690,7 @@ final class ConverseReplyTests: XCTestCase {
     }
 
     func testAPieceThatIsNotBase64StillLeavesAnEmptyRedactedBlock() throws {
-        // Faithful to the Windows client: the list is created before the bytes are decoded.
+        // Kept from the reference implementation: the list is created before the bytes are decoded.
         let result = try run(EventStreamFrames.reasoning(0, redacted: "***"), EventStreamFrames.stop("end_turn"))
         XCTAssertEqual(json(result.state), json(#"[{"reasoningContent":{"redactedContent":""}}]"#))
     }

@@ -340,7 +340,8 @@ public enum BedrockConverse {
     /// The engine's failure wording: "Error: …" from tools, "Permission denied: …" when the user
     /// refused the call.
     static func isError(_ output: String) -> Bool {
-        // Ordinal, like the Windows client: a combining mark after "Error" doesn't hide the prefix.
+        // Byte-wise, like an ordinal comparison: `hasPrefix` works on grapheme clusters, so "Error"
+        // followed by a combining mark would not match.
         output.utf8.starts(with: "Error".utf8) || output.utf8.starts(with: "Permission denied".utf8)
     }
 
@@ -399,7 +400,7 @@ public enum BedrockConverse {
         var stem = Substring(fileName)
         if let separator = stem.lastIndex(where: { $0 == "/" || $0 == "\\" }) { stem = stem[stem.index(after: separator)...] }
         if let dot = stem.lastIndex(of: ".") { stem = stem[..<dot] }
-        // One replacement per UTF-16 unit, as the Windows client does.
+        // One hyphen per UTF-16 unit, so an emoji (two units) becomes two.
         let cleaned = stem.utf16.map { unit -> Character in
             switch unit {
             case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x20, 0x2D, 0x28, 0x29, 0x5B, 0x5D: // 0-9 A-Z a-z space - ( ) [ ]
@@ -500,7 +501,7 @@ struct ConverseReply {
                 block.kind = .reasoning
                 if let signature = reasoning["signature"]?.string { block.signature = (block.signature ?? "") + signature }
                 if let redacted = reasoning["redactedContent"]?.string {
-                    // A piece that isn't base64 still leaves the (empty) list behind, as on Windows.
+                    // A piece that isn't base64 still leaves an (empty) redacted block behind.
                     var pieces = block.redacted ?? []
                     if let bytes = Data(base64Encoded: redacted) { pieces.append(bytes) }
                     block.redacted = pieces
@@ -598,7 +599,7 @@ struct ConverseReply {
         return payload
     }
 
-    /// An integral JSON number that fits an Int32 (the Windows client's `TryGetInt`), else nil.
+    /// An integral JSON number that fits an Int32, else nil: a count beyond that is not a token count.
     static func int32(_ value: JSONValue?) -> Int? {
         guard let number = value?.int, let narrowed = Int32(exactly: number) else { return nil }
         return Int(narrowed)

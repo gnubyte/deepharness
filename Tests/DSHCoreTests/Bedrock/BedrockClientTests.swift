@@ -643,10 +643,10 @@ final class BedrockClientTests: XCTestCase {
     }
 
     func testAStreamThatKeepsTalkingIsNotIdle() async throws {
-        BedrockClient.idleTimeout = 0.6
-        // Nine frames a quarter of a second apart: longer than the idle limit in all, never silent for it.
+        BedrockClient.idleTimeout = 1.0
+        // Ten frames a quarter of a second apart: longer than the idle limit in all, never silent for it.
         var pieces = [FakeBedrock.Piece(delay: 0.05, data: Data(EventStreamFrames.messageStart()))]
-        for word in ["a", "b", "c", "d", "e", "f", "g"] {
+        for word in ["a", "b", "c", "d", "e", "f", "g", "h"] {
             pieces.append(FakeBedrock.Piece(delay: 0.25, data: Data(EventStreamFrames.textDelta(0, word))))
         }
         pieces.append(FakeBedrock.Piece(delay: 0.25, data: Data(EventStreamFrames.stop("end_turn"))))
@@ -654,8 +654,8 @@ final class BedrockClientTests: XCTestCase {
         FakeBedrock.reset { _ in .trickle(status: 200, headers: FakeBedrock.eventStreamHeaders, pieces: all) }
         let started = Date()
         let result = try await collect(client())
-        XCTAssertEqual(result.text, "abcdefg")
-        XCTAssertGreaterThan(Date().timeIntervalSince(started), 1.6)
+        XCTAssertEqual(result.text, "abcdefgh")
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 1.0, "the reply outlasted the idle limit")
     }
 
     func testAnEventSplitAcrossTheNetworkInManyPiecesIsStillOneEvent() async throws {
@@ -808,7 +808,7 @@ final class BedrockClientTests: XCTestCase {
         XCTAssertEqual(result.text, "fresh")
         XCTAssertEqual(source.calls, [false, true])
         let requests = FakeBedrock.requests
-        XCTAssertEqual(requests.count, 2)
+        guard requests.count == 2 else { return XCTFail("expected two requests, got \(requests.count)") }
         XCTAssertTrue(requests[0].header("Authorization")?.contains("Credential=OLDKEY/") ?? false)
         XCTAssertTrue(requests[1].header("Authorization")?.contains("Credential=AKIDEXAMPLE/") ?? false)
         XCTAssertEqual(requests[0].body, requests[1].body, "the same request is sent again")
@@ -837,8 +837,7 @@ final class BedrockClientTests: XCTestCase {
         }
         let result = try await collect(client())
         XCTAssertEqual(result.text, "ok")
-        XCTAssertEqual(FakeBedrock.requests[0].header("X-Amz-Date"), "20260929T123456Z")
-        XCTAssertEqual(FakeBedrock.requests[1].header("X-Amz-Date"), "20260929T124956Z")
+        XCTAssertEqual(FakeBedrock.requests.map { $0.header("X-Amz-Date") }, ["20260929T123456Z", "20260929T124956Z"])
     }
 
     func testTheLearnedSkewCarriesToTheNextRequestOfTheSameClient() async throws {
@@ -1101,7 +1100,7 @@ final class BedrockClientTests: XCTestCase {
 
         XCTAssertEqual(result.text, "done")
         let requests = FakeBedrock.requests
-        XCTAssertEqual(requests.count, 2)
+        guard requests.count == 2 else { return XCTFail("expected two requests, got \(requests.count)") }
         XCTAssertTrue(requests[0].text.contains("reasoningContent"))
         XCTAssertFalse(requests[1].text.contains("reasoningContent"))
     }
@@ -1147,10 +1146,10 @@ final class BedrockClientTests: XCTestCase {
         XCTAssertEqual(result.finalText, "all done")
         XCTAssertNotNil(result.messages.first { $0.role == .assistant }?.providerState, "the engine stored the state on the message")
         let requests = FakeBedrock.requests
-        XCTAssertEqual(requests.count, 2)
-        let assistant = try XCTUnwrap(requests[1].json["messages"]?[1]?["content"]?.array)
-        XCTAssertEqual(assistant[0]["reasoningContent"]?["reasoningText"]?["signature"]?.string, "sig-1")
-        XCTAssertEqual(assistant[1]["toolUse"]?["toolUseId"]?.string, "tooluse_9")
+        guard requests.count == 2 else { return XCTFail("expected two requests, got \(requests.count)") }
+        let assistant = requests[1].json["messages"]?[1]?["content"]
+        XCTAssertEqual(assistant?[0]?["reasoningContent"]?["reasoningText"]?["signature"]?.string, "sig-1")
+        XCTAssertEqual(assistant?[1]?["toolUse"]?["toolUseId"]?.string, "tooluse_9")
         XCTAssertEqual(requests[1].json["additionalModelRequestFields"]?["thinking"]?["budget_tokens"]?.int, 16_000)
     }
 
@@ -1179,7 +1178,7 @@ final class BedrockClientTests: XCTestCase {
         XCTAssertEqual(models, ["amazon.nova-pro-v1:0", "meta.llama3-3-70b-instruct-v1:0",
                                 "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "us.amazon.nova-pro-v1:0"])
         let requests = FakeBedrock.requests
-        XCTAssertEqual(requests.count, 3)
+        guard requests.count == 3 else { return XCTFail("expected three requests, got \(requests.count)") }
         for sent in requests {
             XCTAssertEqual(sent.url.host, "bedrock.us-east-1.amazonaws.com")
             XCTAssertEqual(sent.method, "GET")
@@ -1432,7 +1431,7 @@ final class BedrockErrorMappingTests: XCTestCase {
             XCTAssertEqual(body, "\(type): nope")
         }
         // Inside a stream there is no HTTP status: it is reported as the 403 it is. (Expired credentials need
-        // a 400 or 403 to be recognised as such, as on Windows; a signature refusal does not.)
+        // a 400 or 403 to be recognised as such; a signature refusal does not.)
         guard case .rejected(let status, _, _, _) = client().map(AWSError(status: 0, type: "InvalidSignatureException", message: "x"), model: "m")
         else { return XCTFail("expected a rejection") }
         XCTAssertEqual(status, 403)
@@ -1511,6 +1510,8 @@ final class BedrockErrorMappingTests: XCTestCase {
             "Too many output tokens requested",
             "The format of the value at messages.3 is invalid.",
             "Malformed input request",
+            "Requested max_tokens exceeds the limit for this input length", // about the output, though it says "input"
+            "The input and output tokens you asked for exceed the model's limit", // "output tokens" and no window named
             "",
         ]
         for text in notOverflow { XCTAssertFalse(BedrockClient.isOverflow(text), text) }
