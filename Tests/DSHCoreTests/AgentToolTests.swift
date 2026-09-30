@@ -163,7 +163,9 @@ final class AgentToolTests: XCTestCase {
         let bigText = String(repeating: "a", count: 4_000)
         var turns: [ScriptedClient.Turn] = []
         for i in 0..<12 {
-            let call = ToolCall(id: "t\(i)", name: "todo_write", arguments: #"{"todos":[]}"#)
+            // (A different list each round: the same list sent over and over is a loop, which an engine may end.)
+            let call = ToolCall(id: "t\(i)", name: "todo_write",
+                                arguments: #"{"todos":[{"content":"step \#(i)","status":"pending"}]}"#)
             turns.append(.init(text: bigText, calls: [call]))
         }
         turns.append(.init(text: "final report"))
@@ -189,5 +191,101 @@ final class AgentToolTests: XCTestCase {
         let mainRequestSizes = client.requests.filter { !$0.tools.isEmpty }.map { $0.messages.count }
         let shrank = zip(mainRequestSizes, mainRequestSizes.dropFirst()).contains { prev, next in next < prev }
         XCTAssertTrue(shrank, "expected at least one request to shrink after compaction fired; sizes=\(mainRequestSizes)")
+    }
+}
+
+
+/// The agent tool's argument checks, its depth limit and how it reports a failure.
+final class AgentToolGuardTests: XCTestCase {
+    private var root: FleetTestDirectory!
+
+    override func setUp() {
+        super.setUp()
+        root = FleetTestDirectory("dsh-agentguard")
+    }
+
+    override func tearDown() {
+        root.remove()
+        super.tearDown()
+    }
+
+    private func context(_ client: any LLMClient, depth: Int = 0) -> ToolContext {
+        ToolContext(workspace: root.url, policy: PermissionPolicy(preset: .workspaceWrite, workspaceRoot: root.url),
+                    client: client, registry: ToolRegistry.standard(depth: depth), depth: depth, model: "test")
+    }
+
+    func testDepthOneRefusesNestedAgents() async {
+        let client = ScriptedClient(turns: [])
+        let result = await AgentTool().execute(args: #"{"description":"d","prompt":"p"}"#, in: context(client, depth: 1))
+        XCTAssertEqual(result.output, "Error: nested subagents are not allowed (depth limit).")
+        XCTAssertTrue(client.requests.isEmpty)
+    }
+
+    func testPromptIsRequired() async {
+        let result = await AgentTool().execute(args: #"{"description":"d"}"#, in: context(ScriptedClient(turns: [])))
+        XCTAssertEqual(result.output, "Error: prompt is required.")
+    }
+
+    func testClientFailureIsReportedNotThrown() async {
+        // A permanent error: transient ones (a cut-off stream) are retried until the server answers.
+        let client = FlakyClient(failures: Int.max, error: LLMError.http(401, "boom"), turns: [])
+        let result = await AgentTool().execute(args: #"{"description":"scan","prompt":"p"}"#, in: context(client))
+        XCTAssertTrue(result.output.hasPrefix("Subagent 'scan' failed: "), result.output)
+        XCTAssertTrue(result.output.contains("boom"), result.output)
+    }
+
+    func testEmptyFinalTextStillProducesAReport() async {
+        let result = await AgentTool().execute(args: #"{"prompt":"p"}"#, in: context(ScriptedClient(turns: [.init(text: "")])))
+        XCTAssertTrue(result.output.hasPrefix("Subagent 'subagent' finished."), result.output)
+        XCTAssertTrue(result.output.contains("without a final report"), result.output)
+    }
+
+    func testRunIsTheGeneralForegroundEntryPoint() async {
+        let client = FleetReportsClient("the answer")
+        let outcome = await AgentTool.run(desc: "scan", prompt: "p", context: context(client))
+        XCTAssertTrue(outcome.ok)
+        XCTAssertEqual(outcome.report, "the answer")
+        let failed = await AgentTool.run(desc: "scan", prompt: "p",
+                                         context: context(FlakyClient(failures: Int.max, error: LLMError.http(401, "no key"), turns: [])))
+        XCTAssertFalse(failed.ok)
+        XCTAssertTrue(failed.report.contains("no key"), failed.report)
+    }
+
+    func testRegistryOnlyOffersTheAgentToolAtTheTopLevel() {
+        XCTAssertTrue(ToolRegistry.standard(depth: 0).names.contains(AgentTool.name))
+        XCTAssertFalse(ToolRegistry.standard(depth: 1).names.contains(AgentTool.name))
+    }
+
+    func testSubagentPromptStatesWorkspaceAndPreset() {
+        let prompt = AgentTool.subagentPrompt(workspace: root.url, permissionPreset: .plan)
+        XCTAssertTrue(prompt.hasPrefix("You are a focused subagent."))
+        XCTAssertTrue(prompt.contains("Workspace: \(root.url.path)"))
+        XCTAssertTrue(prompt.contains("Permission preset: plan"))
+        // An agent type adds its own instructions after the standard ones.
+        let typed = AgentTool.subagentPrompt(workspace: root.url, permissionPreset: .plan,
+                                             definition: AgentDefinition(name: "x", prompt: "Be brief."))
+        XCTAssertTrue(typed.hasPrefix(prompt))
+        XCTAssertTrue(typed.hasSuffix("\n\nBe brief."))
+    }
+
+    func testAnOutcomeDescribesWhereAndHowLongItRan() {
+        XCTAssertEqual(SubagentOutcome(ok: true, report: "r", agentType: "general").details(), "")
+        XCTAssertEqual(SubagentOutcome(ok: true, report: "r", agentType: "General", elapsed: 34).details(), "")
+        XCTAssertEqual(SubagentOutcome(ok: true, report: "r", agentType: "explore", elapsed: 34).details(),
+                       "(explore agent · 34s)")
+        XCTAssertEqual(SubagentOutcome(ok: true, report: "r", agentType: "general", server: "spark-2", elapsed: 162).details(),
+                       "(on spark-2 · 2m 42s)")
+        XCTAssertEqual(SubagentOutcome(ok: true, report: "r", agentType: "review", server: "spark-2", elapsed: 3, failovers: 1).details(),
+                       "(review agent · on spark-2 · after 1 server failure · 3s)")
+        XCTAssertEqual(SubagentOutcome(ok: false, report: "r", agentType: "general", elapsed: 3, failovers: 2).details(),
+                       "(after 2 server failures · 3s)")
+    }
+
+    func testTheReportKeepsAFixedFirstLine() {
+        let done = SubagentOutcome(ok: true, report: "the report", agentType: "explore", server: "s", elapsed: 5)
+        XCTAssertEqual(AgentTool.present(description: "scan", outcome: done),
+                       "Subagent 'scan' finished.\n(explore agent · on s · 5s)\n\nthe report")
+        let failed = SubagentOutcome(ok: false, report: "no key", agentType: "general")
+        XCTAssertEqual(AgentTool.present(description: "scan", outcome: failed), "Subagent 'scan' failed: no key")
     }
 }

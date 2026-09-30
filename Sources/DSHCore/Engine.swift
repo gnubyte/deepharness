@@ -54,10 +54,15 @@ public struct RunResult: Sendable {
     /// when the model wrote its conclusion alongside a last tool call and then
     /// ended with an empty message, this still carries the conclusion.
     public let lastReplyText: String
+    /// True when the run was ended for going in circles (the same call with the
+    /// same result, over and over) rather than for finishing. A subagent whose
+    /// run stalled reports it as a failure. (Nothing in this engine sets it
+    /// yet: the repeat detector is a separate piece of the engine.)
+    public let stalled: Bool
 
     public init(messages: [LLMMessage], usage: LLMUsage?, deniedCount: Int,
                 finalText: String, lastPromptTokens: Int? = nil, hitIterationLimit: Bool = false,
-                lastReplyText: String? = nil) {
+                lastReplyText: String? = nil, stalled: Bool = false) {
         self.messages = messages
         self.usage = usage
         self.deniedCount = deniedCount
@@ -65,6 +70,7 @@ public struct RunResult: Sendable {
         self.lastPromptTokens = lastPromptTokens
         self.hitIterationLimit = hitIterationLimit
         self.lastReplyText = lastReplyText ?? finalText
+        self.stalled = stalled
     }
 }
 
@@ -131,6 +137,12 @@ public struct EngineConfig: Sendable {
     /// How model calls that fail transiently (timeouts, server down, overloaded)
     /// are retried. Standard: indefinitely, with backoff, until cancelled.
     public var retry: RetryPolicy
+    /// At the step limit, ask the model for a final report with no further work,
+    /// so a subagent that ran out of steps still hands back what it found.
+    public var wrapUpAtLimit: Bool = false
+    /// 0 for a chat's own engine, 1 for a subagent (handed to the tools as
+    /// `ToolContext.depth`, which is what stops a subagent spawning subagents).
+    public var depth: Int = 0
 
     public init(maxIterations: Int = 30, toolTimeout: TimeInterval = 300,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
@@ -189,6 +201,13 @@ public struct Engine: Sendable {
     /// Background subagents launched from this chat; their results are handed
     /// to the model automatically when they finish.
     public let backgroundAgents: BackgroundAgents?
+    /// The model servers subagents run on (see `AgentFleet`); nil = this
+    /// engine's own client.
+    public let fleet: AgentFleet?
+    /// Where this chat's subagent runs are recorded for the UI.
+    public let roster: AgentRoster?
+    /// The kinds of subagent this chat offers.
+    public let agentTypes: AgentCatalog?
 
     public init(client: any LLMClient,
                 registry: ToolRegistry,
@@ -203,7 +222,10 @@ public struct Engine: Sendable {
                 reroute: (@Sendable () async -> (client: any LLMClient, model: String)?)? = nil,
                 vault: CredentialVault? = nil,
                 vaultGrants: VaultGrants = VaultGrants(),
-                backgroundAgents: BackgroundAgents? = nil) {
+                backgroundAgents: BackgroundAgents? = nil,
+                fleet: AgentFleet? = nil,
+                roster: AgentRoster? = nil,
+                agentTypes: AgentCatalog? = nil) {
         self.client = client
         self.registry = registry
         self.systemPrompt = systemPrompt
@@ -218,6 +240,9 @@ public struct Engine: Sendable {
         self.vault = vault
         self.vaultGrants = vaultGrants
         self.backgroundAgents = backgroundAgents
+        self.fleet = fleet
+        self.roster = roster
+        self.agentTypes = agentTypes
     }
 
     /// Convenience for tests / subagents with auto-approval.
@@ -263,6 +288,21 @@ public struct Engine: Sendable {
         // swapped models continues on whatever it serves now.
         var client = self.client
         var model = config.model
+
+        // What a tool may touch while it runs — with the route as it stands now (a retry may have moved it).
+        func makeContext() -> ToolContext {
+            ToolContext(workspace: workspace, policy: policy,
+                        client: client, registry: registry,
+                        depth: config.depth, model: model,
+                        contextWindow: config.contextWindow,
+                        thinking: config.thinking,
+                        requestPermission: permissionGate,
+                        vault: vault, vaultGrants: vaultGrants,
+                        backgroundAgents: backgroundAgents,
+                        fleet: fleet, roster: roster, agentTypes: agentTypes,
+                        retry: config.retry, visionEnabled: config.visionEnabled,
+                        temperature: config.temperature, maxOutputTokens: config.maxOutputTokens)
+        }
 
         for iteration in 0..<config.maxIterations {
             if Task.isCancelled { throw CancellationError() }
@@ -401,7 +441,61 @@ public struct Engine: Sendable {
 
             // -- Tool turns --
             var toolImages: [(tool: String, images: [MessageAttachment])] = []
-            for call in calls {
+
+            // Everything that happens once a call has a result: todos, redaction, images, file
+            // changes, and the transcript entry.
+            func record(_ call: ToolCall, _ result: ToolResult) {
+                if let todos = result.todos {
+                    onTodos(todos)
+                }
+                // No vault value ever reaches the model, the timeline or the logs.
+                let secrets = vault?.valuesForRedaction() ?? []
+                var resultOutput = secrets.isEmpty ? result.output : VaultPlaceholders.redact(result.output, values: secrets)
+                if !result.images.isEmpty {
+                    if config.visionEnabled {
+                        toolImages.append((call.name, result.images))
+                        sink(.toolImages(id: call.id, images: result.images))
+                    } else {
+                        resultOutput += "\n(\(result.images.count) image(s) not shown: the selected model can't take images. Use text tools — ui_tree, process_read, logs — instead.)"
+                    }
+                }
+                if !result.files.isEmpty {
+                    sink(.filesChanged(result.files))
+                }
+                let truncated = resultOutput.count > 40_000
+                    ? String(resultOutput.suffix(40_000)) + "\n[result truncated]"
+                    : resultOutput
+                messages.append(.toolResult(id: call.id, name: call.name, output: truncated))
+                progress?.update(messages)
+                sink(.toolFinished(id: call.id, name: call.name,
+                                   ok: !resultOutput.hasPrefix("Error:"),
+                                   summary: Self.summary(of: resultOutput),
+                                   output: truncated))
+            }
+
+            // Subagents asked for in one reply run at the same time — that is what lets a fan-out
+            // spread over the fleet's servers instead of queueing on one. They are announced together
+            // and recorded in call order, as if they had run one after another.
+            let sideBySide = calls.count > 1 && calls.allSatisfy(Self.runsSideBySide)
+            if sideBySide {
+                for call in calls {
+                    if Task.isCancelled { throw CancellationError() }
+                    sink(.toolStarted(id: call.id, name: call.name, preview: Self.preview(of: call)))
+                }
+                let context = makeContext()
+                let results = await withTaskGroup(of: (Int, ToolResult).self) { group -> [ToolResult] in
+                    for (index, call) in calls.enumerated() {
+                        group.addTask { (index, await self.runTool(call, arguments: call.arguments, context: context)) }
+                    }
+                    var ordered = [ToolResult?](repeating: nil, count: calls.count)
+                    for await (index, result) in group { ordered[index] = result }
+                    return ordered.map { $0 ?? ToolResult(output: "Error: tool produced no result.") }
+                }
+                if Task.isCancelled { throw CancellationError() }
+                for (call, result) in zip(calls, results) { record(call, result) }
+            }
+
+            for call in calls where !sideBySide {
                 if Task.isCancelled { throw CancellationError() }
                 let preview = Self.preview(of: call)
                 sink(.toolStarted(id: call.id, name: call.name, preview: preview))
@@ -438,50 +532,7 @@ public struct Engine: Sendable {
                 }
                 if Task.isCancelled { throw CancellationError() }
 
-                let context = ToolContext(workspace: workspace, policy: policy,
-                                          client: client, registry: registry,
-                                          depth: 0, model: model,
-                                          contextWindow: config.contextWindow,
-                                          thinking: config.thinking,
-                                          requestPermission: permissionGate,
-                                          vault: vault, vaultGrants: vaultGrants,
-                                          backgroundAgents: backgroundAgents)
-                let executor = registry.tool(named: call.name)
-                let result: ToolResult
-                if let executor {
-                    // A (foreground) subagent is a whole task, not a quick tool call.
-                    let timeout = call.name == AgentTool.name ? max(config.toolTimeout, 3_600) : config.toolTimeout
-                    result = await executeWithTimeout(executor, args: arguments, context: context, timeout: timeout)
-                } else {
-                    result = ToolResult(output: "Error: unknown tool '\(call.name)'.")
-                }
-
-                if let todos = result.todos {
-                    onTodos(todos)
-                }
-                // No vault value ever reaches the model, the timeline or the logs.
-                let secrets = vault?.valuesForRedaction() ?? []
-                var resultOutput = secrets.isEmpty ? result.output : VaultPlaceholders.redact(result.output, values: secrets)
-                if !result.images.isEmpty {
-                    if config.visionEnabled {
-                        toolImages.append((call.name, result.images))
-                        sink(.toolImages(id: call.id, images: result.images))
-                    } else {
-                        resultOutput += "\n(\(result.images.count) image(s) not shown: the selected model can't take images. Use text tools — ui_tree, process_read, logs — instead.)"
-                    }
-                }
-                if !result.files.isEmpty {
-                    sink(.filesChanged(result.files))
-                }
-                let truncated = resultOutput.count > 40_000
-                    ? String(resultOutput.suffix(40_000)) + "\n[result truncated]"
-                    : resultOutput
-                messages.append(.toolResult(id: call.id, name: call.name, output: truncated))
-                progress?.update(messages)
-                sink(.toolFinished(id: call.id, name: call.name,
-                                   ok: !resultOutput.hasPrefix("Error:"),
-                                   summary: Self.summary(of: resultOutput),
-                                   output: truncated))
+                record(call, await runTool(call, arguments: arguments, context: makeContext()))
             }
 
             // Chat-completion tool messages are text-only, so what the tools
@@ -502,11 +553,52 @@ public struct Engine: Sendable {
             }
         }
 
-        // Iteration budget exhausted: stop rather than loop forever.
+        // Iteration budget exhausted: stop rather than loop forever — but a subagent still owes its
+        // caller a report, so ask for one.
+        if config.wrapUpAtLimit,
+           let report = try await wrapUp(&messages, client: client, model: model, sink: sink, progress: progress) {
+            finalText = report
+            lastReplyText = report
+        }
         sink(.finished(usage: usage))
         return RunResult(messages: messages, usage: usage, deniedCount: denied,
                          finalText: finalText, lastPromptTokens: lastPromptTokens,
                          hitIterationLimit: true, lastReplyText: lastReplyText)
+    }
+
+    private static let wrapUpNotice =
+        "[Automatic message: you have used your whole step budget. Reply now with your final report — what you did, what you found or changed, and what is still unfinished. Do not call any tools.]"
+
+    /// One last model call with no more work asked of it: the report of a run that hit its step budget.
+    /// Nil when the model has nothing to say or the call fails (the caller keeps what it has).
+    private func wrapUp(_ messages: inout [LLMMessage], client: any LLMClient, model: String,
+                        sink: @escaping @Sendable (EngineEvent) -> Void, progress: RunProgress?) async throws -> String? {
+        // Close any call the budget cut off, then ask. The tools stay in the request so the transcript
+        // (which contains tool calls) remains a valid one for servers that insist on it.
+        messages = Self.closingDanglingToolCalls(messages)
+        messages.append(LLMMessage(role: .user, content: Self.wrapUpNotice, imageSource: "step limit"))
+        let request = LLMRequest(systemPrompt: systemPrompt, messages: messages, tools: registry.specs, model: model,
+                                 temperature: config.temperature, maxTokens: config.maxOutputTokens,
+                                 thinking: config.thinking)
+        var text = ""
+        do {
+            for try await event in client.stream(request) {
+                if Task.isCancelled { throw CancellationError() }
+                if case .text(let delta) = event {
+                    text += delta
+                    sink(.textDelta(delta))
+                }
+            }
+        } catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            return nil
+        }
+        if Task.isCancelled { throw CancellationError() }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        messages.append(.assistant(text))
+        progress?.update(messages)
+        sink(.assistantMessage(id: "wrap-up", text: text, calls: []))
+        return text
     }
 
     /// Close tool calls that never got a result (the run was interrupted
@@ -540,7 +632,7 @@ public struct Engine: Sendable {
         // Only tools that *execute* their arguments get real values. A
         // subagent prompt, a queued task, a skill draft or a todo would carry
         // the secret to a model or to disk, so those keep the placeholder.
-        let nonExecuting: Set<String> = ["agent", "queue_task", "propose_skill", "todo_write", "use_skill",
+        let nonExecuting: Set<String> = ["agent", "delegate", "queue_task", "propose_skill", "todo_write", "use_skill",
                                          "vault_search", "agent_status", "agent_stop", "exit_plan_mode"]
         guard !nonExecuting.contains(call.name) else { return .none }
         let names = VaultPlaceholders.names(in: call.arguments.raw)
@@ -658,6 +750,27 @@ public struct Engine: Sendable {
         return true
     }
 
+    /// Tools with no permission prompt and no vault substitution that may run side by side when the
+    /// model asks for several in one reply: subagents (each is its own model conversation, and on a fleet
+    /// its own server).
+    private static let sideBySideTools: Set<String> = [AgentTool.name]
+
+    private static func runsSideBySide(_ call: ToolCall) -> Bool {
+        // (Calls with a vault placeholder go one at a time: the side-by-side path does no substitution.)
+        sideBySideTools.contains(call.name) && VaultPlaceholders.names(in: call.arguments.raw).isEmpty
+    }
+
+    /// Run one call's executor (after the permission and vault checks) with the timeout that fits it.
+    private func runTool(_ call: ToolCall, arguments: JSONString, context: ToolContext) async -> ToolResult {
+        guard let executor = registry.tool(named: call.name) else {
+            return ToolResult(output: "Error: unknown tool '\(call.name)'.")
+        }
+        // A (foreground) subagent — or a batch of them — is a whole task, not a quick tool call.
+        let timeout = call.name == AgentTool.name || call.name == DelegateTool.name
+            ? max(config.toolTimeout, 3_600) : config.toolTimeout
+        return await executeWithTimeout(executor, args: arguments, context: context, timeout: timeout)
+    }
+
     private func executeWithTimeout(_ executor: any ToolExecutor,
                                     args: JSONString,
                                     context: ToolContext,
@@ -695,6 +808,9 @@ public struct Engine: Sendable {
         case "web_fetch": return JSONArgs.string(call.arguments, "url") ?? call.name
         case "list_directory": return JSONArgs.string(call.arguments, "path") ?? call.name
         case "todo_write": return "update task list"
+        case "delegate":
+            guard let tasks = JSONArgs.dictionary(call.arguments)["tasks"] as? [Any] else { return "parallel tasks" }
+            return "\(tasks.count) parallel task\(tasks.count == 1 ? "" : "s")"
         case "agent":
             return JSONArgs.string(call.arguments, "description")
                 ?? JSONArgs.string(call.arguments, "prompt").map { String($0.prefix(80)) }
