@@ -119,6 +119,22 @@ final class AWSProfilesTests: XCTestCase {
         XCTAssertEqual(AWSProfiles.parse(config: "[profile p]\nsso_session =\naws_access_key_id = A\n", credentials: nil).find("p")?.kind, .accessKeys)
     }
 
+    func testProfilesWithSeveralKindsOfSettingsFollowTheCliOrder() {
+        // The order aws login checks them in: web identity, SSO, access keys, role, credential_process, login_session.
+        let cases: [(settings: String, kind: AWSProfileKind)] = [
+            ("web_identity_token_file = /t\nsso_session = s\naws_access_key_id = A\nrole_arn = r", .webIdentity),
+            ("sso_session = s\naws_access_key_id = A\nrole_arn = r\ncredential_process = p\nlogin_session = l", .sso),
+            ("aws_access_key_id = A\nrole_arn = r\ncredential_process = p\nlogin_session = l", .accessKeys),
+            ("role_arn = r\ncredential_process = p\nlogin_session = l", .assumeRole),
+            ("credential_process = p\nlogin_session = l", .credentialProcess),
+            ("login_session = l\nregion = us-east-1", .loginSession),
+            ("region = us-east-1\noutput = json", .empty),
+        ]
+        for (settings, kind) in cases {
+            XCTAssertEqual(AWSProfiles.parse(config: "[profile p]\n\(settings)\n", credentials: nil).find("p")?.kind, kind, settings)
+        }
+    }
+
     func testCredentialsOverrideConfig() {
         let profiles = AWSProfiles.parse(config: "[profile p]\nregion = us-east-1\naws_access_key_id = FROMCONFIG\n",
                                          credentials: "[p]\naws_access_key_id = FROMCREDENTIALS\n")

@@ -267,6 +267,15 @@ final class AWSCLITests: XCTestCase {
         XCTAssertEqual(failed?.localizedDescription, "Something nobody expected happened.")
     }
 
+    func testItIsTheCommandRunnerTheSetupCodeUses() async throws {
+        // What BedrockSetup and friends are written against: only the protocol.
+        let commands: any AWSCLICommands = AWSCLI(runner: FakeAWSCLIRunner().on(["sts"], stdout: #"{"a":1}"#))
+        let json = try await commands.runJSON(["sts", "x"], profile: "p", region: "r")
+        XCTAssertEqual(json["a"]?.int, 1)
+        let result = try await commands.runChecked(["sts", "x"], profile: nil, region: nil)
+        XCTAssertTrue(result.succeeded)
+    }
+
     func testAReadyStatusMakesACliAndNothingElseDoes() {
         XCTAssertNotNil(AWSCLI.from(ready: .ready(version: SemanticVersion(2, 33, 4), path: "/usr/bin/aws")))
         XCTAssertNil(AWSCLI.from(ready: .missing))

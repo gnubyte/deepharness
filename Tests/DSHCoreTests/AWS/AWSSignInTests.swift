@@ -270,6 +270,8 @@ final class AWSSignInTests: XCTestCase {
             (Self.sameDeviceURL, true),
             ("  https://device.sso.us-east-1.amazonaws.com/  ", true),
             ("HTTPS://device.sso.us-east-1.amazonaws.com/", true),
+            ("https://example.com/a b", false),
+            ("https://example.com/a\tb", false),
             ("Please visit the following URL:", false),
             ("open https://example.com now", false),
             ("http://127.0.0.1:53123/oauth/callback", false),

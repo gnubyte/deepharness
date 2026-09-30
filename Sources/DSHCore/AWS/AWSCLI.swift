@@ -493,7 +493,7 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
             throw CancellationError()
         }
         do {
-            try child.run()
+            try await Self.spawn(child)
         } catch {
             for fd in outPipe + errPipe + inPipe { close(fd) }
             throw AWSCLIStartError(executable: executable, reason: error.localizedDescription)
@@ -610,6 +610,26 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
         if let failure { throw failure }
         if didTimeOut { return AWSCLIResult(exitCode: -1, stdout: outPump.text, stderr: errPump.text, timedOut: true) }
         return AWSCLIResult(exitCode: code, stdout: outPump.text, stderr: errPump.text)
+    }
+
+    private struct SpawnedProcess: @unchecked Sendable {
+        let process: Process
+    }
+
+    /// Start the program on a dispatch thread: the first launch of a big, freshly installed executable
+    /// can take a second (macOS checks it), which must not hold up one of the few threads Swift's tasks run on.
+    private static func spawn(_ child: Process) async throws {
+        let spawned = SpawnedProcess(process: child)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            DispatchQueue.global().async {
+                do {
+                    try spawned.process.run()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     private func processExited(_ finished: Process) {

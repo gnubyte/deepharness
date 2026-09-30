@@ -378,6 +378,32 @@ final class AWSCLIInstallerTests: XCTestCase {
         XCTAssertTrue(h.filesLeft().isEmpty, "\(h.filesLeft())")
     }
 
+    func testTheDefaultDownloadReadsThroughARealSession() async throws {
+        // No stub: the installer's own URLSession, pointed at a local file.
+        let h = InstallerHarness(test: self)
+        let source = h.work.writeData("served/AWSCLIV2.pkg", h.package)
+        var installer = h.installer()
+        installer.session = nil
+        installer.packageURL = URL(fileURLWithPath: source)
+        let result = try await installer.install(progress: h.progress.handler)
+        XCTAssertEqual(result.outcome, .installed, result.message)
+        XCTAssertEqual(h.installedBytes.value, h.package)
+        let downloads = h.progress.items.filter { $0.stage.hasPrefix("Downloading") }
+        XCTAssertEqual(downloads.last?.done, Int64(h.package.count))
+        XCTAssertEqual(downloads.last?.total, Int64(h.package.count))
+    }
+
+    func testTheRealSignatureCheckRefusesAPackageThatIsNotOne() async throws {
+        let h = InstallerHarness(test: self)
+        var installer = h.installer()
+        // macOS's own pkgutil looks at a file that has the header of a package and nothing else.
+        installer.checkSignature = AWSCLIInstaller(homeDirectory: h.home.path, workFolder: h.work.path).checkSignature
+        let result = try await installer.install()
+        XCTAssertEqual(result.outcome, .signatureRejected, result.message)
+        XCTAssertTrue(h.userLaunches.value.isEmpty && h.elevatedLaunches.value.isEmpty)
+        XCTAssertTrue(h.filesLeft().isEmpty)
+    }
+
     func testAFailedInstallKeepsItsLog() async throws {
         let h = InstallerHarness(test: self)
         h.installerResult = AWSCLIResult(exitCode: 1, stdout: """
