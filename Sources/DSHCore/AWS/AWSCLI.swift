@@ -483,8 +483,10 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
             for fd in outPipe + errPipe + inPipe where fd >= 0 { close(fd) }
             throw AWSCLIStartError(executable: executable, reason: "couldn't create pipes (\(reason)).")
         }
-        // Only the child's own copies of these may survive an exec: another run starting at the same
-        // moment must not inherit our pipe ends (it would keep them open after we close them).
+        // Only the child's own copies of these may survive an exec. Foundation's Process closes every
+        // other descriptor in its children, but not every spawner in this app does (the terminal's
+        // forkpty doesn't): a child started at the same moment would inherit our pipe ends and keep
+        // them open after we close them, so end of file would wait for it.
         for fd in outPipe + errPipe + inPipe { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
 
         let child = Process()
