@@ -283,7 +283,7 @@ struct RouteRow: View {
                     Text(result.text)
                         .font(.caption)
                         .foregroundStyle(result.tone == .success ? Theme.successTint : result.tone == .failure ? Theme.errorTint : .secondary)
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
                 if !isMain { workerControls }
