@@ -81,7 +81,11 @@ public struct UseCaseForm: Hashable, Sendable {
 
     /// Read the form back from GetUseCaseForModelAccess's formData as the CLI prints it (base64). The
     /// stored value may itself be base64 again (Terraform's AWS provider decodes it twice), so up to two
-    /// layers are unwrapped.
+    /// layers are unwrapped. The JSON is read with Foundation's reader, which is not .NET's: it also takes
+    /// a trailing comma, keeps the first of two equal keys (the Windows app throws), refuses a number like
+    /// 1e400 and drops a U+FEFF that begins a string value; and text .NET cannot read (an unpaired
+    /// surrogate escape) gives nil here where the Windows app throws. None of this occurs in a form that
+    /// was written by AWS's console or this app.
     public static func fromFormData(_ formData: String) -> UseCaseForm? {
         var text = BedrockText.trimmed(formData)
         for _ in 0..<3 {
@@ -197,9 +201,10 @@ public struct UseCaseForm: Hashable, Sendable {
 /// System.Uri's rules are written out here rather than asking `URL`, whose parsing differs between macOS
 /// releases (and is more lenient about spaces). They were measured, not guessed: this agrees with
 /// System.Uri on every one of some 500,000 generated URL-like strings, except hosts that mix characters
-/// IDN processing maps or refuses (emoji, zero-width and soft-hyphen characters, ideographic full stops,
-/// no-break spaces …) with a label that starts with "-" or "_" or is over 63 characters — there this is
-/// more lenient, and AWS has the last word on such an address anyway.
+/// IDN processing maps or refuses (emoji and other characters outside the Basic Multilingual Plane,
+/// zero-width, word-joiner and soft-hyphen characters, ideographic full stops, no-break spaces …) with a
+/// label that starts with "-" or "_" or is over 63 characters — there this is more lenient, and AWS has
+/// the last word on such an address anyway.
 enum WebsiteCheck {
     static func isAcceptable(_ text: String) -> Bool {
         // System.Uri refuses strings of 65520 UTF-16 units or more.
