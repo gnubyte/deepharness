@@ -383,7 +383,7 @@ public struct BedrockClient: ProviderClient {
     /// The model's context window and output ceiling from the built-in table — Bedrock has no
     /// endpoint that reports them. No network call, so the route probe before every retry stays free.
     public func modelInfo(_ model: String?) async -> ModelInfo? {
-        let id = (model?.isEmpty == false) ? model! : profile.model
+        let id = model.flatMap { $0.isEmpty ? nil : $0 } ?? profile.model
         return ModelInfo(id: id, contextWindow: BedrockModels.contextWindow(id),
                          maxTokens: BedrockModels.traits(id).maxTokensCeiling)
     }
