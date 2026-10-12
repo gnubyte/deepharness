@@ -142,6 +142,8 @@ public final class AppTransport {
         var agents: String
         /// The backups the main model's client falls over to.
         var backups: [ProviderProfile]
+        /// The subagent servers and their privacy are in the prompt and the agent tools' descriptions.
+        var servers: [SubagentServers.Entry]
     }
 
     /// Everything about skills one turn needs: what exists, what's on, and the prompt text.
@@ -865,6 +867,9 @@ public final class AppTransport {
         // and a catalog the model can load from with `use_skill`.
         if !skillState.result.text.isEmpty { prompt += "\n\n" + skillState.result.text }
         prompt += "\n\n" + Self.vaultPrompt(vault.all)
+        // Which subagent servers may see sensitive data.
+        let servers = subagentServerEntries
+        if let note = SubagentServers.note(servers) { prompt += "\n\n--- Subagent servers ---\n" + note }
         if vm.preset == .plan {
             prompt += """
 
@@ -875,7 +880,7 @@ public final class AppTransport {
         }
         systemPrompts[sessionID] = prompt
 
-        let builtins = ToolRegistry.standard(agents: agentCatalog(for: vm))
+        let builtins = ToolRegistry.standard(agents: agentCatalog(for: vm), servers: servers.isEmpty ? nil : servers)
         var extra: [any ToolExecutor] = PluginLoader.tools(from: plugins, reserved: Set(builtins.names))
         if !skillState.active.isEmpty { extra.append(UseSkillTool(skills: skillState.active)) }
         extra.append(VaultSearchTool(vault: vault))
@@ -1608,7 +1613,7 @@ public final class AppTransport {
         let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset,
                             skills: skillState.signature, computerTools: config.computerToolsEnabled,
                             vision: visionOn(for: profile), vault: vault.revision, agents: agentsStamp(for: vm),
-                            backups: backups)
+                            backups: backups, servers: subagentServerEntries)
         if let previous = engineKeys[sessionID], previous.profile.model != profile.model {
             vm.note("The server is now serving `\(profile.model)` (was `\(previous.profile.model)`) — switched to it, \(window.formatted())-token window.")
         }

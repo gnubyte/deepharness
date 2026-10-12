@@ -145,6 +145,26 @@ final class FleetHostTests: XCTestCase {
         XCTAssertEqual(snapshot.filter { !$0.isPrimary }.map(\.label), ["Alpha"])
     }
 
+    func testTheMainAgentIsToldWhichSubagentServersArePrivate() async throws {
+        var spark = route("Spark 2", host: "spark2.local", worker: true)
+        spark.baseURL = "http://192.168.1.43:8002/v1"
+        _ = makeTransport([route("Main", host: "main.test"), spark, route("Kimi Code", host: "kimi.test", worker: true)])
+        FakeModelServer.reset { _, _ in .text("All done.") }
+        _ = try await ask("hi")
+        let system = try XCTUnwrap(FakeModelServer.seen.first?.messages.first { $0["role"] == "system" }?["content"])
+        XCTAssertTrue(system.contains("Subagent servers: Spark 2 (private), Kimi Code (not private)."), system)
+        XCTAssertTrue(system.contains("Servers that aren't private must not receive sensitive data."))
+        XCTAssertEqual(transport.fleet.servers.map(\.isPrivate), [false, true, false], "Main and Kimi Code are online services")
+    }
+
+    func testWithoutSubagentServersThereIsNoServerNote() async throws {
+        _ = makeTransport([route("Main", host: "main.test")])
+        FakeModelServer.reset { _, _ in .text("All done.") }
+        _ = try await ask("hi")
+        let system = try XCTUnwrap(FakeModelServer.seen.first?.messages.first { $0["role"] == "system" }?["content"])
+        XCTAssertFalse(system.contains("Subagent servers:"))
+    }
+
     func testTheFleetFollowsTheRoutesAsTheyChange() {
         let t = makeTransport([route("Main", host: "main.test"), route("Other", host: "other.test")])
         XCTAssertEqual(t.fleet.snapshot().map(\.label), ["Main"], "a spare is not in the fleet")

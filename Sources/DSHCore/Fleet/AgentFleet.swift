@@ -40,16 +40,20 @@ public struct FleetServer: Sendable, Identifiable {
     public var isPrimary: Bool
     /// How many subagents may work on it at once.
     public var maxParallel: Int
+    /// May see sensitive data (your own hardware — see `RoutePrivacy`): only such a server takes a task marked
+    /// sensitive.
+    public var isPrivate: Bool
     /// Probe the server and return its live client and model. Throws if it can't be reached — a server
     /// that answers no model list at all counts as unreachable. Cancelled with the task that is leasing.
     public var resolve: @Sendable () async throws -> FleetTarget
 
-    public init(id: String, label: String, isPrimary: Bool = false, maxParallel: Int = 2,
+    public init(id: String, label: String, isPrimary: Bool = false, maxParallel: Int = 2, isPrivate: Bool = true,
                 resolve: @escaping @Sendable () async throws -> FleetTarget) {
         self.id = id
         self.label = label
         self.isPrimary = isPrimary
         self.maxParallel = maxParallel
+        self.isPrivate = isPrivate
         self.resolve = resolve
     }
 }
@@ -255,23 +259,30 @@ public final class AgentFleet: @unchecked Sendable {
         case wait(Waiter, recovery: TimeInterval?)
     }
 
+    /// What a task marked sensitive is told when nothing private can take it.
+    public static let noPrivateServer =
+        "No private server is free for a sensitive task. Do it yourself, or rewrite it without the sensitive details and try again."
+
     /// Wait for a free slot on a suitable server and lease it. `preferred` names a server the caller would
-    /// like (matched against the label and id); it is a preference, not a demand. Throws
-    /// `FleetUnavailableError` when no server can be reached, and `CancellationError` when the task is
-    /// cancelled while it waits (a lease already being resolved is given back).
-    public func acquire(preferred: String? = nil) async throws -> FleetLease {
+    /// like (matched against the label and id); it is a preference, not a demand. A `sensitive` task runs only on
+    /// a private server: a private worker, else the primary when it is private and may take subagents. Throws
+    /// `FleetUnavailableError` when no server can be reached (or, for a sensitive task, none is private), and
+    /// `CancellationError` when the task is cancelled while it waits (a lease already being resolved is given back).
+    public func acquire(preferred: String? = nil, sensitive: Bool = false) async throws -> FleetLease {
         var tried = Set<String>()
         var lastError: (any Error)?
         while true {
             try Task.checkCancellation()
             let step: Step = try lock.withLock {
                 if configured.isEmpty { throw FleetUnavailableError("No model server is configured.") }
-                if configured.allSatisfy({ tried.contains($0.id) }) {
+                if sensitive, !hasPrivateServerLocked() { throw FleetUnavailableError(Self.noPrivateServer) }
+                let eligible = sensitive ? configured.filter(\.isPrivate) : configured
+                if eligible.allSatisfy({ tried.contains($0.id) }) {
                     throw FleetUnavailableError("No model server answered"
                                                 + (lastError.map { ": \($0.localizedDescription)" } ?? "."),
                                                 underlying: lastError)
                 }
-                if let chosen = chooseLocked(preferred: preferred, tried: tried) {
+                if let chosen = chooseLocked(preferred: preferred, tried: tried, sensitive: sensitive) {
                     states[chosen.id, default: State()].inFlight += 1
                     return .chosen(chosen)
                 }
@@ -370,9 +381,21 @@ public final class AgentFleet: @unchecked Sendable {
 
     // MARK: Choosing
 
-    private func chooseLocked(preferred: String?, tried: Set<String>) -> FleetServer? {
+    /// Somewhere a sensitive task may run: a private worker, or a private primary that may take subagents (it
+    /// always may when there are no workers at all).
+    private func hasPrivateServerLocked() -> Bool {
+        if configured.contains(where: { !$0.isPrimary && $0.isPrivate }) { return true }
+        return primaryTakesSensitiveLocked()
+    }
+
+    private func primaryTakesSensitiveLocked() -> Bool {
+        guard configured.contains(where: { $0.isPrimary && $0.isPrivate }) else { return false }
+        return primaryTakesOverflow || !configured.contains(where: { !$0.isPrimary })
+    }
+
+    private func chooseLocked(preferred: String?, tried: Set<String>, sensitive: Bool = false) -> FleetServer? {
         let at = now()
-        let candidates = configured.filter { !tried.contains($0.id) }
+        let candidates = configured.filter { !tried.contains($0.id) && (!sensitive || $0.isPrivate) }
         if candidates.isEmpty { return nil }
         // Skip servers that just failed — unless that would leave none.
         var healthy = candidates.filter { isHealthyLocked(states[$0.id], at) }
@@ -399,6 +422,8 @@ public final class AgentFleet: @unchecked Sendable {
         let workers = healthy.filter { !$0.isPrimary }
         if let worker = pick(from: workers) { return worker }
         let primaries = healthy.filter(\.isPrimary)
+        // A sensitive task goes to the primary only when it is private and may take subagents.
+        if sensitive { return primaryTakesSensitiveLocked() ? pick(from: primaries) : nil }
         // No workers at all, or the primary may take overflow: use it. Otherwise wait for a worker.
         if workers.isEmpty || primaryTakesOverflow { return pick(from: primaries) }
         return nil

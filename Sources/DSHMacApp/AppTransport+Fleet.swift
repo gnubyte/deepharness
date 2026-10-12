@@ -21,7 +21,7 @@ extension AppTransport {
         if let main = config.mainRoute {
             servers.append(FleetServer(
                 id: main.routeID, label: Self.routeLabel(main), isPrimary: true,
-                maxParallel: Self.clamp(main.subagentParallel ?? 4),
+                maxParallel: Self.clamp(main.subagentParallel ?? 4), isPrivate: main.isPrivateRoute,
                 // The main route is probed the way the chat probes it (and shares its cache).
                 resolve: { [weak self] in
                     guard let self else { throw LLMError.noModel }
@@ -31,7 +31,7 @@ extension AppTransport {
         for route in workerRoutes {
             servers.append(FleetServer(
                 id: route.routeID, label: Self.routeLabel(route), isPrimary: false,
-                maxParallel: Self.clamp(route.subagentParallel ?? 2),
+                maxParallel: Self.clamp(route.subagentParallel ?? 2), isPrivate: route.isPrivateRoute,
                 resolve: { [weak self] in
                     guard let self else { throw LLMError.noModel }
                     return try await self.resolveWorkerTarget(route)
@@ -115,6 +115,11 @@ extension AppTransport {
     /// Forget what was learned about the subagent servers (Settings changed, or the user asked).
     func resetWorkerProbes() { workerProbe.removeAll() }
 
+    /// The subagent servers and whether each is private, as the main agent is told about them.
+    var subagentServerEntries: [SubagentServers.Entry] {
+        workerRoutes.map { SubagentServers.Entry(name: Self.routeLabel($0), isPrivate: $0.isPrivateRoute) }
+    }
+
     // MARK: /agents
 
     /// `/agents`: the kinds of subagent, the servers they run on and how busy each is, and what is
@@ -136,7 +141,8 @@ extension AppTransport {
             for server in servers {
                 let health = server.healthy ? "" : " — not answering, skipped for a minute"
                 let failed = server.failed > 0 ? ", \(server.failed) failed" : ""
-                lines.append("- \(server.isPrimary ? "🖥 main" : "⚙ subagents") **\(server.label)** — \(server.inFlight)/\(server.maxParallel) busy, \(server.completed) done\(failed)\(health)")
+                let privacy = config.providers.first { $0.routeID == server.id }.map { $0.isPrivateRoute ? " · private" : " · not private" } ?? ""
+                lines.append("- \(server.isPrimary ? "🖥 main" : "⚙ subagents") **\(server.label)**\(privacy) — \(server.inFlight)/\(server.maxParallel) busy, \(server.completed) done\(failed)\(health)")
             }
         }
         let running = vm.agentRuns.filter(\.isRunning)

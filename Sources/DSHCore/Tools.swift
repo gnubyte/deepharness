@@ -248,8 +248,9 @@ public struct ToolRegistry: Sendable {
     }
 
     /// The built-in tool set. `agents` are the agent types the `agent` and `delegate` tools offer in their
-    /// descriptions (nil = the built-in ones).
-    public static func standard(depth: Int = 0, agents: AgentCatalog? = nil) -> ToolRegistry {
+    /// descriptions (nil = the built-in ones); `servers`, the subagent servers and their privacy, which they name.
+    public static func standard(depth: Int = 0, agents: AgentCatalog? = nil,
+                                servers: [SubagentServers.Entry]? = nil) -> ToolRegistry {
         // `agent` and `delegate` are only offered at the top level: subagents don't spawn
         // subagents (keeps the permission surface and cost predictable).
         var tools: [any ToolExecutor] = [
@@ -258,8 +259,8 @@ public struct ToolRegistry: Sendable {
             RunShellCommandTool(), WebFetchTool(), TodoWriteTool(), ExitPlanModeTool(),
         ]
         if depth == 0 {
-            tools.append(AgentTool(catalog: agents))
-            tools.append(DelegateTool(catalog: agents))
+            tools.append(AgentTool(catalog: agents, servers: servers))
+            tools.append(DelegateTool(catalog: agents, servers: servers))
         }
         return ToolRegistry(tools: tools)
     }

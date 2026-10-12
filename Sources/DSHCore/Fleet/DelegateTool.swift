@@ -14,19 +14,27 @@ public struct DelegateTool: ToolExecutor {
 
     /// The agent types the tool's description offers (nil = the built-in ones).
     public let catalog: AgentCatalog?
+    /// The subagent servers and whether each is private, for the description (nil = not said).
+    public let servers: [SubagentServers.Entry]?
 
-    public init(catalog: AgentCatalog? = nil) {
+    public init(catalog: AgentCatalog? = nil, servers: [SubagentServers.Entry]? = nil) {
         self.catalog = catalog
+        self.servers = servers
     }
 
-    public var spec: ToolSpec { Self.spec(for: catalog ?? .default) }
+    public var spec: ToolSpec { Self.spec(for: catalog ?? .default, servers: servers) }
 
-    public static func spec(for catalog: AgentCatalog) -> ToolSpec {
-        ToolSpec(
+    public static func spec(for catalog: AgentCatalog, servers: [SubagentServers.Entry]? = nil) -> ToolSpec {
+        var description = "Run several independent subtasks at the same time, each by its own subagent, and get all their reports back together. Use it to fan work out — investigate three modules, review four files, implement three unrelated changes — instead of doing them one after another. Subtasks cannot talk to each other or see this conversation, so each prompt must be complete; make sure they don't edit the same files. "
+            + "Give each an agent_type: " + catalog.describe() + ". When several model servers are configured the tasks are spread across them."
+        if let note = SubagentServers.note(servers ?? []) { description += " " + note }
+        let sensitive = SubagentServers.sensitiveParameter
+        return ToolSpec(
             name: name,
-            description: "Run several independent subtasks at the same time, each by its own subagent, and get all their reports back together. Use it to fan work out — investigate three modules, review four files, implement three unrelated changes — instead of doing them one after another. Subtasks cannot talk to each other or see this conversation, so each prompt must be complete; make sure they don't edit the same files. "
-                + "Give each an agent_type: " + catalog.describe() + ". When several model servers are configured the tasks are spread across them.",
-            parameters: #"{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"object","properties":{"description":{"type":"string","description":"A short name for the subtask"},"prompt":{"type":"string","description":"The complete task"},"agent_type":{"type":"string","description":"The kind of subagent (default: general)"}},"required":["description","prompt"]},"description":"The subtasks to run in parallel"},"max_parallel":{"type":"integer","description":"At most this many at once (default 6)"}},"required":["tasks"]}"#
+            description: description,
+            parameters: #"{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"object","properties":{"description":{"type":"string","description":"A short name for the subtask"},"prompt":{"type":"string","description":"The complete task"},"agent_type":{"type":"string","description":"The kind of subagent (default: general)"},"sensitive":{"type":"boolean","description":""#
+                + sensitive + #" (This task only.)"}},"required":["description","prompt"]},"description":"The subtasks to run in parallel"},"max_parallel":{"type":"integer","description":"At most this many at once (default 6)"},"sensitive":{"type":"boolean","description":""#
+                + sensitive + #" (Every task.)"}},"required":["tasks"]}"#
         )
     }
 
@@ -34,6 +42,7 @@ public struct DelegateTool: ToolExecutor {
         let description: String
         let prompt: String
         let definition: AgentDefinition
+        let sensitive: Bool
     }
 
     public func execute(args: JSONString, in context: ToolContext) async -> ToolResult {
@@ -54,6 +63,7 @@ public struct DelegateTool: ToolExecutor {
         }
 
         let types = context.agentTypes ?? .default
+        let allSensitive = JSONArgs.bool(args, "sensitive", default: false)
         var tasks: [Subtask] = []
         for (offset, node) in array.enumerated() {
             let index = offset + 1
@@ -70,7 +80,8 @@ public struct DelegateTool: ToolExecutor {
             }
             let description = ((item["description"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             tasks.append(Subtask(description: description.isEmpty ? "task \(index)" : description,
-                                 prompt: prompt, definition: definition))
+                                 prompt: prompt, definition: definition,
+                                 sensitive: (item["sensitive"] as? Bool) ?? allSensitive))
         }
 
         let parallel = min(max(JSONArgs.int(args, "max_parallel", default: Self.defaultParallel), 1), Self.maxTasks)
@@ -102,7 +113,7 @@ public struct DelegateTool: ToolExecutor {
                 let task = tasks[index]
                 group.addTask {
                     (index, try await AgentTool.runCore(prompt: task.prompt, description: task.description, definition: task.definition,
-                                                        background: false, context: context))
+                                                        background: false, sensitive: task.sensitive, context: context))
                 }
             }
             while let (finished, outcome) = try await group.next() { outcomes[finished] = outcome }

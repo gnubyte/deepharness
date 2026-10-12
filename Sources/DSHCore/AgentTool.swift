@@ -22,20 +22,26 @@ public struct AgentTool: ToolExecutor {
     /// The agent types the tool's description offers (nil = the built-in ones). Which types a call may
     /// *use* comes from the context (`ToolContext.agentTypes`), the chat's own definitions.
     public let catalog: AgentCatalog?
+    /// The subagent servers and whether each is private, for the description (nil = not said).
+    public let servers: [SubagentServers.Entry]?
 
-    public init(catalog: AgentCatalog? = nil) {
+    public init(catalog: AgentCatalog? = nil, servers: [SubagentServers.Entry]? = nil) {
         self.catalog = catalog
+        self.servers = servers
     }
 
-    public var spec: ToolSpec { Self.spec(for: catalog ?? .default) }
+    public var spec: ToolSpec { Self.spec(for: catalog ?? .default, servers: servers) }
 
-    public static func spec(for catalog: AgentCatalog) -> ToolSpec {
-        ToolSpec(
+    public static func spec(for catalog: AgentCatalog, servers: [SubagentServers.Entry]? = nil) -> ToolSpec {
+        var description = "Spawn a subagent to work a self-contained task (e.g. 'find every usage of X and report the call sites'). It works autonomously in a bounded loop and returns a final report. Prefer this over doing long exploration yourself when the task is well-scoped. "
+            + "Pick agent_type for a specialist — " + catalog.describe() + ". Omit it for the general worker. "
+            + "Several agent calls in one turn run at the same time. Set run_in_background to true to launch it in the background and keep working: check on it with agent_status (you're also told automatically when one finishes) and stop one with agent_stop. To fan out many independent tasks in one go, use `delegate`."
+        if let note = SubagentServers.note(servers ?? []) { description += " " + note }
+        return ToolSpec(
             name: name,
-            description: "Spawn a subagent to work a self-contained task (e.g. 'find every usage of X and report the call sites'). It works autonomously in a bounded loop and returns a final report. Prefer this over doing long exploration yourself when the task is well-scoped. "
-                + "Pick agent_type for a specialist — " + catalog.describe() + ". Omit it for the general worker. "
-                + "Several agent calls in one turn run at the same time. Set run_in_background to true to launch it in the background and keep working: check on it with agent_status (you're also told automatically when one finishes) and stop one with agent_stop. To fan out many independent tasks in one go, use `delegate`.",
-            parameters: #"{"type":"object","properties":{"description":{"type":"string","description":"What to name this subagent"},"prompt":{"type":"string","description":"The complete task for the subagent. It cannot ask you questions and cannot see this conversation — everything it needs goes here."},"agent_type":{"type":"string","description":"The kind of subagent (default: general)"},"run_in_background":{"type":"boolean","description":"Start it in the background and return at once (default false: wait for its report)"}},"required":["description","prompt"]}"#
+            description: description,
+            parameters: #"{"type":"object","properties":{"description":{"type":"string","description":"What to name this subagent"},"prompt":{"type":"string","description":"The complete task for the subagent. It cannot ask you questions and cannot see this conversation — everything it needs goes here."},"agent_type":{"type":"string","description":"The kind of subagent (default: general)"},"run_in_background":{"type":"boolean","description":"Start it in the background and return at once (default false: wait for its report)"},"sensitive":{"type":"boolean","description":""#
+                + SubagentServers.sensitiveParameter + #""}},"required":["description","prompt"]}"#
         )
     }
 
@@ -53,6 +59,7 @@ public struct AgentTool: ToolExecutor {
         guard let definition = types.find(typeName) else {
             return ToolResult(output: "Error: unknown agent_type '\(typeName ?? "")'. Available: \(types.describe()).")
         }
+        let sensitive = JSONArgs.bool(args, "sensitive", default: false)
 
         if JSONArgs.bool(args, "run_in_background", default: false) {
             guard let pool = context.backgroundAgents else {
@@ -61,7 +68,7 @@ public struct AgentTool: ToolExecutor {
             // The background run belongs to the pool (stop / agent_stop cancel it), not to this call.
             let launched = pool.launch(description: desc, work: {
                 let outcome = try await Self.runCore(prompt: prompt, description: desc, definition: definition,
-                                                     background: true, context: context)
+                                                     background: true, sensitive: sensitive, context: context)
                 return (outcome.ok, outcome.report)
             })
             switch launched {
@@ -74,7 +81,7 @@ public struct AgentTool: ToolExecutor {
 
         do {
             let outcome = try await Self.runCore(prompt: prompt, description: desc, definition: definition,
-                                                 background: false, context: context)
+                                                 background: false, sensitive: sensitive, context: context)
             return ToolResult(output: Self.present(description: desc, outcome: outcome))
         } catch {
             return ToolResult(output: "Error: cancelled by user.")
@@ -106,7 +113,7 @@ public struct AgentTool: ToolExecutor {
     /// roster current. Throws only `CancellationError` (the run was stopped); every other way it can end is
     /// an outcome.
     static func runCore(prompt firstPrompt: String, description: String, definition: AgentDefinition,
-                        background: Bool, context: ToolContext) async throws -> SubagentOutcome {
+                        background: Bool, sensitive: Bool = false, context: ToolContext) async throws -> SubagentOutcome {
         let roster = context.roster
         let runID = roster?.begin(description: description, agentType: definition.name, background: background)
         let clock = ContinuousClock()
@@ -129,7 +136,8 @@ public struct AgentTool: ToolExecutor {
                 if let fleet = context.fleet {
                     if let runID { roster?.note(runID, "waiting for a free server") }
                     do {
-                        lease = try await fleet.acquire(preferred: definition.server)
+                        // A task that needs sensitive data runs only on a private server.
+                        lease = try await fleet.acquire(preferred: definition.server, sensitive: sensitive)
                     } catch let unavailable as FleetUnavailableError {
                         if let runID { roster?.finish(runID, status: .failed, report: unavailable.message) }
                         return SubagentOutcome(ok: false, report: unavailable.message, agentType: definition.name,

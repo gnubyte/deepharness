@@ -146,3 +146,47 @@ public final class AgentRoster: @unchecked Sendable {
         onChange?(AgentRun(id: "", description: "", agentType: "", isBackground: false, startedAt: now(), status: .done))
     }
 }
+
+// MARK: - Which servers may see what
+
+/// How the main agent is told about the subagent servers and their privacy, in its system prompt and in the `agent`
+/// and `delegate` tools' descriptions.
+public enum SubagentServers {
+    /// One subagent server: its name, and whether it may see sensitive data.
+    public struct Entry: Sendable, Hashable {
+        public var name: String
+        public var isPrivate: Bool
+
+        public init(name: String, isPrivate: Bool) {
+            self.name = name
+            self.isPrivate = isPrivate
+        }
+    }
+
+    /// "Subagent servers: Spark 2 (private), Kimi Code (not private)"
+    public static func list(_ servers: [Entry]) -> String? {
+        guard !servers.isEmpty else { return nil }
+        return "Subagent servers: " + servers.map { "\($0.name) (\($0.isPrivate ? "private" : "not private"))" }
+            .joined(separator: ", ")
+    }
+
+    /// What to do about servers that aren't private.
+    public static let guidance =
+        "Servers that aren't private must not receive sensitive data. Describe their tasks in general terms — no names, credentials, personal or client details; the app also masks what it detects."
+
+    /// What `sensitive` does.
+    public static let sensitiveParameter =
+        "Set true when the task needs sensitive data (personal data, credentials, client details). It then runs only on a private server."
+
+    /// The whole note, for the system prompt and the tools; nil when there are no subagent servers.
+    public static func note(_ servers: [Entry]) -> String? {
+        guard let list = list(servers) else { return nil }
+        var text = list + ". "
+        if servers.contains(where: { !$0.isPrivate }) {
+            text += guidance + " A task that needs sensitive data gets sensitive: true, so it runs only on a private server."
+        } else {
+            text += "All of them are private."
+        }
+        return text
+    }
+}
