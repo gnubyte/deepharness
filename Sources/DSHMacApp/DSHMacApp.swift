@@ -152,6 +152,9 @@ struct RootView: View {
         .sheet(item: $model.swapperGuide) { request in
             SwapperGuideView(request: request, appModel: model).environment(model)
         }
+        .sheet(item: $model.planGuide) { request in
+            PlanGuideView(request: request, appModel: model).environment(model)
+        }
         .overlay(alignment: .top) { banner }
     }
 

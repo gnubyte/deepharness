@@ -586,13 +586,21 @@ public struct OpenAIClient: LLMClient {
     }
 
     private func effortRoute(_ request: LLMRequest) -> String {
-        "\(profile.baseURL)|\(request.model.isEmpty ? profile.model : request.model)"
+        "\(profile.baseURL)|\(requestModel(request))"
+    }
+
+    /// The model a request is for.
+    private func requestModel(_ request: LLMRequest) -> String {
+        request.model.isEmpty ? profile.model : request.model
     }
 
     /// The effort word that will go on the wire (after any learned remap), or
     /// nil when none is sent.
     func effortWord(for request: LLMRequest) -> String? {
-        guard let level = thinkingLevel(for: request), let word = level.wireEffort else { return nil }
+        guard let level = thinkingLevel(for: request) else { return nil }
+        // GLM-5.3 always thinks and has its own words for how hard (see `GLMThinking`).
+        if GLMThinking.applies(to: profile, model: requestModel(request)) { return GLMThinking.effort(level) }
+        guard let word = level.wireEffort else { return nil }
         if let learned = ReasoningEffortCache.shared.accepted(route: effortRoute(request), requested: word) {
             return learned.isEmpty ? nil : learned
         }
@@ -609,6 +617,14 @@ public struct OpenAIClient: LLMClient {
     func applyThinking(_ request: LLMRequest, to body: inout [String: Any]) {
         guard let level = thinkingLevel(for: request) else { return }
         let effort = effortWord(for: request)
+        // A model that always thinks is never told not to (that fails the request): only how hard.
+        if GLMThinking.applies(to: profile, model: requestModel(request)) {
+            if let effort { body["reasoning_effort"] = effort }
+            if profile.isSelfHosted && profile.kind != .ollama && profile.kind != .lmStudio, let effort {
+                body["chat_template_kwargs"] = ["reasoning_effort": effort]
+            }
+            return
+        }
         if profile.isSelfHosted && (profile.kind == .openAICompat || profile.kind == .openAI || profile.kind == .openRouter) {
             var kwargs: [String: Any] = ["enable_thinking": level != .off]
             if let effort {
@@ -724,6 +740,8 @@ public enum FallbackContextWindow {
         "qwen3-30b-a3b": 32_768, "qwen3-32b": 32_768, "qwen3-235b-a22b": 32_768,
         "llama3.3-70b-instruct": 131_072, "llama3.1-8b-instruct": 131_072,
         "glm-4.5": 131_072, "glm-4.5-air": 131_072, "glm-4.6": 131_072,
+        // The subscription plans' models (see `PlanCatalog`).
+        "glm-5.3": 1_000_000, "kimi-for-coding": 1_000_000, "k3-256k": 262_144,
     ]
 
     /// Prefix rules on the base name, checked after the exact table.

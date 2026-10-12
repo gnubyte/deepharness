@@ -173,7 +173,12 @@ struct ProviderEditor: View {
                     Text("Sent as enable_thinking / reasoning_effort. Each chat can override it from the composer or with /think.")
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-
+                    Toggle("Interactive use only (plan terms)", isOn: Binding(
+                        get: { draft.interactiveOnly ?? false },
+                        set: { draft.interactiveOnly = $0 ? true : nil }))
+                    Text("Some plans (Alibaba's Qwen Coding Plan) allow only interactive use: the task queue, /goal and other unattended work won't run on this route while it's the primary.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Section("Custom Headers") {
                     ForEach($headerRows) { $row in

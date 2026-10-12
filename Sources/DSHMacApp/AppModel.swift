@@ -41,6 +41,8 @@ final class AppModel {
     var bedrockGuide: BedrockGuideRequest?
     /// The "Connect my Spark Swapper" guide, when it is open.
     var swapperGuide: SwapperGuideRequest?
+    /// The "Connect a subscription plan" guide, when it is open.
+    var planGuide: PlanGuideRequest?
     /// Which Settings tab is showing; set before `showSettings` to deep-link.
     var settingsTab: SettingsTab = .general
     /// A skills action a caller wants the Skills tab to start with.
@@ -97,11 +99,20 @@ final class AppModel {
         bedrockGuide = BedrockGuideRequest(page: page, route: route)
     }
 
-    /// Open the "Connect my Spark Swapper" guide (a connection code, or an address and login). From a sheet
-    /// (the wizard, Settings), that sheet closes first so this one can open.
+    /// Open the "Connect my Spark Swapper" guide (a connection code, or an address and login).
     func showSwapperGuide(closing sheet: Bool = false) {
+        openGuide(closing: sheet) { $0.swapperGuide = SwapperGuideRequest() }
+    }
+
+    /// Open the "Connect a subscription plan" guide (GLM, Kimi, Qwen, OpenAI).
+    func showPlanGuide(closing sheet: Bool = false) {
+        openGuide(closing: sheet) { $0.planGuide = PlanGuideRequest() }
+    }
+
+    /// Open a guide's sheet. From another sheet (the wizard, Settings), that one closes first so this one can open.
+    private func openGuide(closing sheet: Bool, _ open: @escaping @MainActor (AppModel) -> Void) {
         guard sheet || showSettings || showWizard else {
-            swapperGuide = SwapperGuideRequest()
+            open(self)
             return
         }
         showSettings = false
@@ -109,7 +120,7 @@ final class AppModel {
         Task { @MainActor in
             // Let the sheet finish closing before the next one opens.
             try? await Task.sleep(nanoseconds: 400_000_000)
-            swapperGuide = SwapperGuideRequest()
+            open(self)
         }
     }
 

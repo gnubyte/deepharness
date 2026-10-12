@@ -163,6 +163,10 @@ struct SetupWizard: View {
                         detail: "Paste the connection code from the Swapper's Connect tab. Sets up the model, switching, and the security certificate in one go.") {
                 model.showSwapperGuide(closing: true)
             }
+            guideChoice(icon: "creditcard", title: "A subscription or API plan — GLM, Kimi, Qwen, OpenAI",
+                        detail: "Use your Z.ai, Kimi, Alibaba Cloud or OpenAI plan. A guide shows where to get the key.") {
+                model.showPlanGuide(closing: true)
+            }
 
             ForEach(ProviderProfile.Kind.manual, id: \.self) { candidate in
                 Button {

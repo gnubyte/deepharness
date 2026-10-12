@@ -405,6 +405,11 @@ public final class AppTransport {
             broadcast("No model is configured — run the setup wizard, then start the queue.", error: true)
             return
         }
+        // A plan whose terms allow only interactive use never works unattended.
+        if let route = config.interactiveOnlyMain {
+            broadcast(Self.interactiveOnlyQueueMessage(route), error: true)
+            return
+        }
         if queueRunning {
             if let taskID, let t = queue.task(taskID), t.status != .running {
                 queue.requeue(taskID, toFront: true)
@@ -491,6 +496,12 @@ public final class AppTransport {
         var first = true
         while queueActive(generation), !Task.isCancelled {
             guard let task = nextQueueTask() else { break }
+            // The primary was changed to an interactive-only plan while the queue ran: pause before the next task.
+            if let route = config.interactiveOnlyMain {
+                config.queuePaused = true
+                broadcast(Self.interactiveOnlyQueueMessage(route), error: true)
+                return
+            }
             let outcome = await work(taskID: task.id, generation: generation, first: first)
             first = false
             switch outcome {
@@ -963,6 +974,11 @@ public final class AppTransport {
               vm.runningBackgroundJobs.isEmpty,
               let pool = backgroundPools[vm.id], pool.all.contains(where: { $0.status == .done || $0.status == .failed }),
               isServerSwitching?() != true else { return }
+        // Carrying on by itself is unattended work, which an interactive-only plan doesn't allow.
+        if config.interactiveOnlyMain != nil {
+            vm.note("Background agents finished — reply to continue.")
+            return
+        }
         // At most a few automatic continuations in a row: a model that keeps
         // relaunching agents must not loop unattended forever.
         guard autoContinuations[vm.id, default: 0] < Self.maxAutoContinuations else {
@@ -1225,6 +1241,10 @@ public final class AppTransport {
             agentsCommand(vm)
 
         case .goal(let goal):
+            if let route = config.interactiveOnlyMain {
+                vm.note(Self.interactiveOnlyGoalMessage(route), role: .error)
+                return
+            }
             if isServerSwitching?() == true {
                 vm.note("The main model's server is switching models right now — send again once it says it's ready.")
                 return
@@ -1374,13 +1394,23 @@ public final class AppTransport {
                 log.recordItem(sessionID, kind: "notice", text: "Stopped.", toolName: nil, argSummary: nil, output: nil, isError: false)
                 return
             }
-            let message = Self.describe(error)
+            let message = PlanCatalog.explainChatError(error, route: config.activeProvider) ?? Self.describe(error)
             vm.endStreaming()
             vm.note(message, role: .error)
             log.recordItem(sessionID, kind: "error", text: message, toolName: nil, argSummary: nil, output: nil, isError: true)
             banner = message
             awsSignInProfile = Self.expiredAWSProfile(for: error, route: config.activeProvider)
         }
+    }
+
+    /// Why the queue won't start on the main model.
+    static func interactiveOnlyQueueMessage(_ route: ProviderProfile) -> String {
+        "\(routeLabel(route)) is for interactive use only under its plan's terms, so the queue won't run on it. Make another model primary for unattended work."
+    }
+
+    /// Why `/goal` won't start on the main model (a goal keeps working without the user).
+    static func interactiveOnlyGoalMessage(_ route: ProviderProfile) -> String {
+        "\(routeLabel(route)) is for interactive use only under its plan's terms, so /goal — which keeps working without you — won't run on it. Make another model primary for unattended work."
     }
 
     /// The AWS CLI profile to sign in again when `error` means a Bedrock route's sign-in ran out or was
