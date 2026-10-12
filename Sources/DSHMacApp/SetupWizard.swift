@@ -830,8 +830,10 @@ struct SetupWizard: View {
         var profile = draftProfile
         let key = apiKey
         profile.apiKey = nil                      // the key lives in the keychain
-        if let existing, existing.routeID != profile.routeID {
-            model.config.removeProvider(existing)
+        if let existing {
+            profile.isPrivate = AppConfig.privacy(after: profile, was: existing)
+            // In place: a renamed route keeps its position (and nothing else is handed the lead meanwhile).
+            model.config.replace(existing, with: profile)
         }
         model.config.activate(profile)
         existing = profile

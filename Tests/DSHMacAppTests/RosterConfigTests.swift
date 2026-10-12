@@ -84,6 +84,49 @@ final class RosterConfigTests: XCTestCase {
         XCTAssertEqual(reloaded.providers.map(\.isPrivate), [false, true])
     }
 
+    func testAChoiceThatMatchesTheAddressIsNotStored() {
+        let c = config([route("Spark", host: "192.168.1.5")])
+        let id = c.providers[0].routeID
+        c.setPrivate(id, true)
+        XCTAssertNil(c.providers[0].isPrivate, "private by its address anyway")
+        c.setPrivate(id, false)
+        XCTAssertEqual(c.providers[0].isPrivate, false)
+        c.setPrivate(id, true)
+        XCTAssertNil(c.providers[0].isPrivate, "back to following the address")
+    }
+
+    func testMovingARouteToAnotherHostDropsAChoiceThatOnlyRestatedTheOldDefault() {
+        var lan = route("Spark", host: "192.168.1.5")
+        lan.isPrivate = true                      // stored by an earlier build: what the address gave anyway
+        var moved = lan
+        moved.baseURL = "https://api.example.com/v1"
+        XCTAssertNil(AppConfig.privacy(after: moved, was: lan), "the new host decides: not private")
+        XCTAssertFalse({ var r = moved; r.isPrivate = AppConfig.privacy(after: moved, was: lan); return r.isPrivateRoute }())
+
+        var mine = route("Spark", host: "192.168.1.5")
+        mine.isPrivate = false                    // a real choice: kept wherever it goes
+        var elsewhere = mine
+        elsewhere.baseURL = "http://192.168.1.9:8002/v1"
+        XCTAssertEqual(AppConfig.privacy(after: elsewhere, was: mine), false)
+        var trusted = ProviderProfile(kind: .openAI, name: "OpenAI", baseURL: "https://api.openai.com/v1", model: "gpt")
+        trusted.isPrivate = true
+        var proxied = trusted
+        proxied.baseURL = "https://gateway.example.com/v1"
+        XCTAssertEqual(AppConfig.privacy(after: proxied, was: trusted), true)
+    }
+
+    func testRemovingTheMainModelWithEveryOtherRouteOffSwitchesTheNextOneOn() {
+        let c = config([route("Main", host: "a.local"), route("Off 1", host: "b.local", enabled: false),
+                        route("Off 2", host: "c.local", enabled: false)])
+        c.removeProvider(c.providers[0])
+        XCTAssertEqual(c.mainRoute?.name, "Off 1")
+        XCTAssertTrue(c.mainRoute?.isEnabled == true, "the main model is always on")
+        XCTAssertFalse(c.providers[1].isEnabled, "the others stay off")
+        c.removeProvider(c.providers[0])
+        c.removeProvider(c.providers[0])
+        XCTAssertNil(c.activeRoute)
+    }
+
     func testASettingsFileWithTheMainModelOffLoadsWithItOn() throws {
         let store = defaults()
         let routes = [route("Main", host: "a.local", enabled: false), route("Other", host: "b.local")]

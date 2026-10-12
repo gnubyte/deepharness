@@ -308,18 +308,16 @@ struct ProviderEditor: View {
             .reduce(into: [String: String]()) { $0[$1.key] = $1.value }
         profile.customHeaders = headers.isEmpty ? nil : headers
         profile.reasoningEffort = reasoning.isEmpty ? nil : reasoning
+        // A new address may change what "private" means for this route (see `AppConfig.privacy(after:was:)`).
+        profile.isPrivate = AppConfig.privacy(after: profile, was: original)
 
         // A new route becomes the main model; editing an existing one leaves it what it was — the
-        // main model, a spare, or a subagent server.
-        let wasMain = original.routeID == config.activeRoute
-        if profile.routeID != original.routeID, existed {
-            config.removeProvider(original)
-            config.setAPIKey("", for: original)
-        }
-        if !existed || wasMain {
-            config.activate(profile)
+        // main model, a spare, or a subagent server — in its place in the list.
+        if existed {
+            config.replace(original, with: profile)
+            if profile.routeID != original.routeID { config.setAPIKey("", for: original) }
         } else {
-            config.store(profile)
+            config.activate(profile)
         }
         config.setAPIKey(apiKey, for: profile)
         model.transport.resetRouteCache()

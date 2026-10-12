@@ -222,7 +222,14 @@ public final class AppConfig {
     public func removeProvider(_ provider: ProviderProfile) {
         providers.removeAll { $0.routeID == provider.routeID }
         if activeRoute == provider.routeID {
-            activeRoute = (providers.first(where: \.isEnabled) ?? providers.first)?.routeID
+            // The lead goes to a route that is switched on — or, with none on, to the first one, switched on: the
+            // main model is always on.
+            guard let next = providers.firstIndex(where: \.isEnabled) ?? providers.indices.first else {
+                activeRoute = nil
+                return
+            }
+            if !providers[next].isEnabled { providers[next].enabled = nil }
+            activeRoute = providers[next].routeID
         }
     }
 
@@ -263,11 +270,24 @@ public final class AppConfig {
         providers[index].backup = on ? true : nil
     }
 
-    /// The user's own choice of whether a route may see sensitive data (stored, so it wins over the default).
+    /// The user's own choice of whether a route may see sensitive data. A choice that differs from what the
+    /// route's address gives is stored and wins; one that equals it is stored as nil, so the route keeps following
+    /// its address.
     public func setPrivate(_ routeID: String, _ on: Bool) {
-        guard let index = providers.firstIndex(where: { $0.routeID == routeID }),
-              providers[index].isPrivate != on else { return }
-        providers[index].isPrivate = on
+        guard let index = providers.firstIndex(where: { $0.routeID == routeID }) else { return }
+        let value = Self.privacy(on, for: providers[index])
+        guard providers[index].isPrivate != value else { return }
+        providers[index].isPrivate = value
+    }
+
+    /// A route's stored privacy after it was edited: a choice that only said what the old address gave anyway is
+    /// dropped when the address moves to another host (the new host decides), and one that equals the new default
+    /// is nil.
+    public nonisolated static func privacy(after edited: ProviderProfile, was old: ProviderProfile) -> Bool? {
+        guard let choice = edited.isPrivate else { return nil }
+        let oldHost = URL(string: old.baseURL)?.host?.lowercased(), newHost = URL(string: edited.baseURL)?.host?.lowercased()
+        if oldHost != newHost, choice == RoutePrivacy.isPrivateByDefault(old) { return nil }
+        return privacy(choice, for: edited)
     }
 
     /// The main model's route when the plan behind it is for interactive use only; nil otherwise.
