@@ -7,6 +7,8 @@ struct SensitiveDataSection: View {
     @Environment(AppModel.self) private var model
     @State private var terms = ""
     @State private var sample = "Email jane.doe@example.com or call 415-555-0132 about card 4111 1111 1111 1111; the key is sk-proj-Abc123Def456Ghi789Jkl0."
+    /// The sample as a model that isn't private would get it.
+    @State private var masked = ""
 
     var body: some View {
         let config = model.config
@@ -72,14 +74,28 @@ struct SensitiveDataSection: View {
         .background(Theme.surface.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.corner))
         .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Theme.hairline))
         .onAppear { terms = config.shield.customTerms.joined(separator: "\n") }
+        .task(id: TryIt(sample: sample, settings: config.shield)) { await updateMasked() }
     }
 
-    /// The sample as a model that isn't private would get it, with the note left out.
-    private var masked: String {
-        let detector = SensitiveDetector(settings: model.config.shield,
-                                         vaultValues: model.transport.vault.valuesForRedaction().map(\.value))
-        let request = LLMRequest(systemPrompt: "", messages: [.user(sample)], tools: [], model: "")
-        return Shield.mask(request, detector: detector).request.messages.first?.content ?? sample
+    private struct TryIt: Equatable {
+        var sample: String
+        var settings: ShieldSettings
+    }
+
+    /// Mask the sample (the note left out) — after a moment's pause in the typing, and off the main thread, so a
+    /// long paste doesn't hold up the window.
+    private func updateMasked() async {
+        if !masked.isEmpty {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+        }
+        let sample = self.sample, settings = model.config.shield, vault = model.transport.vault
+        let result = await Task.detached(priority: .userInitiated) {
+            let detector = SensitiveDetector(settings: settings, vaultValues: vault.valuesForRedaction().map(\.value))
+            let request = LLMRequest(systemPrompt: "", messages: [.user(sample)], tools: [], model: "")
+            return Shield.mask(request, detector: detector).request.messages.first?.content ?? sample
+        }.value
+        if !Task.isCancelled { masked = result }
     }
 
     private func binding(_ key: WritableKeyPath<ShieldSettings, Bool>) -> Binding<Bool> {

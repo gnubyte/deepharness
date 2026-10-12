@@ -79,21 +79,23 @@ final class ShieldHostTests: XCTestCase {
         XCTAssertTrue(vm.masked.isEmpty)
     }
 
-    func testPicturesGetAOneTimeWord() async throws {
+    func testPicturesAndFilesThatArentTextGetAOneTimeWord() async throws {
         let t = makeTransport(ProviderProfile(kind: .openAICompat, name: "Kimi Code", baseURL: "https://kimi.test/v1", model: "stub-model"))
         FakeModelServer.reset { _, _ in .text("ok") }
         let vm = t.newSession(cwd: dir.path)
+        let pdf = MessageAttachment(kind: .file, name: "contract.pdf", data: Data("%PDF-1.7 ann@example.com".utf8))
         let picture = MessageAttachment(kind: .image, name: "shot.png", data: Data([0x89, 0x50, 0x4E, 0x47]))
-        t.send("look", sessionID: vm.id, attachments: [picture])
+        t.send("read this", sessionID: vm.id, attachments: [pdf])
         try await waitForReply(vm)
-        t.send("again", sessionID: vm.id, attachments: [picture])
+        t.send("and look", sessionID: vm.id, attachments: [picture])
         let deadline = Date().addingTimeInterval(15)
         while FakeModelServer.seen.count < 2 || vm.running {
             if Date() > deadline { return XCTFail("no second reply") }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         let notices = vm.entries.compactMap { $0.message?.role == .notice ? $0.message?.text : nil }
-        XCTAssertEqual(notices.filter { $0.hasPrefix("Images are sent as they are") },
-                       ["Images are sent as they are — DSH can't check pictures for sensitive details."])
+        XCTAssertEqual(notices.filter { $0.hasPrefix("Pictures and files") },
+                       ["Pictures and files that aren't plain text are sent as they are — DSH can't check them for sensitive details."],
+                       "once per chat, for a PDF as for a picture")
     }
 }

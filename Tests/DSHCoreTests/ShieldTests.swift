@@ -265,10 +265,11 @@ final class ShieldTests: XCTestCase {
     }
 
     func testArgumentsThatArentJSONAreMaskedAsText() {
-        var map = ShieldMap()
-        let out = Shield.maskArguments("not json: ann@example.com", detector(), &map, Shield.MatchCache())
-        XCTAssertEqual(out, "not json: ⟦EMAIL_1⟧")
-        XCTAssertEqual(Shield.restoreArguments("{\"a\":\"\\u27e6EMAIL_1\\u27e7\"}", map), "{\"a\":\"ann@example.com\"}",
+        let call = ToolCall(id: "c1", name: "run_shell_command", arguments: "not json: ann@example.com")
+        let out = Shield.mask(LLMRequest(systemPrompt: "", messages: [.assistant("", calls: [call])], tools: [], model: "m"),
+                              detector: detector())
+        XCTAssertEqual(out.request.messages[0].toolCalls?[0].arguments.raw, "not json: ⟦EMAIL_1⟧")
+        XCTAssertEqual(Shield.restoreArguments("{\"a\":\"\\u27e6EMAIL_1\\u27e7\"}", out.map), "{\"a\":\"ann@example.com\"}",
                        "a placeholder written with JSON escapes is found too")
     }
 
@@ -282,7 +283,7 @@ final class ShieldTests: XCTestCase {
         let sent = try XCTUnwrap(model.requests.first?.messages.first?.attachments)
         XCTAssertEqual(String(decoding: sent[0].data, as: UTF8.self), "call ⟦PHONE_1⟧")
         XCTAssertEqual(sent[1].data, image.data, "pictures go as they are")
-        XCTAssertEqual(reports.all.first?.images, true)
+        XCTAssertEqual(reports.all.first?.unchecked, true)
         XCTAssertEqual(reports.all.first?.summary, "Masked 1 phone number before sending to Kimi Code")
     }
 

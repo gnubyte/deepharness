@@ -149,6 +149,8 @@ public struct SensitiveDetector: Sendable {
         var group = 0
         /// Extra check on the value (Luhn, mod-97, not a placeholder…).
         var accept: (@Sendable (String) -> Bool)? = nil
+        /// Narrows the value's range (a trailing full stop, surrounding quotes) or turns it down (nil).
+        var refine: (@Sendable (NSString, NSRange) -> NSRange?)? = nil
     }
 
     private static func re(_ pattern: String, _ options: NSRegularExpression.Options = []) -> NSRegularExpression {
@@ -173,10 +175,23 @@ public struct SensitiveDetector: Sendable {
         // scheme://user:PASSWORD@host: the password.
         Pattern(regex: re(#"\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@]+:([^\s/]+)@[A-Za-z0-9\[]"#), category: .secret, group: 1,
                 accept: { !SensitiveDetector.isPlaceholderValue($0) }),
-        // password = …, api_key: "…", "token": "…": the value.
-        Pattern(regex: re(#"(password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)["']?\s*[:=]\s*["']?([^\s"']{6,})"#, [.caseInsensitive]),
-                category: .secret, group: 2, accept: { !SensitiveDetector.isPlaceholderValue($0) }),
+        // password = "…", "api_key": '…': a quoted value is the secret.
+        Pattern(regex: re(assignmentKey + #""([^"\n]{6,})""#, [.caseInsensitive]), category: .secret, group: 1,
+                accept: { !SensitiveDetector.isPlaceholderValue($0) }),
+        Pattern(regex: re(assignmentKey + #"'([^'\n]{6,})'"#, [.caseInsensitive]), category: .secret, group: 1,
+                accept: { !SensitiveDetector.isPlaceholderValue($0) }),
+        // password: hunter2pass — a bare value only when it looks like a secret rather than code
+        // (`let token: String`, `token = getToken()`, `password = user_password` are code).
+        Pattern(regex: re(assignmentKey + #"([^\s"'`;,(){}\[\]<>]{6,})"#, [.caseInsensitive]), category: .secret, group: 1,
+                refine: { SensitiveDetector.bareSecret($0, $1) }),
+        // DB_PASSWORD=… in an env file: the value, always (unless it stands in for one).
+        Pattern(regex: re(#"^\s*(?:export\s+)?[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY)[A-Z0-9_]*\s*=\s*(\S+)"#,
+                          [.anchorsMatchLines]),
+                category: .secret, group: 1, refine: { SensitiveDetector.envValue($0, $1) }),
     ]
+
+    /// `password`, `"api_key"`, `token =`: the start of an assignment whose value is a secret.
+    private static let assignmentKey = #"(?:password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)["']?\s*[:=]\s*"#
 
     private static let emailPattern = Pattern(regex: re(#"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#), category: .email)
 
@@ -214,8 +229,12 @@ public struct SensitiveDetector: Sendable {
 
         func run(_ pattern: Pattern) {
             for match in pattern.regex.matches(in: text, range: whole) {
-                let range = match.range(at: pattern.group)
+                var range = match.range(at: pattern.group)
                 guard range.location != NSNotFound, range.length > 0 else { continue }
+                if let refine = pattern.refine {
+                    guard let refined = refine(ns, range), refined.length > 0 else { continue }
+                    range = refined
+                }
                 if let accept = pattern.accept, !accept(ns.substring(with: range)) { continue }
                 candidates.append((range, pattern.category))
             }
@@ -245,33 +264,39 @@ public struct SensitiveDetector: Sendable {
         guard !candidates.isEmpty else { return [] }
 
         // Existing placeholders are off limits.
-        let taken = Self.placeholderRegex.matches(in: text, range: whole).map(\.range)
-        // Longest first; then earliest. Where matches overlap the longest one wins — and covers the others too, so
-        // no part of anything detected is left showing (a password in a URL that also reads as an email address).
-        candidates.sort { $0.range.length != $1.range.length ? $0.range.length > $1.range.length : $0.range.location < $1.range.location }
+        let taken = Self.placeholderRanges(in: ns)
+        // In order of where they start (the longer first). Matches that overlap become one, named by the longest of
+        // them — so no part of anything detected is left showing (a password in a URL that also reads as an email
+        // address). One sorted sweep, so a file with thousands of values is as quick as a sentence.
+        candidates.sort { $0.range.location != $1.range.location ? $0.range.location < $1.range.location
+                                                                  : $0.range.length > $1.range.length }
         var chosen: [(range: NSRange, category: SensitiveCategory)] = []
+        var longest = 0
+        var nextTaken = 0
         for candidate in candidates {
-            if taken.contains(where: { NSIntersectionRange($0, candidate.range).length > 0 }) { continue }
-            if let i = chosen.firstIndex(where: { NSIntersectionRange($0.range, candidate.range).length > 0 }) {
-                chosen[i].range = NSUnionRange(chosen[i].range, candidate.range)
+            let start = candidate.range.location, end = start + candidate.range.length
+            while nextTaken < taken.count, taken[nextTaken].location + taken[nextTaken].length <= start { nextTaken += 1 }
+            if nextTaken < taken.count, taken[nextTaken].location < end { continue }
+            if let last = chosen.last, start < last.range.location + last.range.length {
+                chosen[chosen.count - 1].range = NSUnionRange(last.range, candidate.range)
+                if candidate.range.length > longest {
+                    longest = candidate.range.length
+                    chosen[chosen.count - 1].category = candidate.category
+                }
             } else {
                 chosen.append(candidate)
+                longest = candidate.range.length
             }
         }
-        chosen.sort { $0.range.location < $1.range.location }
-        // A match that grew may now reach the next one: join them (the earlier, longer one names the kind).
-        var joined: [(range: NSRange, category: SensitiveCategory)] = []
-        for item in chosen {
-            if let last = joined.last, NSIntersectionRange(last.range, item.range).length > 0 {
-                joined[joined.count - 1].range = NSUnionRange(last.range, item.range)
-            } else {
-                joined.append(item)
-            }
-        }
-        chosen = joined
         return chosen.compactMap { item in
             Range(item.range, in: text).map { SensitiveMatch(range: $0, category: item.category) }
         }
+    }
+
+    /// The placeholders already in a text, in order.
+    static func placeholderRanges(in text: NSString) -> [NSRange] {
+        guard text.range(of: "⟦").location != NSNotFound else { return [] }
+        return placeholderRegex.matches(in: text as String, range: NSRange(location: 0, length: text.length)).map(\.range)
     }
 
     // MARK: Checks
@@ -287,7 +312,59 @@ public struct SensitiveDetector: Sendable {
         if value.hasPrefix("⟦") { return true }
         if lower.hasPrefix("xxx") || lower.hasPrefix("changeme") || lower.hasPrefix("your-") || lower.hasPrefix("your_") { return true }
         if lower.hasPrefix("process.env") || lower.hasPrefix("os.environ") || lower.contains("getenv") { return true }
+        // $GITHUB_TOKEN: a reference to another variable.
+        if value.range(of: #"^\$[A-Z_][A-Z0-9_]*$"#, options: .regularExpression) != nil { return true }
         return false
+    }
+
+    /// Words that name a type rather than being a value (`let token: String`, `password: string;`).
+    static let typeWords: Set<String> = [
+        "String", "string", "str", "Int", "int", "Integer", "Bool", "bool", "boolean", "Boolean", "number", "Number",
+        "any", "Any", "Data", "Date", "URL", "Object", "object", "None", "null", "nil", "true", "false", "undefined",
+        "Optional", "SecureString", "char", "bytes", "Buffer", "Uint8Array", "Secret", "Token", "Password",
+        "Credential", "Credentials",
+    ]
+
+    private static let dottedPath = re(#"^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$"#)
+    // Identifiers, in letters only: with digits allowed, a password such as Tr0ub4dorX9 would read as PascalCase.
+    private static let pascalCase = re(#"^[A-Z][a-z]+(?:[A-Z][a-z]*)+$"#)
+    private static let camelCase = re(#"^[a-z]+(?:[A-Z][a-z]*)+$"#)
+    private static let snakeCase = re(#"^[a-z]+(?:_[a-z]+)+$"#)
+
+    /// The value of `password: …` written without quotes, when it looks like a secret rather than code: not a type,
+    /// a dotted path or an identifier, and it has a digit or a symbol in it, or is 8 letters or more all in one case
+    /// (`correcthorse`). A trailing `?`, `!` or `.` is punctuation, not part of it.
+    static func bareSecret(_ text: NSString, _ range: NSRange) -> NSRange? {
+        var range = range
+        if let last = UnicodeScalar(text.character(at: range.location + range.length - 1)), "?!.".unicodeScalars.contains(last) {
+            range.length -= 1
+        }
+        guard range.length > 0 else { return nil }
+        let value = text.substring(with: range)
+        guard !isPlaceholderValue(value), !typeWords.contains(value) else { return nil }
+        let whole = NSRange(location: 0, length: (value as NSString).length)
+        for identifier in [dottedPath, pascalCase, camelCase, snakeCase] where identifier.firstMatch(in: value, range: whole) != nil {
+            return nil
+        }
+        let scalars = value.unicodeScalars
+        let symbolOrDigit = scalars.contains { !(("a"..."z").contains($0) || ("A"..."Z").contains($0) || $0 == "_") }
+        let oneCase = value.count >= 8
+            && (scalars.allSatisfy { ("a"..."z").contains($0) } || scalars.allSatisfy { ("A"..."Z").contains($0) })
+        return symbolOrDigit || oneCase ? range : nil
+    }
+
+    /// The value of an env-file line, without the quotes around it; nil when it stands in for a secret
+    /// (`${OTHER}`, `$(command)`, `<your key>`).
+    static func envValue(_ text: NSString, _ range: NSRange) -> NSRange? {
+        var range = range
+        if range.length >= 2 {
+            let first = text.character(at: range.location), last = text.character(at: range.location + range.length - 1)
+            if first == last, first == 0x22 || first == 0x27 {   // "…" or '…'
+                range = NSRange(location: range.location + 1, length: range.length - 2)
+            }
+        }
+        guard range.length > 0, !isPlaceholderValue(text.substring(with: range)) else { return nil }
+        return range
     }
 
     /// 14–19 digits (separators aside) that start like a payment card (Visa, Mastercard, Amex, Discover, JCB,

@@ -175,8 +175,8 @@ public final class SessionVM: Identifiable {
     public var masked: [String: ShieldReport] = [:]
     /// A report that came before the turn's answer did (a request that only called tools).
     public var pendingMask: ShieldReport?
-    /// The chat was told that pictures can't be checked.
-    public var toldAboutImages = false
+    /// The chat was told that pictures and files that aren't plain text can't be checked.
+    public var toldAboutUnchecked = false
     /// The plan a plan-mode run handed to `exit_plan_mode` (shown in the plan panel).
     public var proposedPlan: String?
     /// The plan panel already opened by itself for this chat (it does that only the first time).

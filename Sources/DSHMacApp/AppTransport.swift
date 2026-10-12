@@ -2167,12 +2167,13 @@ public final class AppTransport {
     }
 
     /// What the shield masked for a request in this chat: a chip on the turn's answer (and, the first time a
-    /// picture goes to a model that isn't private, a word that pictures can't be checked).
+    /// picture or a file that isn't plain text goes to a model that isn't private, a word that those can't be
+    /// checked).
     private func noteMasked(_ report: ShieldReport, sessionID: String) {
         guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
-        if report.images, !vm.toldAboutImages {
-            vm.toldAboutImages = true
-            let text = "Images are sent as they are — DSH can't check pictures for sensitive details."
+        if report.unchecked, !vm.toldAboutUnchecked {
+            vm.toldAboutUnchecked = true
+            let text = Self.uncheckedNotice
             vm.note(text)
             log.recordItem(sessionID, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
         }
@@ -2185,6 +2186,9 @@ public final class AppTransport {
             vm.pendingMask = report
         }
     }
+
+    static let uncheckedNotice =
+        "Pictures and files that aren't plain text are sent as they are — DSH can't check them for sensitive details."
 
     private func noteFailover(_ notice: FailoverNotice, sessionID: String) {
         guard !failoverNoticed.contains(sessionID), let vm = sessions.first(where: { $0.id == sessionID }) else { return }

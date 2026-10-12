@@ -223,20 +223,21 @@ and every plan included, starts out *not private*. Flip the **Private** switch e
 wins.
 
 Before a request goes to a model that isn't private, DSH masks what's sensitive in it — in the system
-prompt, the messages, tool results and earlier tool calls. Each value becomes a placeholder such as
-`⟦EMAIL_1⟧` or `⟦SECRET_1⟧` (the same value always gets the same one), the model is told to use them as
-written, and the real values are put back on your Mac as the answer streams in — in its text, its
-reasoning and its tool calls. Your chats, files and tools only ever see the real values, and no mapping is
-stored. A shield under the reply says what was masked: "Masked 2 emails and 1 key before sending to Kimi
-Code".
+prompt, the messages, tool results, earlier tool calls and attached text files. Each value becomes a
+placeholder such as `⟦EMAIL_1⟧` or `⟦SECRET_1⟧` (the same value always gets the same one), and once a value
+has been found it is masked wherever it appears, even without the `password:` that gave it away. The model
+is told to use the placeholders as written, and the real values are put back on your Mac as the answer
+streams in — in its text, its reasoning and its tool calls. Your chats, files and tools only ever see the
+real values, and no mapping is stored. A shield under the reply says what was masked: "Masked 2 emails and
+1 key before sending to Kimi Code".
 
 The **Sensitive data** section of **Settings ▸ AI Models** chooses what counts: secrets and keys (private
 keys, cloud and API tokens, passwords in URLs and settings), email addresses, phone numbers, ID and card
 numbers (card numbers and IBANs only when their check digits add up), IP addresses (off by default), and
 your own **custom terms** — client or patient names, project code names, one per line, `re:` for a
 regular expression. Secrets in the Credentials Vault are always masked. **Try it** shows exactly what a
-model that isn't private would receive. Pictures can't be checked; the chat says so the first time it
-sends one to a model that isn't private.
+model that isn't private would receive. Pictures and files that aren't plain text (a PDF, say) can't be
+checked; the chat says so the first time it sends one to a model that isn't private.
 
 When there are subagent servers, the primary is told which are private and to describe tasks for the
 others in general terms. A task marked `sensitive` runs only on a private server; if none can take it, the
