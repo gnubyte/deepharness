@@ -50,6 +50,63 @@ final class SwapperConnectionsTests: XCTestCase {
         XCTAssertEqual(again, list)
     }
 
+    func testAMovedOverPasswordIsFoundUnderTheOldAccountWhenCopyingItFailed() throws {
+        let store = defaults()
+        store.set("https://spark.local:8999", forKey: "spark.swapper.url")
+        store.set("pat", forKey: "spark.swapper.user")
+        // A Keychain that turns every write down (locked at first launch, say).
+        let secrets = UnwritableSecrets(["\(service)/login": "hunter2-pass"])
+        let box = try XCTUnwrap(SwapperConnectionStore.load(defaults: store, secrets: secrets).first)
+        XCTAssertEqual(box.migrated, true)
+        XCTAssertEqual(SwapperConnectionStore.secret(for: box, secrets: secrets), "hunter2-pass")
+        // A box added later has no old account to fall back to.
+        let other = SwapperConnection(name: "Strix Halo (evo-x2)", url: "https://evo.local:8999", auth: .token)
+        XCTAssertEqual(SwapperConnectionStore.secret(for: other, secrets: secrets), "")
+    }
+
+    func testTheRoutesOnTheOldSwappersHostStayWithIt() throws {
+        let store = defaults()
+        store.set("https://Spark.local:8999", forKey: "spark.swapper.url")
+        let direct = ProviderProfile(kind: .openAICompat, name: "Spark", baseURL: "http://spark.local:8002/v1", model: "qwen")
+        let elsewhere = ProviderProfile(kind: .openAICompat, name: "Ollama", baseURL: "http://127.0.0.1:11434/v1", model: "llama")
+        let box = try XCTUnwrap(SwapperConnectionStore.load(defaults: store, secrets: MemorySecretStore(),
+                                                            routes: [direct, elsewhere]).first)
+        XCTAssertEqual(box.linkedRoutes, [direct.routeID])
+        // Once the box reports its model API (an upgrade to 2.0), the old route is still its own.
+        var upgraded = box
+        upgraded.apiBase = "https://spark.local:11443/v1"
+        XCTAssertTrue(upgraded.serves(direct))
+        XCTAssertFalse(upgraded.serves(elsewhere))
+    }
+
+    func testOneUnreadableEntryCostsNothingElse() throws {
+        let store = defaults()
+        let good = SwapperConnection(name: "DGX Spark (a)", url: "https://a.local:8999", auth: .token)
+        let goodJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(good))
+        let damaged: [String: Any] = ["id": "x", "name": "half a box"]
+        store.set(try JSONSerialization.data(withJSONObject: [goodJSON, damaged]), forKey: SwapperConnectionStore.listKey)
+
+        let list = SwapperConnectionStore.load(defaults: store, secrets: MemorySecretStore())
+        XCTAssertEqual(list, [good], "the readable box loads")
+        let added = SwapperConnection(name: "Strix Halo (evo-x2)", url: "https://evo.local:8999", auth: .token)
+        SwapperConnectionStore.save(list + [added], defaults: store)
+        let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(store.data(forKey: SwapperConnectionStore.listKey))) as? [[String: Any]])
+        XCTAssertEqual(stored.count, 3, "the entry this build can't read is kept as it was")
+        XCTAssertTrue(stored.contains { $0["name"] as? String == "half a box" })
+        XCTAssertEqual(SwapperConnectionStore.load(defaults: store, secrets: MemorySecretStore()), [good, added])
+    }
+
+    func testAListThatIsntReadableIsCopiedAsideNotOverwritten() {
+        let store = defaults()
+        let garbage = Data("not json".utf8)
+        store.set(garbage, forKey: SwapperConnectionStore.listKey)
+        XCTAssertEqual(SwapperConnectionStore.load(defaults: store, secrets: MemorySecretStore()), [])
+        let added = SwapperConnection(name: "DGX Spark (a)", url: "https://a.local:8999", auth: .token)
+        SwapperConnectionStore.save([added], defaults: store)
+        XCTAssertEqual(store.data(forKey: SwapperConnectionStore.listKey + ".unreadable"), garbage)
+        XCTAssertEqual(SwapperConnectionStore.load(defaults: store, secrets: MemorySecretStore()), [added])
+    }
+
     func testAnAddressWithoutALoginStillMovesOver() {
         let store = defaults()
         store.set("https://spark.local:8999", forKey: "spark.swapper.url")
@@ -213,3 +270,12 @@ private final class PathLog: @unchecked Sendable {
     func add(_ path: String) { lock.withLock { paths.append(path) } }
     var all: [String] { lock.withLock { paths } }
 }
+
+/// A secret store that refuses every write.
+private final class UnwritableSecrets: SecretStore, @unchecked Sendable {
+    private let values: [String: String]
+    init(_ values: [String: String]) { self.values = values }
+    func read(service: String, account: String) -> String? { values["\(service)/\(account)"] }
+    func write(_ value: String?, service: String, account: String) {}
+}
+

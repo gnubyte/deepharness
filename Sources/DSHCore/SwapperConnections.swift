@@ -36,6 +36,9 @@ public struct SwapperConnection: Codable, Sendable, Equatable, Identifiable {
     public var apiBase: String?
     /// Routes made for this box (route ids).
     public var linkedRoutes: [String]
+    /// Moved over from an earlier build's single Swapper: its password may still be only under the old Keychain
+    /// account (see `SwapperConnectionStore.secret`).
+    public var migrated: Bool?
 
     public init(id: String = UUID().uuidString, name: String, url: String, platform: String? = nil,
                 hostname: String? = nil, version: String? = nil, auth: Auth, pinnedFingerprint: String? = nil,
@@ -160,39 +163,78 @@ public enum SwapperConnectionStore {
     }
 
     /// The saved connections. The first time (no list saved yet), the single Swapper an earlier build was set up
-    /// with becomes the first connection — its address, login, certificate and password — so nothing the user
-    /// set up is lost. The old setting itself is left in place.
-    public static func load(defaults: UserDefaults, secrets: any SecretStore) -> [SwapperConnection] {
+    /// with becomes the first connection — its address, login, certificate and password, and the routes on its
+    /// host — so nothing the user set up is lost. The old setting itself is left in place. Each entry is read on
+    /// its own: one this build can't read is skipped here and kept as it is by `save`.
+    public static func load(defaults: UserDefaults, secrets: any SecretStore,
+                            routes: [ProviderProfile] = []) -> [SwapperConnection] {
         if let data = defaults.data(forKey: listKey) {
-            return (try? JSONDecoder().decode([SwapperConnection].self, from: data)) ?? []
+            return entries(data)?.compactMap(decode) ?? []
         }
-        guard let migrated = migrateLegacy(defaults: defaults, secrets: secrets) else { return [] }
+        guard let migrated = migrateLegacy(defaults: defaults, secrets: secrets, routes: routes) else { return [] }
         save([migrated], defaults: defaults)
         return [migrated]
     }
 
+    /// Save the list. Entries already stored that this build can't read (a damaged one, one from a later build)
+    /// are kept as they were; a stored list that isn't readable at all is first copied aside
+    /// (`spark.connections.v1.unreadable`), never just overwritten.
     public static func save(_ connections: [SwapperConnection], defaults: UserDefaults) {
-        if let data = try? JSONEncoder().encode(connections) { defaults.set(data, forKey: listKey) }
+        var list: [Any] = connections.compactMap { connection in
+            (try? JSONEncoder().encode(connection)).flatMap { try? JSONSerialization.jsonObject(with: $0) }
+        }
+        if let stored = defaults.data(forKey: listKey) {
+            if let old = entries(stored) {
+                list += old.filter { decode($0) == nil }
+            } else if defaults.data(forKey: listKey + ".unreadable") == nil {
+                defaults.set(stored, forKey: listKey + ".unreadable")
+            }
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: list) { defaults.set(data, forKey: listKey) }
     }
 
-    /// The connection for an earlier build's "Settings ▸ Spark", or nil when it was never set up.
-    static func migrateLegacy(defaults: UserDefaults, secrets: any SecretStore) -> SwapperConnection? {
+    /// The stored list's entries, raw; nil when it isn't a list at all.
+    private static func entries(_ data: Data) -> [Any]? {
+        (try? JSONSerialization.jsonObject(with: data)) as? [Any]
+    }
+
+    private static func decode(_ entry: Any) -> SwapperConnection? {
+        guard JSONSerialization.isValidJSONObject(entry), let data = try? JSONSerialization.data(withJSONObject: entry) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(SwapperConnection.self, from: data)
+    }
+
+    /// The connection for an earlier build's "Settings ▸ Spark", or nil when it was never set up. The routes on the
+    /// Swapper's host are linked to it, so they keep following its switches whatever it later reports about itself.
+    static func migrateLegacy(defaults: UserDefaults, secrets: any SecretStore,
+                              routes: [ProviderProfile] = []) -> SwapperConnection? {
         let url = (defaults.string(forKey: Legacy.url) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return nil }
         let user = (defaults.string(forKey: Legacy.user) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let host = URL(string: url)?.host ?? url
-        let connection = SwapperConnection(name: "\(SwapperPlatform.displayName(nil)) (\(host))", url: url,
+        let host = (SparkSwapperClient.normalizedURL(url)?.host ?? URL(string: url)?.host ?? url).lowercased()
+        let linked = routes.filter { $0.kind != .bedrock && URL(string: $0.baseURL)?.host?.lowercased() == host }.map(\.routeID)
+        var connection = SwapperConnection(name: "\(SwapperPlatform.displayName(nil)) (\(host))", url: url,
                                            auth: .login(username: user),
-                                           pinnedFingerprint: defaults.string(forKey: Legacy.pin))
+                                           pinnedFingerprint: defaults.string(forKey: Legacy.pin),
+                                           linkedRoutes: linked)
+        connection.migrated = true
         if let password = secrets.read(service: keychainService, account: Legacy.account), !password.isEmpty {
             secrets.write(password, service: keychainService, account: connection.id)
         }
         return connection
     }
 
-    /// The connection's token or password.
+    /// The connection's token or password. One moved over from an earlier build falls back to the old account
+    /// when its own is missing (copying it over may have failed — a locked Keychain at first launch, say), and
+    /// copies it over then.
     public static func secret(for connection: SwapperConnection, secrets: any SecretStore) -> String {
-        secrets.read(service: keychainService, account: connection.id) ?? ""
+        if let own = secrets.read(service: keychainService, account: connection.id), !own.isEmpty { return own }
+        if connection.migrated == true, let old = secrets.read(service: keychainService, account: Legacy.account), !old.isEmpty {
+            secrets.write(old, service: keychainService, account: connection.id)
+            return old
+        }
+        return ""
     }
 
     public static func setSecret(_ value: String?, for connection: SwapperConnection, secrets: any SecretStore) {

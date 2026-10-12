@@ -12,7 +12,7 @@ final class SwapperBox: Identifiable {
     fileprivate(set) var status: SwapperStatus?
     fileprivate(set) var lastError: String?
     /// A certificate the user hasn't approved yet (shown in Settings ▸ Model Servers).
-    fileprivate(set) var untrustedFingerprint: String?
+    var untrustedFingerprint: String?
     fileprivate(set) var refreshing = false
     /// The install running on the box (or the last one DSH watched).
     fileprivate(set) var installJob: SwapperStatus.Job?
@@ -98,6 +98,10 @@ final class SparkController {
     }
 
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    /// How often an install is checked on, and how long a box may go without answering before DSH stops
+    /// following it (tests shorten both).
+    @ObservationIgnored var installPollInterval: TimeInterval = 2
+    @ObservationIgnored var installSilenceLimit: TimeInterval = 300
 
     init(config: AppConfig, transport: AppTransport, defaults: UserDefaults = .standard,
          secrets: any SecretStore = KeychainSecretStore()) {
@@ -105,7 +109,7 @@ final class SparkController {
         self.transport = transport
         self.defaults = defaults
         self.secrets = secrets
-        boxes = SwapperConnectionStore.load(defaults: defaults, secrets: secrets).map(SwapperBox.init)
+        boxes = SwapperConnectionStore.load(defaults: defaults, secrets: secrets, routes: config.providers).map(SwapperBox.init)
     }
 
     // MARK: Boxes
@@ -174,7 +178,8 @@ final class SparkController {
         persist()
     }
 
-    /// Trust the certificate a box presented (the user compared the fingerprint).
+    /// Trust the certificate a box presented (the user compared the fingerprint) — for the Swapper and for the
+    /// box's routes on it, whose model front (:11443) presents the same certificate.
     func trustPresentedCertificate(_ box: SwapperBox) {
         guard let fp = box.untrustedFingerprint else { return }
         box.connection.pinnedFingerprint = fp
@@ -182,6 +187,13 @@ final class SparkController {
         box.lastError = nil
         box.client = nil
         persist()
+        let host = box.connection.host
+        for index in config.providers.indices {
+            let route = config.providers[index]
+            guard box.connection.serves(route), let url = URL(string: route.baseURL), url.scheme?.lowercased() == "https",
+                  url.host?.lowercased() == host, route.pinnedCertificate != fp else { continue }
+            config.providers[index].pinnedCertificate = fp
+        }
         Task { await refresh(box) }
     }
 
@@ -321,15 +333,29 @@ final class SparkController {
         }
     }
 
-    /// Poll the install (GET /api/provisioning/job) until it is over, then re-read what the box has.
-    private func watchInstall(_ box: SwapperBox) {
+    /// Poll the install (GET /api/provisioning/job) until it is over, then re-read what the box has. A box that
+    /// stops answering about it for `installSilenceLimit` is no longer followed, and Settings says so.
+    func watchInstall(_ box: SwapperBox) {
         guard box.installWatch == nil else { return }
         box.installWatch = Task { [weak self] in
             defer { box.installWatch = nil }
+            var silentSince: Date?
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let self else { return }
-                guard let job = try? await self.client(box).provisioningJob() else { continue }
+                guard let interval = self?.installPollInterval else { return }
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard let self, !Task.isCancelled else { return }
+                guard let job = try? await self.client(box).provisioningJob() else {
+                    let since = silentSince ?? Date()
+                    silentSince = since
+                    if Date().timeIntervalSince(since) >= self.installSilenceLimit {
+                        let minutes = max(1, Int((self.installSilenceLimit / 60).rounded()))
+                        box.installError = "\(box.name) hasn't answered about the install for \(minutes) minute\(minutes == 1 ? "" : "s"), so DSH stopped following it. It may still be installing — check its web page."
+                        box.installJob = nil
+                        return
+                    }
+                    continue
+                }
+                silentSince = nil
                 box.installJob = job
                 guard !job.isRunning else { continue }
                 if job.state == "done", let key = job.installingModel {
