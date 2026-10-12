@@ -79,4 +79,52 @@ final class InteractiveOnlyTests: XCTestCase {
         }
         XCTAssertEqual(transport.queue.task(task.id)?.status, .complete)
     }
+
+    func testUnattendedWorkUsesNoInteractiveOnlyBackupOrSubagentServer() async throws {
+        let config = transport.config
+        let plan = config.providers[0], spark = config.providers[1]
+        config.makeMain(spark.routeID)
+        config.setBackup(plan.routeID, true)
+        config.setSubagentWorker(plan.routeID, true)
+        transport.refreshFleet()
+
+        XCTAssertEqual(transport.backupProfiles().map(\.name), ["Qwen Coding Plan"], "a chat with you may fall back to it")
+        XCTAssertTrue(transport.backupProfiles(unattended: true).isEmpty, "unattended work may not")
+
+        let ordinary = try await transport.fleet.acquire()
+        XCTAssertEqual(ordinary.label, "Qwen Coding Plan", "a subagent from a chat with you runs on the worker")
+        ordinary.release()
+        transport.fleet.usePrimaryWhenWorkersBusy = false
+        let unattended = try await transport.fleet.acquire(unattended: true)
+        XCTAssertEqual(unattended.label, "Spark", "an unattended one keeps off it")
+        unattended.release()
+    }
+
+    func testAGoalStopsWhenThePrimaryBecomesInteractiveOnly() async throws {
+        let config = transport.config
+        config.makeMain(config.providers[1].routeID)
+        let gate = DispatchSemaphore(value: 0)
+        FakeModelServer.reset { _, _ in
+            gate.wait()
+            return .text("Working on it.")
+        }
+        let vm = transport.newSession(cwd: dir.path)
+        transport.send("/goal build the thing", sessionID: vm.id)
+        var deadline = Date().addingTimeInterval(10)
+        while FakeModelServer.seen.isEmpty {
+            if Date() > deadline { return XCTFail("the goal never started") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        // While round 1 runs, the user makes the Qwen Coding Plan the primary.
+        config.makeMain(config.providers[0].routeID)
+        gate.signal()
+        deadline = Date().addingTimeInterval(10)
+        while vm.running {
+            if Date() > deadline { gate.signal(); return XCTFail("the goal kept going") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(FakeModelServer.seen.count, 1, "no second round on it")
+        XCTAssertTrue(vm.entries.contains { $0.message?.text.hasPrefix("Qwen Coding Plan is for interactive use only") == true })
+    }
 }
+

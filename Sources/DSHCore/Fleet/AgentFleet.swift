@@ -43,17 +43,20 @@ public struct FleetServer: Sendable, Identifiable {
     /// May see sensitive data (your own hardware — see `RoutePrivacy`): only such a server takes a task marked
     /// sensitive.
     public var isPrivate: Bool
+    /// The plan behind it allows interactive use only: it takes no unattended work (the queue, `/goal`).
+    public var interactiveOnly: Bool
     /// Probe the server and return its live client and model. Throws if it can't be reached — a server
     /// that answers no model list at all counts as unreachable. Cancelled with the task that is leasing.
     public var resolve: @Sendable () async throws -> FleetTarget
 
     public init(id: String, label: String, isPrimary: Bool = false, maxParallel: Int = 2, isPrivate: Bool = true,
-                resolve: @escaping @Sendable () async throws -> FleetTarget) {
+                interactiveOnly: Bool = false, resolve: @escaping @Sendable () async throws -> FleetTarget) {
         self.id = id
         self.label = label
         self.isPrimary = isPrimary
         self.maxParallel = maxParallel
         self.isPrivate = isPrivate
+        self.interactiveOnly = interactiveOnly
         self.resolve = resolve
     }
 }
@@ -265,17 +268,21 @@ public final class AgentFleet: @unchecked Sendable {
 
     /// Wait for a free slot on a suitable server and lease it. `preferred` names a server the caller would
     /// like (matched against the label and id); it is a preference, not a demand. A `sensitive` task runs only on
-    /// a private server: a private worker, else the primary when it is private and may take subagents. Throws
-    /// `FleetUnavailableError` when no server can be reached (or, for a sensitive task, none is private), and
+    /// a private server: a private worker, else the primary when it is private and may take subagents. An
+    /// `unattended` one (for the queue or `/goal`) never runs on a server whose plan allows interactive use only.
+    /// Throws `FleetUnavailableError` when no server can be reached (or, for a sensitive task, none is private), and
     /// `CancellationError` when the task is cancelled while it waits (a lease already being resolved is given back).
-    public func acquire(preferred: String? = nil, sensitive: Bool = false) async throws -> FleetLease {
+    public func acquire(preferred: String? = nil, sensitive: Bool = false, unattended: Bool = false) async throws -> FleetLease {
         var tried = Set<String>()
         var lastError: (any Error)?
         while true {
             try Task.checkCancellation()
             let step: Step = try lock.withLock {
                 if configured.isEmpty { throw FleetUnavailableError("No model server is configured.") }
-                let eligible = eligibleLocked(sensitive: sensitive)
+                let eligible = eligibleLocked(sensitive: sensitive, unattended: unattended)
+                if eligible.isEmpty, !sensitive {
+                    throw FleetUnavailableError("No model server here may take unattended work: each one is for interactive use only under its plan's terms.")
+                }
                 // Every server that may take it was tried and failed (or, for a sensitive task, there is none):
                 // say so rather than wait for something that can't come.
                 if eligible.allSatisfy({ tried.contains($0.id) }) {
@@ -384,11 +391,13 @@ public final class AgentFleet: @unchecked Sendable {
     // MARK: Choosing
 
     /// The servers a task may run on: any, or for a sensitive task the private workers — and the primary when it is
-    /// private and may take subagents (it always may when there are no workers at all).
-    private func eligibleLocked(sensitive: Bool) -> [FleetServer] {
-        guard sensitive else { return configured }
+    /// private and may take subagents (it always may when there are no workers at all). Unattended work leaves out
+    /// the servers that are for interactive use only.
+    private func eligibleLocked(sensitive: Bool, unattended: Bool) -> [FleetServer] {
+        let allowed = unattended ? configured.filter { !$0.interactiveOnly } : configured
+        guard sensitive else { return allowed }
         let primaryMay = primaryTakesSensitiveLocked()
-        return configured.filter { $0.isPrivate && (!$0.isPrimary || primaryMay) }
+        return allowed.filter { $0.isPrivate && (!$0.isPrimary || primaryMay) }
     }
 
     private func primaryTakesSensitiveLocked() -> Bool {

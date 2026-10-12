@@ -45,6 +45,9 @@ public struct ToolContext: Sendable {
     public let visionEnabled: Bool
     public let temperature: Double?
     public let maxOutputTokens: Int?
+    /// The run is unattended work (a queue task, `/goal`): subagents keep off servers whose plans allow
+    /// interactive use only.
+    public let unattended: Bool
 
     public init(workspace: URL, policy: PermissionPolicy,
                 client: any LLMClient, registry: ToolRegistry, depth: Int = 0,
@@ -54,7 +57,7 @@ public struct ToolContext: Sendable {
                 backgroundAgents: BackgroundAgents? = nil,
                 fleet: AgentFleet? = nil, roster: AgentRoster? = nil, agentTypes: AgentCatalog? = nil,
                 retry: RetryPolicy? = nil, visionEnabled: Bool = true,
-                temperature: Double? = nil, maxOutputTokens: Int? = nil) {
+                temperature: Double? = nil, maxOutputTokens: Int? = nil, unattended: Bool = false) {
         self.workspace = workspace
         self.policy = policy
         self.client = client
@@ -74,6 +77,7 @@ public struct ToolContext: Sendable {
         self.visionEnabled = visionEnabled
         self.temperature = temperature
         self.maxOutputTokens = maxOutputTokens
+        self.unattended = unattended
     }
 }
 

@@ -54,6 +54,8 @@ public final class AppTransport {
     static let maxAgentQueuedTasksPerChat = 20
     /// Automatic continuations since the user last sent something, per chat.
     @ObservationIgnored private var autoContinuations: [String: Int] = [:]
+    /// Chats carrying on by themselves right now (after their background agents finished): unattended work.
+    @ObservationIgnored private var autoTurns: Set<String> = []
     static let maxAutoContinuations = 3
     /// Where the task queue is persisted.
     @ObservationIgnored private let queueFile: URL
@@ -144,6 +146,8 @@ public final class AppTransport {
         var backups: [ProviderProfile]
         /// The subagent servers and their privacy are in the prompt and the agent tools' descriptions.
         var servers: [SubagentServers.Entry]
+        /// Unattended work (a queue task, `/goal`): no backups or subagent servers that are interactive-only.
+        var unattended: Bool
     }
 
     /// Everything about skills one turn needs: what exists, what's on, and the prompt text.
@@ -894,7 +898,7 @@ public final class AppTransport {
     // MARK: - Engine
 
     private func engine(for sessionID: String, vm: SessionVM, client: any LLMClient,
-                        window: Int, thinking: ThinkingLevel?, skillState: SkillState) -> Engine {
+                        window: Int, thinking: ThinkingLevel?, skillState: SkillState, unattended: Bool) -> Engine {
         // A chat without a project works in its own scratch folder, which the permission preset then confines it to
         // exactly as a project folder would.
         let workspace = vm.workspaceURL ?? scratchFolder(for: vm, create: true)
@@ -945,17 +949,20 @@ public final class AppTransport {
         }
         let registry = builtins.adding(extra)
 
+        var engineConfig = EngineConfig(model: model,
+                                        temperature: (client as? any ProviderClient)?.profile.temperature,
+                                        maxOutputTokens: (client as? any ProviderClient)?.profile.maxOutputTokens,
+                                        contextWindow: window,
+                                        thinking: thinking,
+                                        visionEnabled: visionOn(for: (client as? any ProviderClient)?.profile),
+                                        retry: retryPolicy)
+        // Subagents of a queue task or a /goal keep off servers that are for interactive use only.
+        engineConfig.unattended = unattended
         let engine = Engine(
             client: client,
             registry: registry,
             systemPrompt: prompt,
-            config: .init(model: model,
-                          temperature: (client as? any ProviderClient)?.profile.temperature,
-                          maxOutputTokens: (client as? any ProviderClient)?.profile.maxOutputTokens,
-                          contextWindow: window,
-                          thinking: thinking,
-                          visionEnabled: visionOn(for: (client as? any ProviderClient)?.profile),
-                          retry: retryPolicy),
+            config: engineConfig,
             workspace: workspace,
             policy: policy,
             permissionGate: { [weak self] id, name, detail in
@@ -1042,7 +1049,11 @@ public final class AppTransport {
         autoContinuations[vm.id, default: 0] += 1
         let modelText = "(Automatic — not from the user.) Your background agents finished:\n\n"
             + BackgroundAgents.notice(for: unseen) + "\n\nContinue the task with their results."
-        runTasks[vm.id] = Task { await runTurn(vm, text: "🤖 Background agents finished — continuing", modelText: modelText) }
+        runTasks[vm.id] = Task {
+            autoTurns.insert(vm.id)
+            defer { autoTurns.remove(vm.id) }
+            await runTurn(vm, text: "🤖 Background agents finished — continuing", modelText: modelText)
+        }
     }
 
     public func stopBackgroundAgent(sessionID: String, id: String) {
@@ -1542,6 +1553,13 @@ public final class AppTransport {
         var markerMisplaced = false
         while true {
             if Task.isCancelled { return .stopped }
+            // The primary became an interactive-only plan while the goal ran (the user switched it): no more
+            // unattended rounds on it.
+            if let route = config.interactiveOnlyMain {
+                let why = auto ? Self.interactiveOnlyQueueMessage(route) : Self.interactiveOnlyGoalMessage(route)
+                notice(why, error: true)
+                return .blocked(why)
+            }
             let modelText: String
             let displayText: String
             if !kickedOff {
@@ -1654,11 +1672,12 @@ public final class AppTransport {
         let window = contextLimit()
         let thinking = vm.thinking
         let skillState = self.skillState(for: vm)
-        let backups = backupProfiles()
+        let unattended = isUnattended(vm)
+        let backups = backupProfiles(unattended: unattended)
         let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset,
                             skills: skillState.signature, computerTools: config.computerToolsEnabled,
                             vision: visionOn(for: profile), vault: vault.revision, agents: agentsStamp(for: vm),
-                            backups: backups, servers: subagentServerEntries)
+                            backups: backups, servers: subagentServerEntries, unattended: unattended)
         if let previous = engineKeys[sessionID], previous.profile.model != profile.model {
             vm.note("The server is now serving `\(profile.model)` (was `\(previous.profile.model)`) — switched to it, \(window.formatted())-token window.")
         }
@@ -1667,7 +1686,7 @@ public final class AppTransport {
             engine = existing
         } else {
             engine = self.engine(for: sessionID, vm: vm, client: mainClient(profile, backups: backups, sessionID: sessionID),
-                                 window: window, thinking: thinking, skillState: skillState)
+                                 window: window, thinking: thinking, skillState: skillState, unattended: unattended)
             engineKeys[sessionID] = key
         }
         retryRoute[sessionID] = nil
@@ -2141,19 +2160,27 @@ public final class AppTransport {
         // Compare with the route the run is on now (a retry may have moved it).
         guard profile != (retryRoute[sessionID] ?? engineKeys[sessionID]?.profile) else { return nil }
         retryRoute[sessionID] = profile
-        return (mainClient(profile, backups: backupProfiles(), sessionID: sessionID), profile.model)
+        let unattended = sessions.first(where: { $0.id == sessionID }).map(isUnattended) ?? false
+        return (mainClient(profile, backups: backupProfiles(unattended: unattended), sessionID: sessionID), profile.model)
     }
 
     // MARK: - Backups
 
-    /// The routes that take over when the main model fails before answering, with their keys.
-    func backupProfiles() -> [ProviderProfile] {
-        config.backupRoutes.map { route in
+    /// The routes that take over when the main model fails before answering, with their keys. Unattended work
+    /// leaves out the ones whose plans allow interactive use only.
+    func backupProfiles(unattended: Bool = false) -> [ProviderProfile] {
+        config.backupRoutes.filter { !unattended || !$0.isInteractiveOnly }.map { route in
             var profile = route
             let key = config.apiKey(for: route)
             profile.apiKey = key.isEmpty ? nil : key
             return profile
         }
+    }
+
+    /// Whether a chat is doing unattended work: a queue task, a `/goal` that keeps going without the user, or
+    /// carrying on by itself after its background agents finished.
+    func isUnattended(_ vm: SessionVM) -> Bool {
+        vm.goal != nil || queueSessions[vm.id] != nil || autoTurns.contains(vm.id)
     }
 
     /// A chat's client for the main model: with the backups, which take over a request the main model fails

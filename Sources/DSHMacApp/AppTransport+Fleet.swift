@@ -22,6 +22,7 @@ extension AppTransport {
             servers.append(FleetServer(
                 id: main.routeID, label: Self.routeLabel(main), isPrimary: true,
                 maxParallel: Self.clamp(main.subagentParallel ?? 4), isPrivate: main.isPrivateRoute,
+                interactiveOnly: main.isInteractiveOnly,
                 // The main route is probed the way the chat probes it (and shares its cache).
                 resolve: { [weak self] in
                     guard let self else { throw LLMError.noModel }
@@ -32,6 +33,7 @@ extension AppTransport {
             servers.append(FleetServer(
                 id: route.routeID, label: Self.routeLabel(route), isPrimary: false,
                 maxParallel: Self.clamp(route.subagentParallel ?? 2), isPrivate: route.isPrivateRoute,
+                interactiveOnly: route.isInteractiveOnly,
                 resolve: { [weak self] in
                     guard let self else { throw LLMError.noModel }
                     return try await self.resolveWorkerTarget(route)

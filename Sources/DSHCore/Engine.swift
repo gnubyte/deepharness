@@ -159,6 +159,8 @@ public struct EngineConfig: Sendable {
     /// 0 for a chat's own engine, 1 for a subagent (handed to the tools as
     /// `ToolContext.depth`, which is what stops a subagent spawning subagents).
     public var depth: Int = 0
+    /// Unattended work (a queue task, `/goal`): handed to the tools as `ToolContext.unattended`.
+    public var unattended = false
 
     public init(maxIterations: Int = 30, toolTimeout: TimeInterval = 300,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
@@ -319,7 +321,8 @@ public struct Engine: Sendable {
                         backgroundAgents: backgroundAgents,
                         fleet: fleet, roster: roster, agentTypes: agentTypes,
                         retry: config.retry, visionEnabled: config.visionEnabled,
-                        temperature: config.temperature, maxOutputTokens: config.maxOutputTokens)
+                        temperature: config.temperature, maxOutputTokens: config.maxOutputTokens,
+                        unattended: config.unattended)
         }
 
         for iteration in 0..<config.maxIterations {

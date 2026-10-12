@@ -117,6 +117,32 @@ final class SensitiveDelegationTests: XCTestCase {
         lease.release()
     }
 
+    func testUnattendedWorkKeepsOffInteractiveOnlyServers() async throws {
+        let fleet = AgentFleet()
+        fleet.usePrimaryWhenWorkersBusy = false
+        fleet.configure([server("spark", primary: true, private: true),
+                         FleetServer(id: "qwen", label: "qwen", maxParallel: 2, isPrivate: false, interactiveOnly: true) {
+                             FleetTarget(client: FleetReportsClient("from qwen"), model: "qwen", contextWindow: 8_000)
+                         }])
+        let ordinary = try await fleet.acquire()
+        XCTAssertEqual(ordinary.label, "qwen")
+        ordinary.release()
+        let unattended = try await fleet.acquire(unattended: true)
+        XCTAssertEqual(unattended.label, "spark", "the primary, as if there were no workers")
+        unattended.release()
+        // Nothing but interactive-only servers: said plainly.
+        let only = AgentFleet()
+        only.configure([FleetServer(id: "qwen", label: "qwen", isPrimary: true, interactiveOnly: true) {
+            FleetTarget(client: FleetReportsClient("x"), model: "qwen", contextWindow: 8_000)
+        }])
+        do {
+            _ = try await only.acquire(unattended: true)
+            XCTFail("nothing may take it")
+        } catch let error as FleetUnavailableError {
+            XCTAssertTrue(error.message.contains("interactive use only"), error.message)
+        }
+    }
+
     // MARK: The tools
 
     func testWithoutAFleetASensitiveTaskRunsOnlyOnAPrivateModel() async throws {
