@@ -64,10 +64,15 @@ public struct OpenAIClient: LLMClient {
     /// A certificate the system doesn't trust, and that isn't this route's pin, in plain words: it fails at
     /// once (retrying can't fix it) and says which certificate it was, so the user can compare it.
     private func certificateError(_ error: Error, url: URL) -> Error {
+        Self.certificateError(error, host: url.host, trust: trust)
+    }
+
+    /// Only a host whose certificate was turned down counts: a TLS connection that failed for any other reason
+    /// (a dropped network mid-handshake also reads -1200) stays an ordinary error and is retried.
+    static func certificateError(_ error: Error, host: String?, trust: PinningDelegate) -> Error {
         guard let failure = error as? URLError, PinningDelegate.certificateFailures.contains(failure.code),
-              let seen = trust.fingerprint(host: url.host),
-              !CertificatePin.matches(seen, profile.pinnedCertificate) else { return error }
-        return LLMError.rejected(status: Self.untrustedCertificateStatus,
+              trust.refused(host: host), let seen = trust.fingerprint(host: host) else { return error }
+        return LLMError.rejected(status: untrustedCertificateStatus,
                                  message: "The server's certificate isn't trusted (SHA-256 \(seen)).",
                                  body: "certificate not trusted", permanent: true)
     }

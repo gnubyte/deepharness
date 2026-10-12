@@ -107,6 +107,25 @@ final class CertificatePinningTests: XCTestCase {
         XCTAssertTrue(error.errorDescription?.hasPrefix("The server's certificate isn't trusted (SHA-256 ") == true)
     }
 
+    func testOnlyACertificateThatWasTurnedDownMakesAFailedConnectionACertificateError() throws {
+        let dropped = URLError(.secureConnectionFailed)
+        let trust = PinningDelegate(pinned: nil)
+        // The system trusted the host's certificate: a failed TLS connection later is just a failed connection.
+        trust.note(host: "api.example.com", fingerprint: pin, systemTrusted: true, decision: .accept)
+        XCTAssertTrue(OpenAIClient.certificateError(dropped, host: "api.example.com", trust: trust) is URLError,
+                      "left as it is, so it is retried")
+        // It didn't, and no pin vouched for it: a certificate error that isn't retried.
+        trust.note(host: "spark.local", fingerprint: other, systemTrusted: false, decision: .systemDecides)
+        let refused = try XCTUnwrap(OpenAIClient.certificateError(dropped, host: "spark.local", trust: trust) as? LLMError)
+        XCTAssertEqual(refused.errorDescription, "The server's certificate isn't trusted (SHA-256 \(other)).")
+        XCTAssertEqual(RequestRetry.disposition(for: refused), .fail)
+        XCTAssertTrue(OpenAIClient.certificateError(URLError(.timedOut), host: "spark.local", trust: trust) is URLError)
+        // The pin vouched for it: a failure afterwards is a connection problem again.
+        let pinned = PinningDelegate(pinned: pin)
+        pinned.note(host: "spark.local", fingerprint: pin, systemTrusted: false, decision: .accept)
+        XCTAssertTrue(OpenAIClient.certificateError(dropped, host: "spark.local", trust: pinned) is URLError)
+    }
+
     func testOlderSavedRoutesDecodeWithoutAPin() throws {
         let json = #"{"kind":"openAICompat","name":"Spark","baseURL":"http://spark.local:8002/v1","model":"qwen"}"#
         let route = try JSONDecoder().decode(ProviderProfile.self, from: Data(json.utf8))

@@ -92,6 +92,8 @@ final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var _seen: String?
     private var byHost: [String: String] = [:]
+    /// Hosts whose last certificate the system didn't trust and no pin vouched for.
+    private var refusedHosts: Set<String> = []
 
     init(pinned: String?, mode: PinningMode = .systemThenPin) {
         self.pinned = CertificatePin.normalized(pinned) ?? pinned
@@ -106,6 +108,26 @@ final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
     func fingerprint(host: String?) -> String? {
         guard let host else { return nil }
         return lock.withLock { byHost[host.lowercased()] }
+    }
+
+    /// Whether the certificate `host` presented last was turned down: the system didn't trust it and it wasn't the
+    /// pin. Only then is a failed TLS connection to it a certificate problem — otherwise it is just a failed
+    /// connection, worth trying again.
+    func refused(host: String?) -> Bool {
+        guard let host else { return false }
+        return lock.withLock { refusedHosts.contains(host.lowercased()) }
+    }
+
+    /// Remember what a challenge from `host` showed and what was decided.
+    func note(host: String, fingerprint: String?, systemTrusted: Bool?, decision: TrustDecision) {
+        let host = host.lowercased()
+        lock.withLock {
+            if let fingerprint {
+                byHost[host] = fingerprint
+                if mode == .pinOnly || systemTrusted == false { _seen = fingerprint }
+            }
+            if decision == .accept { refusedHosts.remove(host) } else { refusedHosts.insert(host) }
+        }
     }
 
     /// The decision, apart from the TLS machinery so it can be tested. `systemTrusted` is only asked when it
@@ -131,19 +153,13 @@ final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
             return
         }
         let fp = CertificatePin.fingerprint(trust)
-        let host = challenge.protectionSpace.host.lowercased()
         var systemTrusted: Bool?
         let decision = Self.decide(fingerprint: fp, pinned: pinned, mode: mode) {
             let trusted = SecTrustEvaluateWithError(trust, nil)
             systemTrusted = trusted
             return trusted
         }
-        lock.withLock {
-            if let fp {
-                byHost[host] = fp
-                if mode == .pinOnly || systemTrusted == false { _seen = fp }
-            }
-        }
+        note(host: challenge.protectionSpace.host, fingerprint: fp, systemTrusted: systemTrusted, decision: decision)
         switch decision {
         case .accept: completionHandler(.useCredential, URLCredential(trust: trust))
         case .systemDecides: completionHandler(.performDefaultHandling, nil)
@@ -151,7 +167,8 @@ final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
         }
     }
 
-    /// URL errors that mean "the certificate wasn't trusted".
+    /// URL errors that can mean "the certificate wasn't trusted" (a failed TLS connection, -1200, among them — so
+    /// they count only for a host whose certificate was turned down: see `refused(host:)`).
     static let certificateFailures: Set<URLError.Code> = [
         .serverCertificateUntrusted, .serverCertificateHasUnknownRoot, .serverCertificateHasBadDate,
         .serverCertificateNotYetValid, .secureConnectionFailed,
