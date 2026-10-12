@@ -264,7 +264,10 @@ public enum SkillImporter {
                 }
                 if name == "agents", dir.lastPathComponent == ".claude" || fm.fileExists(atPath: dir.appendingPathComponent(".claude-plugin").path) || dir.standardizedFileURL == folder.standardizedFileURL {
                     let count = ((try? fm.contentsOfDirectory(atPath: entry.path)) ?? []).filter { $0.hasSuffix(".md") }.count
-                    if count > 0 { notes.append("\(count) Claude subagent definition\(count == 1 ? "" : "s") in \(name)/ can't be imported (DSH has no subagent files).") }
+                    if count > 0 {
+                        let noun = count == 1 ? "definition" : "definitions"
+                        notes.append("\(count) Claude subagent \(noun) in \(name)/ stay where they are. DSH reads Claude agent files in place (the project's .claude/agents and ~/.claude/agents) and does not copy them into the skill store.")
+                    }
                     continue
                 }
                 walk(entry, depth: depth + 1)

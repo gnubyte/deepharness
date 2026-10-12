@@ -151,10 +151,49 @@ public final class SessionVM: Identifiable {
     public var retry: RetryState?
     /// Background subagents this chat launched (running and finished).
     public var backgroundJobs: [BackgroundAgents.Job] = []
+    /// Every subagent this chat started — waiting for a server, working, finished — and which model
+    /// server each runs on, so the bar above the composer can show who is doing what, and where.
+    public var agentRuns: [AgentRun] = []
+    public var runningAgentRuns: [AgentRun] { agentRuns.filter(\.isRunning) }
+
+    /// A run started, moved or ended: add it or replace it (the roster keeps them in start order).
+    public func upsertAgent(_ run: AgentRun) {
+        if let index = agentRuns.firstIndex(where: { $0.id == run.id }) {
+            agentRuns[index] = run
+        } else if !run.id.isEmpty {
+            agentRuns.append(run)
+        }
+        // Bounded: the oldest finished runs go first.
+        if agentRuns.count > 60, let old = agentRuns.firstIndex(where: { !$0.isRunning }) { agentRuns.remove(at: old) }
+    }
     public var runningBackgroundJobs: [BackgroundAgents.Job] { backgroundJobs.filter { $0.status == .running } }
     /// The last `/goal` started in this chat and not yet completed; a bare
     /// `/goal` resumes it.
     public var lastGoal: String?
+    /// What the sensitive-data shield masked before sending, by the assistant entry it belongs to (a chip on that
+    /// turn). Counts only — never the values.
+    public var masked: [String: ShieldReport] = [:]
+    /// A report that came before the turn's answer did (a request that only called tools).
+    public var pendingMask: ShieldReport?
+    /// The chat was told that pictures and files that aren't plain text can't be checked.
+    public var toldAboutUnchecked = false
+    /// The plan a plan-mode run handed to `exit_plan_mode` (shown in the plan panel).
+    public var proposedPlan: String?
+    /// The plan panel already opened by itself for this chat (it does that only the first time).
+    public var planAutoOpened = false
+
+    /// Whether the chat has anything for the plan panel.
+    public var hasPlan: Bool { !todos.isEmpty || proposedPlan != nil || goal != nil || lastGoal != nil || !agentRuns.isEmpty }
+
+    /// The assistant entry of the turn in progress: the newest one after the last user message.
+    public var currentAnswerID: String? {
+        for entry in entries.reversed() {
+            guard case .message(let body) = entry.kind else { continue }
+            if body.role == .user { return nil }
+            if body.role == .assistant { return entry.id }
+        }
+        return nil
+    }
 
     public struct GoalState: Hashable, Sendable {
         public var text: String
@@ -199,6 +238,13 @@ public final class SessionVM: Identifiable {
         guard let cwd, !cwd.isEmpty else { return nil }
         return URL(fileURLWithPath: cwd)
     }
+
+    /// A chat without a project (a regular conversation).
+    public var isPlain: Bool { workspaceURL == nil }
+
+    /// For a chat without a project: a folder it works in other than its own scratch folder (a queue task from a
+    /// chat without a project works in that chat's folder). Nil = its own.
+    public var workFolder: String?
 
     public var projectName: String? {
         workspaceURL?.lastPathComponent

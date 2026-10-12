@@ -15,10 +15,10 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
             ProviderSettings()
-                .tabItem { Label("Models", systemImage: "cpu") }
+                .tabItem { Label("AI Models", systemImage: "cpu") }
                 .tag(SettingsTab.models)
-            SparkSettings()
-                .tabItem { Label("Spark", systemImage: "bolt.horizontal.circle") }
+            SwapperSettings()
+                .tabItem { Label("Model Servers", systemImage: "server.rack") }
                 .tag(SettingsTab.spark)
             SkillsManagerView()
                 .tabItem { Label("Skills", systemImage: "graduationcap") }
@@ -30,7 +30,7 @@ struct SettingsView: View {
                 .tabItem { Label("Editor", systemImage: "text.cursor") }
                 .tag(SettingsTab.editor)
         }
-        .frame(width: 780, height: 600)
+        .frame(width: 860, height: 640)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") { dismiss() }
@@ -86,95 +86,9 @@ private struct GeneralSettings: View {
     }
 }
 
-// MARK: - Providers
+// MARK: - Provider editor
 
-private struct ProviderSettings: View {
-    @Environment(AppModel.self) private var model
-    @State private var editing: ProviderProfile?
-    @State private var probeResult: String?
-
-    private var config: AppConfig { model.config }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            List {
-                ForEach(config.providers, id: \.routeID) { provider in
-                    HStack(spacing: 10) {
-                        Image(systemName: provider.kind.icon)
-                            .foregroundStyle(config.activeRoute == provider.routeID ? Color.accentColor : .secondary)
-                            .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(provider.name).font(.callout.weight(.medium))
-                            Text("\(provider.model) · \(provider.baseURL)")
-                                .font(.caption).foregroundStyle(.secondary)
-                                .lineLimit(1).truncationMode(.middle)
-                        }
-                        Spacer()
-                        if config.activeRoute == provider.routeID {
-                            Text("Active")
-                                .font(.system(size: 10, weight: .semibold))
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(Color.accentColor.opacity(0.18), in: Capsule())
-                        } else {
-                            Button("Use") { config.activeRoute = provider.routeID }
-                                .controlSize(.small)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { editing = provider }
-                    .contextMenu {
-                        Button("Edit…") { editing = provider }
-                        Button("Remove", role: .destructive) { config.removeProvider(provider) }
-                    }
-                }
-            }
-
-            Divider()
-            HStack {
-                Button {
-                    editing = ProviderProfile(kind: .openAICompat, name: "New server",
-                                              baseURL: "http://127.0.0.1:8002/v1", model: "")
-                } label: {
-                    Label("Add", systemImage: "plus")
-                }
-                Button("Test Active") { Task { await test() } }
-                    .disabled(config.activeProvider == nil)
-                if let probeResult {
-                    Text(probeResult).font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.tail)
-                }
-                Spacer()
-                Button("Wizard…") { model.showWizard = true }
-            }
-            .padding(10)
-        }
-        .sheet(item: Binding(get: { editing.map(EditableProvider.init) },
-                             set: { editing = $0?.profile })) { wrapper in
-            ProviderEditor(profile: wrapper.profile)
-        }
-    }
-
-    private func test() async {
-        guard let provider = config.activeProvider else { return }
-        probeResult = "Testing…"
-        do {
-            let models = try await OpenAIClient(profile: provider).listModels()
-            probeResult = "OK — \(models.count) model(s)"
-        } catch {
-            probeResult = AppTransport.describe(error)
-        }
-    }
-}
-
-/// `sheet(item:)` needs Identifiable; `ProviderProfile` deliberately is not.
-private struct EditableProvider: Identifiable {
-    let profile: ProviderProfile
-    var id: String { profile.routeID }
-    init(_ profile: ProviderProfile) { self.profile = profile }
-}
-
-private struct ProviderEditor: View {
+struct ProviderEditor: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
@@ -185,6 +99,8 @@ private struct ProviderEditor: View {
     @State private var headerRows: [HeaderRow] = []
     @State private var reasoning: String = ""
     @State private var detected: String?
+    /// A certificate the server presented that this Mac doesn't trust (offered for pinning).
+    @State private var untrusted: String?
     private let original: ProviderProfile
 
     init(profile: ProviderProfile) {
@@ -200,18 +116,27 @@ private struct ProviderEditor: View {
             Form {
                 Section("API") {
                     Picker("Kind", selection: $draft.kind) {
-                        ForEach(ProviderProfile.Kind.allCases, id: \.self) { kind in
+                        ForEach(draft.kind == .bedrock ? [ProviderProfile.Kind.bedrock] : ProviderProfile.Kind.manual, id: \.self) { kind in
                             Text(kind.label).tag(kind)
                         }
                     }
+                    .disabled(draft.kind == .bedrock)
                     TextField("Name", text: $draft.name)
                     TextField("Base URL", text: $draft.baseURL)
                         .font(Theme.mono(11))
+                        .disabled(draft.kind == .bedrock)
+                    if draft.kind == .bedrock {
+                        Text("Bedrock's endpoint for the Region. To change the Region, model or AWS sign-in, use Change… on the Models page.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     if draft.needsAPIKey {
                         SecureField("API key", text: $apiKey)
                         Text("Stored locally and only used to make API requests from this app.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                }
+                if draft.kind != .bedrock, draft.pinnedCertificate != nil || untrusted != nil {
+                    certificateSection
                 }
                 Section("Model") {
                     TextField("Model", text: $draft.model)
@@ -248,7 +173,12 @@ private struct ProviderEditor: View {
                     Text("Sent as enable_thinking / reasoning_effort. Each chat can override it from the composer or with /think.")
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-
+                    Toggle("Interactive use only (plan terms)", isOn: Binding(
+                        get: { draft.interactiveOnly ?? false },
+                        set: { draft.interactiveOnly = $0 ? true : nil }))
+                    Text("Some plans (Alibaba's Qwen Coding Plan) allow only interactive use: the task queue, /goal and other unattended work won't run on this route while it's the primary.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Section("Custom Headers") {
                     ForEach($headerRows) { $row in
@@ -287,17 +217,50 @@ private struct ProviderEditor: View {
         .onAppear { apiKey = model.config.apiKey(for: original) }
     }
 
+    /// The self-signed certificate this route trusts, with a way to forget it — or, when the server showed one
+    /// this Mac doesn't trust, the fingerprint and a way to trust it.
+    @ViewBuilder
+    private var certificateSection: some View {
+        Section("Security certificate") {
+            if let pin = draft.pinnedCertificate {
+                LabeledContent("Trusted (SHA-256)") {
+                    HStack(alignment: .top) {
+                        Text(pin).font(Theme.mono(10)).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Forget") { draft.pinnedCertificate = nil }
+                    }
+                }
+                Text("The server uses its own (self-signed) certificate, trusted by this fingerprint. Forget it to trust only certificates your Mac trusts.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let fingerprint = untrusted {
+                Text("The server showed a certificate your Mac doesn't trust. Trust it only if this fingerprint matches the server's own:")
+                    .font(.caption).fixedSize(horizontal: false, vertical: true)
+                Text(fingerprint).font(Theme.mono(10)).textSelection(.enabled)
+                Button("Trust This Certificate") {
+                    draft.pinnedCertificate = fingerprint
+                    untrusted = nil
+                    status = nil
+                }
+            }
+        }
+    }
+
     private func discover() async {
         status = "Connecting…"
+        untrusted = nil
         var probe = draft
         probe.apiKey = apiKey.isEmpty ? nil : apiKey
         do {
-            models = try await OpenAIClient(profile: probe).listModels().sorted()
+            models = try await ProviderClients.make(probe).listModels().sorted()
             status = "Found \(models.count) model(s)"
             if draft.model.isEmpty, let first = models.first { draft.model = first }
         } catch {
             models = []
             status = AppTransport.describe(error)
+            if case LLMError.rejected(OpenAIClient.untrustedCertificateStatus, _, _, _) = error,
+               let url = URL(string: probe.endpoint(path: "models")) {
+                untrusted = await CertificatePin.probe(url)
+            }
         }
     }
 
@@ -305,7 +268,7 @@ private struct ProviderEditor: View {
         detected = "Asking the server…"
         var probe = draft
         probe.apiKey = apiKey.isEmpty ? nil : apiKey
-        let info = await OpenAIClient(profile: probe).modelInfo()
+        let info = await ProviderClients.make(probe).modelInfo(nil)
         if let limit = info?.contextWindow {
             let follow = (info?.id).flatMap { $0 != draft.model ? " (serving `\($0)`)" : nil } ?? ""
             detected = "Detected \(limit.formatted()) tokens\(follow). Leave the field blank to always use the live value."
@@ -319,16 +282,44 @@ private struct ProviderEditor: View {
     private func save() {
         var profile = draft
         profile.apiKey = nil
+        profile.name = profile.name.trimmingCharacters(in: .whitespaces)
+        profile.model = profile.model.trimmingCharacters(in: .whitespaces)
+        profile.baseURL = profile.baseURL.trimmingCharacters(in: .whitespaces)
+        let config = model.config
+
+        if profile.name.isEmpty || profile.model.isEmpty || profile.baseURL.isEmpty {
+            status = "A name, a base URL and a model are required."
+            return
+        }
+        guard let url = URL(string: profile.baseURL), ["http", "https"].contains(url.scheme?.lowercased()) else {
+            status = "The base URL must start with http:// or https://."
+            return
+        }
+        // A route is identified by its name and model: two Sparks both called "DGX Spark" serving
+        // the same model would silently become one. Say so instead of overwriting the other.
+        let existed = config.providers.contains { $0.routeID == original.routeID }
+        if profile.routeID != original.routeID || !existed,
+           let clash = config.providers.first(where: { $0.routeID == profile.routeID }) {
+            status = "“\(clash.name)” already serves \(clash.model). Give this route a different name (for example “Spark 2”)."
+            return
+        }
         let headers = headerRows
             .filter { !$0.key.trimmingCharacters(in: .whitespaces).isEmpty }
             .reduce(into: [String: String]()) { $0[$1.key] = $1.value }
         profile.customHeaders = headers.isEmpty ? nil : headers
         profile.reasoningEffort = reasoning.isEmpty ? nil : reasoning
-        if original.routeID != profile.routeID {
-            model.config.removeProvider(original)
+        // A new address may change what "private" means for this route (see `AppConfig.privacy(after:was:)`).
+        profile.isPrivate = AppConfig.privacy(after: profile, was: original)
+
+        // A new route becomes the main model; editing an existing one leaves it what it was — the
+        // main model, a spare, or a subagent server — in its place in the list.
+        if existed {
+            config.replace(original, with: profile)
+            if profile.routeID != original.routeID { config.setAPIKey("", for: original) }
+        } else {
+            config.activate(profile)
         }
-        model.config.activate(profile)
-        model.config.setAPIKey(apiKey, for: profile)
+        config.setAPIKey(apiKey, for: profile)
         model.transport.resetRouteCache()
         dismiss()
     }
@@ -463,114 +454,5 @@ private struct EditorSettings: View {
             }
         }
         .formStyle(.grouped)
-    }
-}
-
-
-// MARK: - Spark
-
-/// Where the Spark Swapper lives and how to log in to it.
-private struct SparkSettings: View {
-    @Environment(AppModel.self) private var model
-    @State private var url = ""
-    @State private var user = ""
-    @State private var pass = ""
-    @State private var testing = false
-    /// Local confirmation (the chat window has its own; two alerts on one
-    /// shared flag would fight while this sheet is up).
-    @State private var pending: SwapperStatus.Model?
-
-    var body: some View {
-        let spark = model.spark
-        Form {
-            Section {
-                TextField("Address", text: $url, prompt: Text("https://192.168.68.69:8999"))
-                    .font(Theme.mono(11))
-                TextField("Username", text: $user)
-                SecureField("Password", text: $pass)
-                HStack {
-                    Button(testing ? "Connecting…" : "Save & Connect") { Task { await connect() } }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(testing || url.isEmpty || user.isEmpty || pass.isEmpty)
-                    if spark.pinnedFingerprint != nil {
-                        Button("Forget Certificate") { spark.pinnedFingerprint = nil }
-                    }
-                }
-            } header: {
-                Text("Spark Swapper")
-            } footer: {
-                Text("The login you created on the swapper's web page. The password is kept in your Keychain.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            if let fp = spark.untrustedFingerprint {
-                Section("Certificate") {
-                    Text("The swapper uses a self-signed certificate. Trust it if this fingerprint matches the server's (`sudo openssl x509 -in /etc/spark-swapper/tls.crt -noout -fingerprint -sha256`):")
-                        .font(.caption).fixedSize(horizontal: false, vertical: true)
-                    Text(fp).font(Theme.mono(10)).textSelection(.enabled)
-                    Button("Trust This Certificate") { spark.trustPresentedCertificate() }
-                }
-            }
-
-            Section("Status") {
-                if let err = spark.lastError, spark.untrustedFingerprint == nil {
-                    Label(err, systemImage: "exclamationmark.triangle").foregroundStyle(Theme.errorTint)
-                        .font(.caption)
-                }
-                if let s = spark.status {
-                    if let line = spark.progressLine {
-                        Label(line, systemImage: "hourglass")
-                    }
-                    ForEach(s.ordered) { m in
-                        HStack {
-                            Image(systemName: m.key == s.active ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(m.key == s.active ? Theme.successTint : .secondary)
-                            VStack(alignment: .leading) {
-                                Text(m.title)
-                                Text("\(m.served_id) · \(m.context.formatted()) ctx · \(m.engine ?? "")")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if m.key != s.active {
-                                Button("Switch") { pending = m }
-                                    .disabled(s.isSwitching)
-                            }
-                        }
-                    }
-                    if let oc = s.openclaw_primary {
-                        Text("OpenClaw → \(oc)").font(.caption).foregroundStyle(.secondary)
-                    }
-                } else if spark.isConfigured {
-                    Text("Not connected yet.").foregroundStyle(.secondary)
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .onAppear {
-            url = spark.url
-            user = spark.username
-            pass = spark.password
-        }
-        .alert("Switch the Spark to \(pending?.title ?? "")?",
-               isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
-            Button("Switch") {
-                if let t = pending { Task { await spark.swap(to: t.key) } }
-                pending = nil
-            }
-            Button("Cancel", role: .cancel) { pending = nil }
-        } message: {
-            Text("The current model stops and the new one loads (Flash takes about 11 minutes). Chats and OpenClaw follow automatically.")
-        }
-    }
-
-    private func connect() async {
-        testing = true
-        defer { testing = false }
-        let spark = model.spark
-        spark.url = url.trimmingCharacters(in: .whitespaces)
-        spark.username = user.trimmingCharacters(in: .whitespaces)
-        spark.password = pass
-        await spark.refresh()
-        spark.startMonitoring()
     }
 }

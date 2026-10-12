@@ -45,6 +45,8 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Chat") { model.newChat() }
                 .keyboardShortcut("n", modifiers: .command)
+            Button("New Chat Without a Project") { model.newPlainChat() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("Open Project Folder…") { model.chooseProject() }
                 .keyboardShortcut("o", modifiers: .command)
             Divider()
@@ -55,6 +57,9 @@ struct AppCommands: Commands {
             .keyboardShortcut("t", modifiers: [.command, .shift])
             .disabled(model.project == nil)
         }
+
+        // Nothing here prints; leaving Page Setup out keeps ⇧⌘P for the plan.
+        CommandGroup(replacing: .printItem) {}
 
         CommandGroup(replacing: .saveItem) {
             Button("Save") { model.code.saveActive() }
@@ -95,6 +100,8 @@ struct AppCommands: Commands {
             Button("Code Mode") { model.mode = .code }
                 .keyboardShortcut("2", modifiers: .command)
             Divider()
+            Button(model.config.planPanelOpen ? "Hide Plan" : "Show Plan") { model.togglePlan() }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
             Button("Toggle File Tree") { model.code.showTree.toggle() }
                 .keyboardShortcut("b", modifiers: .command)
             Button("Toggle Terminal") {
@@ -116,6 +123,8 @@ struct AppCommands: Commands {
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// The banner's "Sign in to AWS…" is running (the browser is open).
+    @State private var signingInToAWS = false
 
     var body: some View {
         @Bindable var model = model
@@ -124,8 +133,15 @@ struct RootView: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 340)
         } detail: {
-            detail
-                .toolbar { toolbar }
+            HStack(spacing: 0) {
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if model.config.planPanelOpen {
+                    PlanPanelColumn()
+                        .transition(.move(edge: .trailing))
+                }
+            }
+            .toolbar { toolbar }
         }
         .inspector(isPresented: $model.showQueuePanel) {
             QueueView()
@@ -144,6 +160,15 @@ struct RootView: View {
         .sheet(isPresented: $model.showVault) {
             VaultView().environment(model)
         }
+        .sheet(item: $model.bedrockGuide) { request in
+            BedrockGuideView(request: request, appModel: model).environment(model)
+        }
+        .sheet(item: $model.swapperGuide) { request in
+            SwapperGuideView(request: request, appModel: model).environment(model)
+        }
+        .sheet(item: $model.planGuide) { request in
+            PlanGuideView(request: request, appModel: model).environment(model)
+        }
         .overlay(alignment: .top) { banner }
     }
 
@@ -156,7 +181,7 @@ struct RootView: View {
             } else {
                 EmptyStateView(icon: "sparkles",
                                title: "DSH",
-                               message: "A native coding agent. Open a project folder, then start a chat.") {
+                               message: "Chat with your AI, or open a folder to work on code.") {
                     HStack {
                         Button("Open Folder…") { model.chooseProject() }
                         Button("New Chat") { model.newChat() }
@@ -216,6 +241,15 @@ struct RootView: View {
 
         ToolbarItem {
             Button {
+                model.togglePlan()
+            } label: {
+                Label("Plan", systemImage: "checklist")
+            }
+            .help(model.config.planPanelOpen ? "Hide the plan (⇧⌘P)" : "Show the plan (⇧⌘P)")
+        }
+
+        ToolbarItem {
+            Button {
                 model.showQueuePanel.toggle()
             } label: {
                 Label("Task Queue", systemImage: model.transport.queueRunningNow
@@ -239,6 +273,27 @@ struct RootView: View {
         }
     }
 
+    /// The banner's "Sign in to AWS…": the AWS sign-in behind a Bedrock route ran out. Sign the same
+    /// profile in again (the browser opens), then the next message just works.
+    private func signInToAWS(_ profile: String) {
+        guard !signingInToAWS else { return }
+        let region = model.config.providers.first { $0.kind == .bedrock && ($0.awsProfile ?? AWSSignIn.defaultProfile) == profile }?.awsRegion
+        signingInToAWS = true
+        model.transport.banner = "Finish signing in to AWS in the browser window that just opened…"
+        model.transport.awsSignInProfile = profile
+        Task {
+            let result = await AWSAccounts.signInAgain(profile: profile, region: region)
+            signingInToAWS = false
+            if result.succeeded {
+                model.transport.banner = nil
+                model.transport.broadcast("Signed in to AWS again (profile “\(profile)”). Send your message again to carry on.")
+            } else {
+                model.transport.banner = result.message
+                model.transport.awsSignInProfile = profile
+            }
+        }
+    }
+
     @ViewBuilder
     private var banner: some View {
         if let message = model.transport.banner {
@@ -254,6 +309,12 @@ struct RootView: View {
                         model.showWizard = true
                     }
                     .controlSize(.small)
+                }
+                if let profile = model.transport.awsSignInProfile {
+                    Button(signingInToAWS ? "Signing in…" : "Sign in to AWS…") { signInToAWS(profile) }
+                        .controlSize(.small)
+                        .disabled(signingInToAWS)
+                        .help("Opens your browser to sign in to AWS again; your next message then goes through.")
                 }
                 Button {
                     model.transport.banner = nil
@@ -281,26 +342,19 @@ private struct ModelMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(model.config.providers, id: \.routeID) { provider in
-                Button {
-                    model.config.activeRoute = provider.routeID
-                } label: {
-                    if model.config.activeRoute == provider.routeID {
-                        Label(provider.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(provider.displayName)
-                    }
-                }
-            }
+            RouteMenuSections()
             Divider()
-            Button("Configure…") { model.showSettings = true }
+            Button("Configure…") {
+                model.settingsTab = .models
+                model.showSettings = true
+            }
             Button("Run Setup Wizard…") { model.showWizard = true }
         } label: {
             Label(model.config.activeProvider?.model ?? "No model", systemImage: "cpu")
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help(model.config.activeProvider?.baseURL ?? "No model configured")
+        .help(model.config.activeProvider.map { "Primary: \($0.displayName)" } ?? "No model configured")
     }
 }
 

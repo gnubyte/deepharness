@@ -15,6 +15,8 @@ import Foundation
 public struct OpenAIClient: LLMClient {
     public let profile: ProviderProfile
     private let session: URLSession
+    /// The session's certificate handling: the route's pin, and which certificate each host showed.
+    private let trust: PinningDelegate
 
     public init(profile: ProviderProfile, session: URLSession = .shared) {
         self.profile = profile
@@ -31,7 +33,7 @@ public struct OpenAIClient: LLMClient {
             cfg.protocolClasses = stubs + (cfg.protocolClasses ?? [])
             cfg.waitsForConnectivity = false
         }
-        self.session = Self.sharedSession(cfg)
+        (self.session, self.trust) = Self.sharedSession(cfg, pinned: profile.pinnedCertificate)
     }
 
     /// Seconds without a byte before a request times out (and is retried).
@@ -41,18 +43,42 @@ public struct OpenAIClient: LLMClient {
     nonisolated(unsafe) static var protocolClassesForTesting: [AnyClass]?
 
     /// Clients are made per request and per retry; they share one session
-    /// (all use the same settings) instead of leaking one URLSession each —
-    /// a multi-day outage retries thousands of times.
+    /// per pinned certificate (all use the same settings) instead of leaking
+    /// one URLSession each — a multi-day outage retries thousands of times.
     private static let sessionLock = NSLock()
-    nonisolated(unsafe) private static var sessions: [String: URLSession] = [:]
-    private static func sharedSession(_ cfg: URLSessionConfiguration) -> URLSession {
-        let key = (cfg.protocolClasses ?? []).map { NSStringFromClass($0) }.joined(separator: ",")
+    nonisolated(unsafe) private static var sessions: [String: (URLSession, PinningDelegate)] = [:]
+    private static func sharedSession(_ cfg: URLSessionConfiguration, pinned: String?) -> (URLSession, PinningDelegate) {
+        let pin = CertificatePin.normalized(pinned) ?? ""
+        let key = (cfg.protocolClasses ?? []).map { NSStringFromClass($0) }.joined(separator: ",") + "|" + pin
         sessionLock.lock(); defer { sessionLock.unlock() }
         if let cached = sessions[key] { return cached }
-        let session = URLSession(configuration: cfg)
-        sessions[key] = session
-        return session
+        let delegate = PinningDelegate(pinned: pin.isEmpty ? nil : pin)
+        let made = (URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil), delegate)
+        sessions[key] = made
+        return made
     }
+
+    /// How many sessions exist (one per pin), for tests.
+    static var sessionCount: Int { sessionLock.withLock { sessions.count } }
+
+    /// A certificate the system doesn't trust, and that isn't this route's pin, in plain words: it fails at
+    /// once (retrying can't fix it) and says which certificate it was, so the user can compare it.
+    private func certificateError(_ error: Error, url: URL) -> Error {
+        Self.certificateError(error, host: url.host, trust: trust)
+    }
+
+    /// Only a host whose certificate was turned down counts: a TLS connection that failed for any other reason
+    /// (a dropped network mid-handshake also reads -1200) stays an ordinary error and is retried.
+    static func certificateError(_ error: Error, host: String?, trust: PinningDelegate) -> Error {
+        guard let failure = error as? URLError, PinningDelegate.certificateFailures.contains(failure.code),
+              trust.refused(host: host), let seen = trust.fingerprint(host: host) else { return error }
+        return LLMError.rejected(status: untrustedCertificateStatus,
+                                 message: "The server's certificate isn't trusted (SHA-256 \(seen)).",
+                                 body: "certificate not trusted", permanent: true)
+    }
+
+    /// The status an untrusted certificate is reported with (nginx's "SSL certificate error").
+    public static let untrustedCertificateStatus = 495
 
     // MARK: LLMClient
 
@@ -91,7 +117,12 @@ public struct OpenAIClient: LLMClient {
         var req = URLRequest(url: url)
         req.timeoutInterval = 10
         applyHeaders(&req)
-        let (data, response) = try await session.data(for: req)
+        let data: Data, response: URLResponse
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch {
+            throw certificateError(error, url: url)
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw LLMError.http(http.statusCode, String(decoding: data, as: UTF8.self))
         }
@@ -249,7 +280,12 @@ public struct OpenAIClient: LLMClient {
         applyHeaders(&req)
         req.httpBody = try makeBody(request)
 
-        let (bytes, response) = try await session.bytes(for: req)
+        let bytes: URLSession.AsyncBytes, response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: req)
+        } catch {
+            throw certificateError(error, url: url)
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             var errData = Data()
             for try await chunk in bytes {
@@ -476,6 +512,20 @@ public struct OpenAIClient: LLMClient {
 
     // MARK: Request body
 
+    /// Inserted when compaction has cut the user's own turn out of a long tool run.
+    /// Qwen chat templates refuse a request that has no user message.
+    static let noUserTurnNote = "(Earlier work in this conversation was summarised above. Carry on with the task.)"
+
+    /// A tool call's arguments as the wire wants them: a JSON object. Empty or broken
+    /// text (a call the model cut off or mangled) becomes `{}`. Servers that hand the
+    /// arguments to a chat template as a parsed object (vLLM) fail the whole request
+    /// on anything else, and would keep failing for the rest of the conversation.
+    static func safeArguments(_ arguments: String) -> String {
+        let trimmed = arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let parsed = JSONValue(parsing: trimmed), parsed.object != nil else { return "{}" }
+        return arguments
+    }
+
     func makeBody(_ request: LLMRequest) throws -> Data {
         var messages: [[String: Any]] = []
         // Some OpenAI-compatible servers (SGLang on the DGX Spark, notably)
@@ -499,7 +549,7 @@ public struct OpenAIClient: LLMClient {
                 if let calls = m.toolCalls, !calls.isEmpty {
                     msg["tool_calls"] = calls.map { c -> [String: Any] in
                         ["id": c.id, "type": "function",
-                         "function": ["name": c.name, "arguments": c.arguments.raw]]
+                         "function": ["name": c.name, "arguments": Self.safeArguments(c.arguments.raw)]]
                     }
                 }
                 messages.append(msg)
@@ -508,6 +558,12 @@ public struct OpenAIClient: LLMClient {
                                  "tool_call_id": m.toolCallID ?? "",
                                  "content": m.content ?? ""])
             }
+        }
+        // Chat templates that look for the user's question (Qwen's, among others) refuse a
+        // request that has none — and that is what a long run looks like after compaction
+        // cuts inside it: the summary, then assistant and tool turns.
+        if !messages.isEmpty && !messages.contains(where: { ($0["role"] as? String) == "user" }) {
+            messages.insert(["role": "user", "content": Self.noUserTurnNote], at: 0)
         }
         if !systemParts.isEmpty {
             messages.insert(["role": "system", "content": systemParts.joined(separator: "\n\n")], at: 0)
@@ -555,13 +611,21 @@ public struct OpenAIClient: LLMClient {
     }
 
     private func effortRoute(_ request: LLMRequest) -> String {
-        "\(profile.baseURL)|\(request.model.isEmpty ? profile.model : request.model)"
+        "\(profile.baseURL)|\(requestModel(request))"
+    }
+
+    /// The model a request is for.
+    private func requestModel(_ request: LLMRequest) -> String {
+        request.model.isEmpty ? profile.model : request.model
     }
 
     /// The effort word that will go on the wire (after any learned remap), or
     /// nil when none is sent.
     func effortWord(for request: LLMRequest) -> String? {
-        guard let level = thinkingLevel(for: request), let word = level.wireEffort else { return nil }
+        guard let level = thinkingLevel(for: request) else { return nil }
+        // GLM-5.3 always thinks and has its own words for how hard (see `GLMThinking`).
+        if GLMThinking.applies(to: profile, model: requestModel(request)) { return GLMThinking.effort(level) }
+        guard let word = level.wireEffort else { return nil }
         if let learned = ReasoningEffortCache.shared.accepted(route: effortRoute(request), requested: word) {
             return learned.isEmpty ? nil : learned
         }
@@ -578,6 +642,14 @@ public struct OpenAIClient: LLMClient {
     func applyThinking(_ request: LLMRequest, to body: inout [String: Any]) {
         guard let level = thinkingLevel(for: request) else { return }
         let effort = effortWord(for: request)
+        // A model that always thinks is never told not to (that fails the request): only how hard.
+        if GLMThinking.applies(to: profile, model: requestModel(request)) {
+            if let effort { body["reasoning_effort"] = effort }
+            if profile.isSelfHosted && profile.kind != .ollama && profile.kind != .lmStudio, let effort {
+                body["chat_template_kwargs"] = ["reasoning_effort": effort]
+            }
+            return
+        }
         if profile.isSelfHosted && (profile.kind == .openAICompat || profile.kind == .openAI || profile.kind == .openRouter) {
             var kwargs: [String: Any] = ["enable_thinking": level != .off]
             if let effort {
@@ -649,8 +721,10 @@ public struct OpenAIClient: LLMClient {
         return parts
     }
 
-    /// Authorization + user-supplied custom headers on every request.
+    /// Who is calling, authorization + user-supplied custom headers on every request.
     private func applyHeaders(_ req: inout URLRequest) {
+        // DSH names itself honestly (a plan like Kimi Code checks which app is calling).
+        req.setValue(DSHIdentity.userAgent, forHTTPHeaderField: "User-Agent")
         if let key = profile.apiKey, !key.isEmpty {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
@@ -691,6 +765,8 @@ public enum FallbackContextWindow {
         "qwen3-30b-a3b": 32_768, "qwen3-32b": 32_768, "qwen3-235b-a22b": 32_768,
         "llama3.3-70b-instruct": 131_072, "llama3.1-8b-instruct": 131_072,
         "glm-4.5": 131_072, "glm-4.5-air": 131_072, "glm-4.6": 131_072,
+        // The subscription plans' models (see `PlanCatalog`).
+        "glm-5.3": 1_000_000, "kimi-for-coding": 1_000_000, "k3-256k": 262_144,
     ]
 
     /// Prefix rules on the base name, checked after the exact table.
@@ -712,6 +788,9 @@ public enum FallbackContextWindow {
 
     /// Look up a context window for a model name, or nil if unknown.
     public static func limit(for modelID: String) -> Int? {
+        // Bedrock ids ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", inference-profile ARNs) carry vendor
+        // and Region prefixes the tables below don't expect.
+        if let bedrock = BedrockModels.contextWindow(modelID) { return bedrock }
         // "meta-llama/Llama-3.3-70B-Instruct" → "Llama-3.3-70B-Instruct" → "llama-3.3-70b-instruct"
         let base = (modelID.components(separatedBy: "/").last ?? modelID).lowercased()
         if let hit = exact[base] { return hit }

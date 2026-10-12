@@ -151,6 +151,11 @@ struct SidebarView: View {
                             Button("Reveal Project in Finder") {
                                 NSWorkspace.shared.activateFileViewerSelecting([cwd])
                             }
+                        } else {
+                            Button("Reveal Chat Folder in Finder") {
+                                let folder = transport.scratchFolder(for: session, create: true)
+                                NSWorkspace.shared.activateFileViewerSelecting([folder])
+                            }
                         }
                         Divider()
                         Button("Delete", role: .destructive) { transport.deleteSession(session.id) }
@@ -186,7 +191,18 @@ struct SidebarView: View {
                         .font(.system(size: 12))
                 }
                 .buttonStyle(.plain)
-                .help("New chat (⌘N)")
+                .help(model.project == nil ? "New chat (⌘N)" : "New chat in \(model.project?.lastPathComponent ?? "the project") (⌘N)")
+
+                if model.project != nil {
+                    Button {
+                        model.newPlainChat()
+                    } label: {
+                        Image(systemName: "bubble.left")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .help("New chat without a project (⇧⌘N)")
+                }
 
                 Spacer()
 

@@ -2,11 +2,11 @@ import SwiftUI
 import AppKit
 import DSHCore
 
-/// Project memory and skills.
+/// Memory and skills — the project's, or, in a chat without a project, your own.
 ///
-/// Both are just files in the project, so they diff and review like anything
-/// else in the repo. This app assembles the system prompt itself, so what is
-/// shown here is literally what the model is told.
+/// Both are just files (in the project, or in your home folder), so they diff and review like anything
+/// else. This app assembles the system prompt itself, so what is shown here is literally what the model
+/// is told.
 struct MemorySkillsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -14,42 +14,47 @@ struct MemorySkillsView: View {
     @State private var selection: Selection = .instructions
     @State private var editing: URL?
     @State private var buffer = ""
+    /// Bumped after a save, so the user's own files are read again.
+    @State private var revision = 0
 
     enum Selection: Hashable { case instructions, skills, prompt }
 
     private var context: ProjectContext? { model.transport.projectContext }
 
+    /// The selected chat has no project (or nothing is open): show the user's own, everywhere content.
+    private var global: Bool {
+        if let session = model.selectedSession { return session.isPlain }
+        return model.project == nil
+    }
+
+    /// The instruction files shown: the project's, or the user's own from their home folder.
+    private var files: [InstructionFile] {
+        _ = revision
+        return global ? ProjectContext.instructionFiles(root: model.transport.skillLocations.home) : (context?.instructions ?? [])
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            if model.project == nil {
-                EmptyStateView(icon: "folder.badge.questionmark",
-                               title: "No project open",
-                               message: "Memory and skills belong to a project folder.") {
-                    Button("Open Folder…") { model.chooseProject() }
-                        .buttonStyle(.borderedProminent)
-                }
-            } else {
-                Picker("", selection: $selection) {
-                    Text("Instructions").tag(Selection.instructions)
-                    Text("Skills").tag(Selection.skills)
-                    Text("System prompt").tag(Selection.prompt)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .padding(10)
-
-                Divider()
-                Group {
-                    switch selection {
-                    case .instructions: instructions
-                    case .skills: SkillsManagerView()
-                    case .prompt: promptPreview
-                    }
-                }
-                .frame(maxHeight: .infinity)
+            Picker("", selection: $selection) {
+                Text("Instructions").tag(Selection.instructions)
+                Text("Skills").tag(Selection.skills)
+                Text("System prompt").tag(Selection.prompt)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(10)
+
+            Divider()
+            Group {
+                switch selection {
+                case .instructions: instructions
+                case .skills: SkillsManagerView()
+                case .prompt: promptPreview
+                }
+            }
+            .frame(maxHeight: .infinity)
             Divider()
             footer
         }
@@ -61,7 +66,10 @@ struct MemorySkillsView: View {
             Label("Memory & Skills", systemImage: "brain")
                 .font(.headline)
             Spacer()
-            if let project = model.project {
+            if global {
+                Text("Yours, everywhere (no project)")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let project = model.project {
                 Text(project.lastPathComponent)
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -71,7 +79,10 @@ struct MemorySkillsView: View {
 
     private var footer: some View {
         HStack {
-            Button("Reload") { model.transport.refreshProjectContext() }
+            Button("Reload") {
+                model.transport.refreshProjectContext()
+                revision += 1
+            }
             Spacer()
             Button("Done") { dismiss() }
                 .keyboardShortcut(.defaultAction)
@@ -83,8 +94,15 @@ struct MemorySkillsView: View {
 
     @ViewBuilder
     private var instructions: some View {
-        let files = context?.instructions ?? []
-        if files.isEmpty {
+        let files = self.files
+        if files.isEmpty, global {
+            EmptyStateView(icon: "doc.text",
+                           title: "No instruction files of your own",
+                           message: """
+                           In a chat without a project, AGENTS.md, CLAUDE.md, .claude/CLAUDE.md or MEMORY.md \
+                           in your home folder is read into every prompt. None exists yet.
+                           """)
+        } else if files.isEmpty {
             EmptyStateView(icon: "doc.text",
                            title: "No instruction files",
                            message: """
@@ -124,10 +142,12 @@ struct MemorySkillsView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                Button("Set Up Memory Scaffold") { setUpMemory() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.tint)
-                    .font(.callout)
+                if !global {
+                    Button("Set Up Memory Scaffold") { setUpMemory() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                        .font(.callout)
+                }
             }
         }
     }
@@ -159,6 +179,7 @@ struct MemorySkillsView: View {
     private func save(to url: URL) {
         try? buffer.write(to: url, atomically: true, encoding: .utf8)
         model.transport.refreshProjectContext()
+        revision += 1
         editing = nil
     }
 
@@ -181,8 +202,15 @@ struct MemorySkillsView: View {
     }
 
     private var previewText: String {
-        guard let project = model.project else { return "Open a project to see its prompt." }
         let modelName = model.config.activeProvider?.model ?? "model"
+        if global {
+            // What a chat without a project starts from (its skills and the vault are added per chat).
+            let chat = model.selectedSession ?? SessionVM(id: "preview", title: "", cwd: nil, preset: model.config.asPreset)
+            let folder = model.transport.scratchFolder(for: chat)
+            return AppTransport.basePrompt(for: chat, workspace: folder, coding: AppTransport.defaultSystemPrompt,
+                                           model: modelName, projectContext: nil, home: model.transport.skillLocations.home)
+        }
+        guard let project = model.project else { return "Open a project to see its prompt." }
         let environment = ProjectContext.environmentBlock(workspace: project,
                                                           model: modelName,
                                                           preset: model.config.asPreset)

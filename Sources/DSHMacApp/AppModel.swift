@@ -37,6 +37,12 @@ final class AppModel {
     var showQueuePanel = false
     /// The credential vault window.
     var showVault = false
+    /// The Amazon Bedrock guide, when it is open (nil = closed).
+    var bedrockGuide: BedrockGuideRequest?
+    /// The "Connect my Spark Swapper" guide, when it is open.
+    var swapperGuide: SwapperGuideRequest?
+    /// The "Connect a subscription plan" guide, when it is open.
+    var planGuide: PlanGuideRequest?
     /// Which Settings tab is showing; set before `showSettings` to deep-link.
     var settingsTab: SettingsTab = .general
     /// A skills action a caller wants the Skills tab to start with.
@@ -45,13 +51,26 @@ final class AppModel {
     private(set) var project: URL?
 
     init() {
+        // Bedrock routes sign their requests with credentials the AWS CLI exports for their profile.
+        AWSAccounts.install()
         transport = AppTransport(config: config)
         spark = SparkController(config: config, transport: transport)
+        // Requests to models that aren't private go through the sensitive-data shield: the user's settings, and
+        // every secret in the Credentials Vault.
+        let vault = transport.vault
+        let policy = ShieldPolicy(settings: config.shield, vaultValues: { vault.valuesForRedaction().map(\.value) })
+        ProviderClients.shield = policy
         mode = WorkspaceMode(rawValue: config.lastMode) ?? .chat
         showWizard = !config.wizardCompleted || !config.isConfigured
 
         let spark = spark
-        transport.isServerSwitching = { spark.isSwitching }
+        let config = config, transport = transport
+        config.onShieldChanged = {
+            policy.current = config.shield
+            // Clients are made with the engines: the next turn makes them again.
+            transport.resetRouteCache()
+        }
+        transport.isServerSwitching = { spark.isSwitchingMainModel }
         transport.onSwapCommand = { arg, vm in
             Task { @MainActor in await spark.handleCommand(arg, in: vm) }
         }
@@ -84,6 +103,42 @@ final class AppModel {
     }
 
     var selectedSession: SessionVM? { transport.selected }
+
+    /// Show or hide the plan panel.
+    func togglePlan() {
+        withAnimation(.easeInOut(duration: 0.18)) { config.planPanelOpen.toggle() }
+    }
+
+    /// Open the Amazon Bedrock guide — from the start, or on one page for an existing route
+    /// (change its model, sign in again).
+    func showBedrockGuide(page: BedrockPage = .welcome, route: ProviderProfile? = nil) {
+        bedrockGuide = BedrockGuideRequest(page: page, route: route)
+    }
+
+    /// Open the "Connect my Spark Swapper" guide (a connection code, or an address and login).
+    func showSwapperGuide(closing sheet: Bool = false) {
+        openGuide(closing: sheet) { $0.swapperGuide = SwapperGuideRequest() }
+    }
+
+    /// Open the "Connect a subscription plan" guide (GLM, Kimi, Qwen, OpenAI).
+    func showPlanGuide(closing sheet: Bool = false) {
+        openGuide(closing: sheet) { $0.planGuide = PlanGuideRequest() }
+    }
+
+    /// Open a guide's sheet. From another sheet (the wizard, Settings), that one closes first so this one can open.
+    private func openGuide(closing sheet: Bool, _ open: @escaping @MainActor (AppModel) -> Void) {
+        guard sheet || showSettings || showWizard else {
+            open(self)
+            return
+        }
+        showSettings = false
+        showWizard = false
+        Task { @MainActor in
+            // Let the sheet finish closing before the next one opens.
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            open(self)
+        }
+    }
 
     // MARK: - Projects
 
@@ -147,6 +202,15 @@ final class AppModel {
     @discardableResult
     func newChat() -> SessionVM {
         let session = transport.newSession(cwd: project?.path)
+        transport.ensureContextProbe()
+        return session
+    }
+
+    /// A regular conversation — no project, even while one is open.
+    @discardableResult
+    func newPlainChat() -> SessionVM {
+        mode = .chat
+        let session = transport.newSession(cwd: nil)
         transport.ensureContextProbe()
         return session
     }

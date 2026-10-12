@@ -158,7 +158,17 @@ struct SetupWizard: View {
             Text("You can change this later, and keep more than one configured.")
                 .font(.callout).foregroundStyle(.secondary)
 
-            ForEach(ProviderProfile.Kind.allCases, id: \.self) { candidate in
+            // A Spark Swapper box sets itself up from one code: a guide of its own.
+            guideChoice(icon: "server.rack", title: "My Spark Swapper (DGX Spark or Strix Halo)",
+                        detail: "Paste the connection code from the Swapper's Connect tab. Sets up the model, switching, and the security certificate in one go.") {
+                model.showSwapperGuide(closing: true)
+            }
+            guideChoice(icon: "creditcard", title: "A subscription or API plan — GLM, Kimi, Qwen, OpenAI",
+                        detail: "Use your Z.ai, Kimi, Alibaba Cloud or OpenAI plan. A guide shows where to get the key.") {
+                model.showPlanGuide(closing: true)
+            }
+
+            ForEach(ProviderProfile.Kind.manual, id: \.self) { candidate in
                 Button {
                     kind = candidate
                     applyDefaults(for: candidate)
@@ -189,7 +199,63 @@ struct SetupWizard: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            // Bedrock has its own step-by-step guide (AWS CLI, sign-in, model, access), so it is not a
+            // "kind" to fill a form for: choosing it hands over to the guide.
+            Button {
+                dismiss()
+                Task { @MainActor in
+                    // Let this sheet finish closing before the next one opens.
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    model.showBedrockGuide()
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: ProviderProfile.Kind.bedrock.icon)
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Amazon Bedrock with my AWS account (guided)").font(.callout.weight(.medium))
+                        Text("Claude, Amazon Nova, Llama and more from your own AWS account. A guide installs what's needed, signs you in and helps you pick and enable a model.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
+                .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Theme.hairline))
+            }
+            .buttonStyle(.plain)
         }
+    }
+
+    /// A choice that hands over to a guide of its own (the wizard closes and the guide opens).
+    private func guideChoice(icon: String, title: String, detail: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.callout.weight(.medium))
+                    Text(detail)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
+            .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Theme.hairline))
+        }
+        .buttonStyle(.plain)
     }
 
     private func label(for kind: ProviderProfile.Kind) -> String {
@@ -207,6 +273,7 @@ struct SetupWizard: View {
         case .lmStudio: "Models running locally through LM Studio on this Mac."
         case .openAI: "OpenAI's hosted API. Needs an API key."
         case .openRouter: "Many hosted models behind one API. Needs an API key."
+        case .bedrock: "Claude, Amazon Nova, Llama and more through your AWS account. Set up by its own guide."
         }
     }
 
@@ -280,6 +347,8 @@ struct SetupWizard: View {
             "Start LM Studio's local server (Developer ▸ Start Server) and load a model, then test the connection."
         case .openAI, .openRouter:
             "Paste an API key. It is stored in your login keychain, never in the app's preferences file."
+        case .bedrock:
+            "Amazon Bedrock is set up by its own guide: Settings ▸ Models ▸ Add Amazon Bedrock…"
         }
     }
 
@@ -289,6 +358,7 @@ struct SetupWizard: View {
         case .ollama, .lmStudio: "127.0.0.1"
         case .openAI: "https://api.openai.com/v1"
         case .openRouter: "https://openrouter.ai/api/v1"
+        case .bedrock: "https://bedrock-runtime.us-east-1.amazonaws.com"
         }
     }
 
@@ -327,6 +397,8 @@ struct SetupWizard: View {
             "In LM Studio, open the Developer tab, load a model, and press Start Server."
         case .openAI, .openRouter:
             "Check the key is current and has credit or quota on the account."
+        case .bedrock:
+            "Sign in to AWS again and check that your account is allowed to use the model."
         }
     }
 
@@ -481,7 +553,7 @@ struct SetupWizard: View {
     private func detectContext() async {
         detecting = true
         defer { detecting = false }
-        let info = await OpenAIClient(profile: draftProfile).modelInfo()
+        let info = await ProviderClients.make(draftProfile).modelInfo(nil)
         detectedContext = info?.contextWindow
         detectedModel = info?.id
     }
@@ -716,6 +788,8 @@ struct SetupWizard: View {
             host = "https://api.openai.com/v1"; port = ""; modelID = "gpt-4o"
         case .openRouter:
             host = "https://openrouter.ai/api/v1"; port = ""; modelID = "qwen/qwen3-32b"
+        case .bedrock:
+            host = "https://bedrock-runtime.us-east-1.amazonaws.com"; port = ""; modelID = ""
         }
     }
 
@@ -740,7 +814,7 @@ struct SetupWizard: View {
 
     private func runProbe() async {
         probe = .running
-        let client = OpenAIClient(profile: draftProfile)
+        let client = ProviderClients.make(draftProfile)
         do {
             let models = try await client.listModels()
             discovered = models.sorted()
@@ -756,8 +830,10 @@ struct SetupWizard: View {
         var profile = draftProfile
         let key = apiKey
         profile.apiKey = nil                      // the key lives in the keychain
-        if let existing, existing.routeID != profile.routeID {
-            model.config.removeProvider(existing)
+        if let existing {
+            profile.isPrivate = AppConfig.privacy(after: profile, was: existing)
+            // In place: a renamed route keeps its position (and nothing else is handed the lead meanwhile).
+            model.config.replace(existing, with: profile)
         }
         model.config.activate(profile)
         existing = profile

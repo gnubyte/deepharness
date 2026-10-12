@@ -6,8 +6,9 @@
 
 <p align="center">
   A native SwiftUI coding agent that <em>is</em> the harness. It runs the tool loop itself and talks
-  straight to an OpenAI-compatible model server — a DGX Spark on your LAN, a local Ollama or
-  LM Studio, or a hosted provider. No Node, no sidecar process, no web view.
+  straight to an OpenAI-compatible model server — a DGX Spark or Strix Halo on your LAN, a local
+  Ollama or LM Studio, a GLM, Kimi, Qwen or OpenAI plan — or Amazon Bedrock, and it can put several
+  of them to work at once. No Node, no sidecar process, no web view.
 </p>
 
 <p align="center">
@@ -27,7 +28,7 @@ you → DSHCore.Engine → OpenAI-compatible /chat/completions → tool calls �
 ```
 
 The practical difference is that there is nothing to install alongside it and nothing to keep
-running. Point it at a model and open a folder.
+running. Point it at a model and start chatting — or open a folder and it works on your code.
 
 ## Download
 
@@ -58,6 +59,11 @@ server wants one), prove the connection works, choose a model, set the context w
 thinking level, pin a permission preset, and optionally open a project. Re-running it edits the
 existing route in place, so headers and other settings survive.
 
+Three choices on the backend page start a guide instead: **My Spark Swapper (DGX Spark or Strix Halo)**
+sets a Swapper box up from one connection code, **A subscription or API plan — GLM, Kimi, Qwen, OpenAI**
+shows where to get a key and checks it, and **Amazon Bedrock with my AWS account (guided)** signs you in
+to AWS. Each is described below, and each is also under **Add** in **Settings ▸ AI Models**.
+
 ### Context window
 
 Leave it on **Auto**. Every turn the app re-reads `GET /v1/models` — vLLM and SGLang both report
@@ -71,17 +77,16 @@ shows the figure and where it came from.
 
 The **model menu** under the composer shows the model in use and its window, and switches in one click:
 
-- **DGX Spark — what it serves**: the models the [Spark Swapper](https://192.168.68.69:8999) knows
-  (Qwen3.8 27B at 1M, Qwen3.8 Flash Next at 512K). Picking one asks the Spark to stop the current server
-  and load the other; a banner above the composer tracks the steps, sending is paused while it
-  switches, and when it's done every chat follows the new model and window automatically (OpenClaw is
-  repointed by the swapper). `/swap` lists them; `/swap flash` switches.
-- **Providers**: any other route configured in Settings.
-
-Set it up once in **Settings ▸ Spark**: the swapper's address (`https://<spark>:8999`, pre-filled from the
-active server) and the login you created on its web page — the password goes to the Keychain. The
-swapper's certificate is self-signed; the app shows its SHA-256 fingerprint once for you to trust, then
-pins it.
+- **<box> — what it serves**, one section per [Spark Swapper](https://github.com/gnubyte/DGX-Spark-Swapper)
+  box: its models with their context window and speed ("27 tok/s measured here", or the published
+  figure). Picking one asks *that* box to stop the current server and load the other; a banner above the
+  composer tracks the steps, sending is paused while it switches, and when it's done every route on that
+  box follows the new model and window automatically (OpenClaw is repointed by the swapper). Models the
+  box knows but hasn't downloaded are listed as *Not installed* — install them from **Settings ▸ Model
+  Servers**. `/swap` lists every box's models; `/swap flash` switches the box behind the primary (or the
+  only box); `/swap evo flash` names the box by the start of its name.
+- **Primary · Subagents · Backups · Other models**: every route that's switched on in **Settings ▸ AI
+  Models**, each marked private (a lock) or masked (a shield). Picking one makes it the primary.
 
 ### Thinking
 
@@ -92,6 +97,62 @@ Settings. On a self-hosted server it is sent as `chat_template_kwargs.enable_thi
 Templates disagree on vocabulary — Qwen3.8 accepts `low`/`medium`/`xhigh` and 400s on `high` — so
 when a server rejects a word the client picks the nearest one it lists, retries once, and remembers
 it. The model's reasoning streams live under the "Thinking…" row.
+
+### Connecting a Spark Swapper
+
+[Spark Swapper](https://github.com/gnubyte/DGX-Spark-Swapper) is the web control panel on a DGX Spark —
+and, from Swapper 2.0, on an AMD Strix Halo box — that switches which model the box serves. Open its web
+page, choose **Connect ▸ Connect DSH** and copy the connection code (`SSC1:…`). Then choose **My Spark
+Swapper (DGX Spark or Strix Halo)** in the wizard, or **Add ▸ Spark Swapper (connection code)…** in
+**Settings ▸ AI Models**:
+
+1. **Paste the code.** It carries the box's name and addresses, its certificate's fingerprint, and an app
+   token made for DSH — revoke it on the Swapper's Connect tab any time.
+2. **Check it.** DSH goes on only if the box shows exactly the certificate the code names (a certificate
+   your Mac trusts isn't enough), then reads what the box serves.
+3. **Pick the model.** The box's models with context and speed, the one serving now preselected. Switch
+   to another there and then — or install one the box hasn't downloaded yet (its size and how long it
+   takes are shown) and **Switch to It** when it's done.
+4. **How should DSH use it?** Primary, subagent or backup (see below) — and private, since it's your own
+   hardware.
+5. **Save and say hello.** The route is saved with the certificate pinned (the box's model server shows
+   the same certificate), its key and the app token in your Keychain, and a first message goes through it.
+
+**Settings ▸ Model Servers** lists every box: whether it's online, what it serves and its context, its
+Swapper version and its models — installed or not, with **Install on <box>** — plus **Open Its Web
+Page**, **Rename…** and **Remove**. A Swapper older than 2.0 (no Connect tab) connects there with
+**Connect with an address and login instead** (the guide has the same link); its password goes to the
+Keychain. A Spark set up in Settings ▸ Spark before 0.14 is carried over as the first box.
+
+### Subscription plans: GLM, Kimi, Qwen, OpenAI
+
+Choose **A subscription or API plan — GLM, Kimi, Qwen, OpenAI** in the wizard, or **Add ▸ Subscription
+plan…** in **Settings ▸ AI Models**. The guide knows these plans, each with its International and China
+addresses where it has both:
+
+| Plan | Models |
+|---|---|
+| Z.ai — GLM Coding Plan | `glm-5.3` (1M context) |
+| Z.ai — pay-as-you-go API | `glm-5.3` |
+| Kimi Code (subscription) | `kimi-for-coding` (K2.8, up to 1M), `k3`, `k3-256k`, `kimi-for-coding-highspeed` |
+| Moonshot (Kimi) — pay-as-you-go API | what `/models` lists |
+| OpenAI API | what `/models` lists, the newest `gpt-*` chat model recommended |
+| Qwen — Alibaba Cloud Coding Plan | `qwen3.7-plus`, `qwen3-coder-plus`, `qwen3-coder-next`, … |
+| Qwen — Model Studio pay-as-you-go | what `/models` lists |
+
+It walks you through getting a key for that plan (with a button to the right page, and the plan's
+terms), takes the key — it goes to your Keychain — and catches recognisable mistakes, checks it
+(`/models`, or a one-token message where a plan doesn't list models) with errors in plain words, lets you
+pick the model, asks how DSH should use it, and says hello through it.
+
+- **GLM-5.3 always thinks.** DSH never asks it not to; the thinking menu maps to its `low` / `high` / `max`.
+- **Kimi Code checks which app is calling.** DSH tells it honestly that it is DSH (`User-Agent: DSH/<version>
+  (macOS)`) and never imitates another tool. If Kimi turns it away, DSH says so and suggests the Moonshot
+  API, which works with any app.
+- **The Qwen Coding Plan is for interactive use only** under Alibaba's terms, so its route is marked
+  *Interactive use only*: the Task Queue and `/goal` won't run while it's the primary.
+- A ChatGPT Plus or Pro subscription doesn't include API access; the OpenAI API is billed separately.
+- Every plan is an online service, so its route starts out **not private** (see below).
 
 ### Pointing it at a DGX Spark
 
@@ -115,6 +176,117 @@ OpenRouter. API keys go to your login keychain, never into the preferences file.
 An agent needs a model that can call tools. Qwen3, Qwen2.5-Coder, and DeepSeek-V3-class models work;
 very small models will flail.
 
+### Several models: primary, subagents, backups
+
+**Settings ▸ AI Models** has a row for every model you've added, with switches for what it does:
+
+| Switch | Meaning |
+|---|---|
+| **On** | DSH may use it. Switched off, it stays in the list but is never used. |
+| **Primary** | Answers you — the conductor. Exactly one. |
+| **Subagent** | Takes side tasks from the primary, in parallel: the `agent`, `delegate` and background agents. |
+| **Backup** | Takes over a turn when the primary doesn't answer. |
+| **Private** | May see sensitive data; the others get it masked (next section). |
+
+**Add** offers a Spark Swapper (connection code), a subscription plan, Amazon Bedrock, or any other
+OpenAI-compatible server; **Test All** asks every model whether it answers and shows the result on its
+row. The model menu in the toolbar and under the composer groups them the same way and makes any of them
+the primary in one click.
+
+- **Subagents** run on the subagent servers, least busy first and several at a time (the count is set per
+  server), while the primary carries on. When every subagent server is busy, subagents may use the
+  primary too (a checkbox turns that off). A server that stops answering is skipped for a minute and its
+  task moves to another one (told, if the task had already changed things, to look before repeating a
+  step). With a single server, a subagent waits out an outage as long as the main agent does.
+- **A new primary** keeps the previous one working as a subagent server when a fleet is running, so two
+  Sparks and Bedrock are still three servers afterwards, in different roles.
+- **Backups.** If the primary fails before it has said anything — unreachable, timed out, key refused,
+  model gone, rate-limited, a server error — the same request goes to each backup in order, and the chat
+  says so: "Spark didn't answer (the server refused the connection), so this turn ran on Kimi Code." For
+  the next minute the primary is tried last. If every backup fails too, the primary's error stands and the
+  usual retries take over. A reply that has started is never switched mid-way, and subagents don't use
+  backups — the fleet already moves their tasks.
+- One self-hosted machine counts as one subagent server however many of its models are listed (a Spark
+  serves one model at a time), and editing a route never makes it the primary.
+- Each subagent server is asked which model it is serving *right now*, so a Spark that swapped models is
+  still used correctly. A hosted service such as Bedrock serves every model at once, so a cheaper Bedrock
+  model can take the side tasks while a stronger one leads.
+- The bar above the composer shows where the running subagents are ("Spark 2 ×2 · Amazon Bedrock").
+  A count is printed only when two or more subagents share a server, so a lone Bedrock agent is just
+  "Amazon Bedrock". Expanded, the bar shows what each is doing; `/agents` lists the servers with how busy each is.
+
+### Private models and the sensitive-data shield
+
+A model is **private** when it runs on hardware you control. DSH decides by its address — `localhost`, a
+loopback, LAN, link-local or Tailscale (100.64/10) address, a one-word host name, or a name ending in
+`.local`, `.lan`, `.home`, `.home.arpa`, `.internal` or `.ts.net` — and everything else, Amazon Bedrock
+and every plan included, starts out *not private*. Flip the **Private** switch either way; your choice
+wins.
+
+Before a request goes to a model that isn't private, DSH masks what's sensitive in it — in the system
+prompt, the messages, tool results, earlier tool calls and attached text files. Each value becomes a
+placeholder such as `⟦EMAIL_1⟧` or `⟦SECRET_1⟧` (the same value always gets the same one), and once a value
+has been found it is masked wherever it appears, even without the `password:` that gave it away. The model
+is told to use the placeholders as written, and the real values are put back on your Mac as the answer
+streams in — in its text, its reasoning and its tool calls. Your chats, files and tools only ever see the
+real values, and no mapping is stored. A shield under the reply says what was masked: "Masked 2 emails and
+1 key before sending to Kimi Code".
+
+The **Sensitive data** section of **Settings ▸ AI Models** chooses what counts: secrets and keys (private
+keys, cloud and API tokens, passwords in URLs and settings), email addresses, phone numbers, ID and card
+numbers (card numbers and IBANs only when their check digits add up), IP addresses (off by default), and
+your own **custom terms** — client or patient names, project code names, one per line, `re:` for a
+regular expression; they are kept in your Keychain, not the settings file. A type (`"password": "string"`) or a
+reference to another variable (`$DB_PASSWORD`, `%TOKEN%`) isn't taken for a secret. Secrets in the Credentials
+Vault are always masked. **Try it** shows exactly what a
+model that isn't private would receive. Pictures and files that aren't plain text (a PDF, say) can't be
+checked; the chat says so the first time it sends one to a model that isn't private.
+
+When there are subagent servers, the primary is told which are private and to describe tasks for the
+others in general terms. A task marked `sensitive` runs only on a private server; if none can take it, the
+model is told to do it itself.
+
+### Using Amazon Bedrock
+
+On the wizard's backend page choose **Amazon Bedrock with my AWS account (guided)** — or **Settings ▸
+AI Models ▸ Add ▸ Amazon Bedrock…** — for a guide written for people who have never used the AWS CLI. All it
+needs is an AWS account you can sign in to on the website.
+
+1. **The AWS CLI.** DSH looks for it (on your `PATH` and in `/usr/local/bin`, `/opt/homebrew/bin`,
+   `~/.local/bin`, `~/aws-cli`) and installs it if it's missing or too old for the browser sign-in (2.32
+   or later): Amazon's official installer package, downloaded from `awscli.amazonaws.com`, its signature
+   checked with `pkgutil` (a Developer ID installer certificate from Amazon's Apple team, `94KV3E626L`),
+   installed for you alone under `~/aws-cli` — no administrator prompt — with `aws` linked from
+   `~/.local/bin`. If that's blocked it can install for everyone (macOS asks for your password) or with
+   Homebrew.
+2. **Sign in.** Pick a Region, then **Sign in with AWS**: DSH runs `aws login` into its own profile,
+   `dsh-bedrock`, so profiles you already have are left alone. Your browser opens the AWS sign-in page;
+   DSH never sees your password. Already set up with IAM Identity Center (SSO), keys or a role? Choose
+   **an AWS CLI profile I already have** — DSH runs `aws sso login` for SSO profiles.
+3. **Pick a model.** The Region's chat models (Claude, Amazon Nova, Llama, Mistral, DeepSeek, …), the best
+   of each family first, using a cross-Region inference profile where the model needs one. Search by
+   name, switch Region without leaving the page, and see at a glance which models are ready to use.
+4. **Enable it** — only when needed; most models are ready immediately:
+   - **Claude** needs Anthropic's one-time *use case* form per AWS account. DSH asks the same questions
+     (company, website, industry, who will use it, what for) and submits it.
+   - **Marketplace models** show their offer first — price per unit, licence (EULA) link, refund policy —
+     and are enabled only after you tick *I accept* and press **Accept and enable**.
+   - Then DSH waits for AWS to finish (usually seconds, up to 15 minutes for a new subscription). If your
+     AWS identity isn't allowed to do something, the page says which permission is missing and has a
+     ready-made IAM policy to copy for your administrator.
+5. **Connect** — saves the route (profile, Region, model), says hello through Bedrock, and asks whether
+   the model should lead (main model) or take subagent tasks.
+
+Requests are signed with SigV4 using short-lived credentials the AWS CLI exports for the profile
+(`aws configure export-credentials`), refreshed before they expire; nothing secret is stored in DSH's
+settings. Chats use Bedrock's Converse API with streaming, tools, images, prompt caching for Claude and
+Nova, and Claude's extended thinking. When the sign-in runs out, the banner offers **Sign in to AWS…**;
+**Settings ▸ AI Models** has **Sign in** and **Change…** (another model, Region or account) for each Bedrock
+route, and the model menu has **Choose a Bedrock Model…**.
+
+Costs are billed by AWS to your account (Amazon Bedrock, and AWS Marketplace for Marketplace models).
+To remove DSH's sign-in: `aws logout --profile dsh-bedrock`.
+
 ## Tools
 
 The tool set matches [Qwen Code](https://qwenlm.github.io/qwen-code-docs/en/developers/tools/introduction/)
@@ -133,12 +305,21 @@ name for name, so prompts, skills, and habits from that ecosystem carry over:
 | `web_fetch` | fetch a URL as text |
 | `todo_write` | publish a task list the UI renders |
 | `exit_plan_mode` | hand back a plan instead of doing the work |
-| `agent` | spawn a subagent for a scoped task |
+| `agent` | a subagent for a scoped task; `agent_type` picks the kind (`general`, `explore`, `plan`, `review`, `worker`, or your own agent file), `run_in_background` keeps it working while you carry on, `sensitive` keeps it on a private server |
+| `delegate` | hand out a list of independent tasks and get every report back together; with several model servers they run on different machines |
+| `use_skill` | load one of your skills when the task matches it |
 
 **Models without function calling still work.** Many Qwen-class models on Ollama or older vLLM emit
 tool calls as XML inside plain text instead of `tool_calls`. When a turn finishes with no native
 calls, the text is run through an XML parser that understands both the `<function=…>` and
 `<tool_name>…` conventions, and the recovered calls execute normally.
+
+### Since 0.8
+
+- **Live processes and the machine** (0.8). `process_start`, `process_read`, `process_write`, `process_stop` and `process_list` talk to a running program. `screenshot`, `list_windows`, `screen_watch`, `ui_tree`, `inspect_process`, `mouse`, `keyboard`, `focus_app` and `view_image` look at and drive the Mac.
+- **Task Queue** (0.9; unattended since 0.10). `queue_task` adds follow-up work; `/queue` runs the queue one task at a time. A model outage retries until the server is back.
+- **Credentials Vault** (0.11). API keys and passwords live in the Keychain. The agent writes `{{vault:NAME}}` and never sees the value; `vault_search` lists names, not secrets.
+- **Background subagents** (0.12). `agent` with `run_in_background` (up to four per chat), plus `agent_status` and `agent_stop`.
 
 ## Code mode
 
@@ -166,18 +347,41 @@ between the text that preceded it and the text that followed, expandable to its 
 renders with headings, fenced code (with copy), lists, task lists, quotes, and tables, including an
 unterminated fence while a response is still streaming.
 
-The composer sends on ↩ and inserts a newline on ⇧↩. Files the turn touched appear as chips that jump
-straight to the editor.
+The composer sends on ↩ and inserts a newline on ⇧↩. The **+** menu attaches an image or a file.
+Files the turn touched appear as chips that jump straight to the editor.
+
+### Chats without a project
+
+A chat doesn't need a folder. With no project open — or with **File ▸ New Chat Without a Project**
+(⇧⌘N), or the speech-bubble button in the sidebar while a project is open — it's a regular conversation:
+the model answers directly, never asks you to open a folder, and uses tools only when they help. When
+something needs files or commands — a skill that runs a script, a document to draft — it works in the
+chat's own folder, `~/Library/Application Support/DSHMac/Chats/<chat id>`, which the permission preset
+confines it to just as it would a project folder. Deleting the chat deletes the folder; **Reveal Chat
+Folder in Finder** is on the chat's right-click menu. Your own instruction files and skills apply (shown
+as "Using the deploy skill" when the model loads one); the open project's don't. A task such a chat puts
+on the Task Queue works in the same folder.
+
+### The plan panel
+
+**⇧⌘P** — or the checklist button in the toolbar, or **View ▸ Show Plan** — opens the plan beside the
+chat, in chat and code mode: the selected chat's `/goal`, its steps from `todo_write` with progress ("3 of
+7 done"), a plan proposed in plan mode, and the subagents working for it, with their server and how long
+they've run. It always shows the selected chat; while it's open the transcript keeps the plan to one
+line. Drag its edge to resize it. It opens by itself when the agent first makes a plan, unless you untick
+**Show when the agent makes a plan**.
 
 ### Slash commands
 
 | Command | What it does |
 |---|---|
-| `/goal <task>` | Works on the task round after round until the model ends a reply with `GOAL_COMPLETE` (or `GOAL_BLOCKED: …` when it needs you). The goal is restated every round so it survives compaction; capped at 40 rounds; ⌘. stops it. |
+| `/goal <task>` | Works on the task round after round until the model ends a reply with `GOAL_COMPLETE` (or `GOAL_BLOCKED: …` when it needs you). The goal is restated every round so it survives compaction. There is no round cap. ⌘. stops it. |
+| `/queue` | Starts the task queue. It works queued tasks one at a time, unattended. |
 | `/compact [focus]` | Summarizes the conversation now, keeping a short recent tail. Earlier messages stay visible above the divider; the model carries the summary. |
 | `/think off\|low\|medium\|high\|max\|default` | Thinking level for this chat. |
 | `/context` | Window size, usage, and where the window figure came from. |
-| `/swap [model]` | Lists the Spark's models, or switches what it serves. |
+| `/swap [box] [model]` | Lists every Swapper box's models, or switches what one serves — the box behind the primary unless you name one. |
+| `/agents` | The kinds of subagent, the model servers they run on with how busy each is, and what is running now. |
 | `/skills` · `/skill <name>` · `/skill new <what>` · `/<name> args` | Skills: list, select for this chat, have the model write one, or run one. |
 | `/help` | Lists these. |
 
@@ -192,6 +396,9 @@ every turn, in order:
 
 `AGENTS.md` · `QWEN.md` · `CLAUDE.md` · `.claude/CLAUDE.md` · `CLAUDE.local.md` · `.cursorrules` ·
 `DSH.md` · `MEMORY.md` · `memory/YYYY-MM-DD.md`
+
+A chat without a project reads the same files from your home folder instead (`~/AGENTS.md`,
+`~/MEMORY.md`, …), and **Memory & Skills** shows those for it.
 
 **Session ▸ Memory & Skills… (⇧⌘M)** edits them and shows the **System prompt** tab — exactly what
 gets sent. **Set Up Memory** scaffolds `MEMORY.md` plus today's daily log. The editor warns past ~100
@@ -299,7 +506,20 @@ DSHCore/                   the harness. No AppKit, no SwiftUI — headlessly tes
   FileTools.swift          read_file, write_file, edit, list_directory
   QwenTools.swift          glob, grep, read_many_files, exit_plan_mode
   CommandTools.swift       run_shell_command, web_fetch, todo_write
-  AgentTool.swift          subagents
+  AgentTool.swift          subagents (agent types, failover across servers) and delegate
+  Fleet/                   AgentFleet (servers, leases, health, private servers), roster, agent definitions, delegate
+  ProviderClients.swift    one factory: OpenAI-compatible routes and Amazon Bedrock, with backups and the shield
+  FailoverClient.swift     backups for the primary
+  SensitiveData.swift      the shield's detectors: secrets, emails, phones, IDs and cards, IPs, your terms
+  ShieldClient.swift       masking before a request goes out, restoring as the answer streams in
+  RoutePrivacy.swift       which addresses are private by default
+  CertificatePinning.swift SHA-256 certificate pins for self-signed servers
+  SparkSwapper.swift       the Spark Swapper client: status, switching, installs, tokens, connection codes
+  SwapperConnections.swift Swapper boxes, their Keychain secrets, signing in, /swap
+  PlanCatalog.swift        the subscription plans: addresses, key pages, models, errors in plain words
+  ChatPrompt.swift         the prompt and scratch folder of a chat without a project
+  AWS/                     SigV4, event streams, the AWS CLI (run, sign in, install), Bedrock setup
+  Bedrock/                 the Converse client, its request mapping and per-model table
   Permissions.swift        presets, path containment, shell gating
   Plugins.swift            JSON manifests → tools
   ProjectContext.swift     instruction files, memory, skill catalog, prompt assembly
@@ -316,6 +536,15 @@ DSHMacApp/                 SwiftUI
   SessionVM.swift          one ordered timeline of messages, tool calls, and todos
   ConversationLog.swift    per-session JSON transcripts
   SetupWizard.swift        first-run configuration
+  ModelRoutesSettings.swift  Settings › AI Models: a row per route (on, primary, subagent, backup, private)
+  SensitiveDataSettings.swift  Settings › AI Models › Sensitive data
+  SwapperSettings.swift    Settings › Model Servers: the Swapper boxes
+  SparkController.swift    the boxes: status, switching, installs, routes that follow
+  RouteMenu.swift          the primary / subagents / backups menu shared by toolbar and composer
+  PlanPanel.swift          the plan panel
+  Swapper/                 the "Connect my Spark Swapper" guide
+  Plans/                   the subscription plan guide
+  Bedrock/                 the Amazon Bedrock guide, its model picker and its backend
   ChatView.swift           transcript, gates, composer
   CodeModeView.swift       tree | editor + terminal | agent
   CodeEditor.swift         NSTextView, line-number ruler
@@ -329,10 +558,20 @@ DSHMacApp/                 SwiftUI
 swift test
 ```
 
-113 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
+1,304 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
 cancellation), permission containment, the Qwen XML fallback, glob, markdown, plugin interpolation
 and quoting, prompt assembly, editor-buffer conflict resolution, 34 over the terminal emulator, and 8
-that spawn a real shell on a real pty and assert on what lands on the screen.
+that spawn a real shell on a real pty and assert on what lands on the screen — plus the fleet (server
+choice, failover, agent types, `delegate`), the AWS layer (SigV4 and Bedrock API keys against
+botocore's own values, the event stream, the CLI runner driven through stand-in `aws` scripts, sign-in,
+the installer), Amazon Bedrock (request mapping, streaming, every error path, the model catalog and
+access checks), the Bedrock guide as a state machine over a scripted AWS, the Spark Swapper client
+(connection codes, app tokens, installs) and its guide, certificate pinning, the subscription plans and
+their guide, privacy by address, the shield's detectors and its masking and restoring (placeholders split
+across streamed pieces, values with quotes and emoji inside tool calls, a value found once masked everywhere,
+8,000 CSV rows in well under half a second), backups, sensitive tasks on
+private servers, chats without a project, and the app host against two fake model servers. Four live
+tests are skipped unless pointed at a real server.
 
 ## Status
 
@@ -350,9 +589,13 @@ Verified on macOS 14+ / Apple Silicon:
 
 - **The terminal is a subset, not a full VT.** Shells, build logs, `git`, and `less` are fine; a
   full-screen curses app that relies on mouse reporting or sixel is not.
-- **No image attachments.** The old client had them against the harness's attachment API; nothing has
-  replaced that here yet.
-- **Subagents are untested against a real child** — nothing local reliably spawned one.
+- **Amazon Bedrock, the multi-server fleet, backups and the subscription plans are covered by tests
+  against fakes** (a scripted AWS CLI, stubbed HTTP, fake model servers); the Swapper client was also run
+  against a local Swapper 2.0 demo. The first run against real AWS, a real plan, and a real second box is
+  yours.
+- **The shield masks what it recognises** — the patterns above and your own terms — not every name or
+  detail in a conversation. Describe tasks for a model that isn't private in general terms, as the agent
+  is told to.
 - **Reasoning is shown live but not kept** in the transcript once the answer arrives. Servers
   without a reasoning parser leave `<think>` text inline in the answer.
 - **Search across sessions is not implemented.** Transcripts are plain JSON under

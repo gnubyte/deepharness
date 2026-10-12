@@ -24,14 +24,14 @@ struct ChatView: View {
                 set: { if !$0 { model.spark.confirmTarget = nil } })
     }
     private var sparkConfirmTitle: String {
-        "Switch the Spark to \(model.spark.confirmTarget?.title ?? "")?"
+        guard let t = model.spark.confirmTarget else { return "" }
+        return "Switch \(t.box.name) to \(t.model.title)?"
     }
     private var sparkConfirmMessage: String {
         guard let t = model.spark.confirmTarget else { return "" }
-        let current = model.spark.status?.activeModel?.title
-        let eta = t.key.contains("flash") ? "about 11 minutes" : "a few minutes"
+        let current = t.box.status?.activeModel?.title
         return (current.map { "\($0) stops, then " } ?? "")
-            + "\(t.title) loads (\(eta), \(t.context.formatted())-token context). OpenClaw and every chat here follow it automatically; "
+            + "\(t.model.title) loads (\(t.duration), \(t.model.window.formatted())-token context). Every chat using \(t.box.name) follows it automatically (and OpenClaw, if the box runs it); "
             + "if it fails to load, the previous model comes back."
     }
 
@@ -51,7 +51,7 @@ struct ChatView: View {
         .alert(sparkConfirmTitle, isPresented: sparkConfirmShown) {
             Button("Switch") {
                 if let target = model.spark.confirmTarget {
-                    Task { await model.spark.swap(to: target.key) }
+                    Task { await model.spark.swap(target.box, to: target.model.key) }
                 }
                 model.spark.confirmTarget = nil
             }
@@ -147,8 +147,8 @@ struct ChatView: View {
             if let goal = session.goal {
                 GoalBanner(goal: goal, session: session)
             }
-            if !session.runningBackgroundJobs.isEmpty {
-                BackgroundAgentsBar(session: session)
+            if !session.runningBackgroundJobs.isEmpty || !session.runningAgentRuns.isEmpty {
+                SubagentsBar(session: session)
             }
             if !slashMatches.isEmpty {
                 SlashHints(matches: slashMatches) { usage in
@@ -443,11 +443,20 @@ private struct EntryRow: View {
     var body: some View {
         switch entry.kind {
         case .message(let body):
-            MessageRow(body: body, at: entry.at)
+            MessageRow(body: body, at: entry.at, masked: session.masked[entry.id])
         case .tool(let activity):
-            ToolCard(activity: activity, session: session)
+            if activity.name == UseSkillTool.name {
+                SkillCard(activity: activity)
+            } else {
+                ToolCard(activity: activity, session: session)
+            }
         case .todos(let items):
-            TodoCard(items: items)
+            // With the plan panel open the plan is there; the transcript keeps just a line.
+            if model.config.planPanelOpen {
+                CollapsedTodoCard(items: items)
+            } else {
+                TodoCard(items: items)
+            }
         case .compaction(let note):
             CompactionCard(note: note)
         }
@@ -457,10 +466,13 @@ private struct EntryRow: View {
 private struct MessageRow: View {
     let body_: MessageBody
     let at: Date
+    /// What the shield masked before this answer's request went out.
+    let masked: ShieldReport?
 
-    init(body: MessageBody, at: Date) {
+    init(body: MessageBody, at: Date, masked: ShieldReport? = nil) {
         self.body_ = body
         self.at = at
+        self.masked = masked
     }
 
     var body: some View {
@@ -474,6 +486,9 @@ private struct MessageRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     MarkdownView(source: body_.text)
+                }
+                if let masked, let summary = masked.summary {
+                    MaskedChip(summary: summary, categories: masked.categories)
                 }
             }
             .padding(.vertical, body_.role == .user ? 8 : 0)
@@ -526,6 +541,36 @@ private struct MessageRow: View {
         case .notice: .primary
         case .error: Theme.errorTint
         default: .primary
+        }
+    }
+}
+
+/// "Masked 2 emails and 1 key before sending to Kimi Code" — under an answer from a model that isn't private.
+private struct MaskedChip: View {
+    let summary: String
+    let categories: String
+    @State private var showing = false
+
+    var body: some View {
+        Button { showing.toggle() } label: {
+            Label(summary, systemImage: "eye.slash")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Theme.surface, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Masked before sending: \(categories). The real values stayed on this Mac.")
+        .popover(isPresented: $showing, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Masked before sending").font(.callout.weight(.semibold))
+                Text(categories).font(.callout)
+                Text("The model saw placeholders such as ⟦EMAIL_1⟧ instead; DSH put the real values back in what you see here. Change what is masked in Settings ▸ AI Models ▸ Sensitive data.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(width: 300)
         }
     }
 }
@@ -642,6 +687,57 @@ private struct ToolCard: View {
     }
 }
 
+/// The model using one of the user's skills: "Using the deploy skill", expandable to the instructions it read.
+private struct SkillCard: View {
+    let activity: ToolActivity
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                guard activity.output?.isEmpty == false else { return }
+                withAnimation(.easeOut(duration: 0.12)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "graduationcap.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(activity.isOk == false ? Theme.errorTint : Color.accentColor)
+                        .frame(width: 14)
+                    (Text("Using the ") + Text(activity.preview).fontWeight(.semibold) + Text(" skill"))
+                        .font(.system(size: 12))
+                    Spacer(minLength: 4)
+                    if !activity.isFinished {
+                        ProgressView().controlSize(.small).scaleEffect(0.7)
+                    } else if activity.isOk == false, let summary = activity.summary {
+                        Text(summary).font(Theme.metaFont).foregroundStyle(Theme.errorTint).lineLimit(1)
+                    } else if activity.output?.isEmpty == false {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded, let output = activity.output, !output.isEmpty {
+                Divider().padding(.vertical, 6)
+                ScrollView {
+                    Text(output)
+                        .font(Theme.mono(11))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 220)
+            }
+        }
+        .padding(8)
+        .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.corner))
+        .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Theme.hairline))
+        .padding(.leading, Theme.gutter)
+    }
+}
+
 /// The agent's task list.
 private struct TodoCard: View {
     let items: [TodoItem]
@@ -676,6 +772,34 @@ private struct TodoCard: View {
             }
         }
         .padding(.leading, Theme.gutter)
+    }
+}
+
+/// The plan as one line while the plan panel shows it in full: "Plan updated — 3 of 7 done · Show".
+private struct CollapsedTodoCard: View {
+    let items: [TodoItem]
+    @State private var expanded = false
+
+    var body: some View {
+        if expanded {
+            VStack(alignment: .leading, spacing: 4) {
+                TodoCard(items: items)
+                Button("Hide") { expanded = false }
+                    .buttonStyle(.plain).font(Theme.metaFont).foregroundStyle(.tint)
+                    .padding(.leading, Theme.gutter)
+            }
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: "checklist").font(.system(size: 11))
+                Text("Plan updated — \(items.filter { $0.status == .completed }.count) of \(items.count) done")
+                    .font(Theme.metaFont)
+                Text("·").font(Theme.metaFont)
+                Button("Show") { expanded = true }
+                    .buttonStyle(.plain).font(Theme.metaFont).foregroundStyle(.tint)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.leading, Theme.gutter)
+        }
     }
 }
 
@@ -885,42 +1009,6 @@ private struct ThinkingRow: View {
     }
 }
 
-/// Background subagents still working in this chat, above the composer.
-private struct BackgroundAgentsBar: View {
-    @Environment(AppModel.self) private var model
-    let session: SessionVM
-
-    var body: some View {
-        let jobs = session.runningBackgroundJobs
-        HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text("\(jobs.count) background agent\(jobs.count == 1 ? "" : "s")")
-                .font(.system(size: 11, weight: .semibold))
-            Text(jobs.map { "\($0.id) “\($0.description)”" }.joined(separator: " · "))
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.tail)
-            Spacer()
-            Menu {
-                ForEach(jobs) { job in
-                    Button("Stop \(job.id) “\(job.description)”") {
-                        model.transport.stopBackgroundAgent(sessionID: session.id, id: job.id)
-                    }
-                }
-                Divider()
-                Button("Stop all") { model.transport.stopBackgroundAgents(sessionID: session.id) }
-            } label: {
-                Image(systemName: "stop.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Stop background agents")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
 /// The active `/goal`, above the composer.
 private struct GoalBanner: View {
     let goal: SessionVM.GoalState
@@ -1048,18 +1136,24 @@ private struct GateCard: View {
     }
 }
 
-/// First-run content for an empty chat: what this is, and a few openers.
+/// First-run content for an empty chat: what this is, and a few openers. A chat without a project is a regular
+/// conversation: general openers (and a couple of the user's skills), with a small link to open a folder for code.
 private struct ChatStarterView: View {
     @Environment(AppModel.self) private var model
     let session: SessionVM
     let send: (String) -> Void
+    @State private var skills: [Skill] = []
 
     private var suggestions: [(String, String)] {
-        if session.cwd == nil {
-            return [
-                ("folder.badge.plus", "Open a project folder so I can read and edit its files"),
-                ("questionmark.circle", "What can you do?"),
+        if session.isPlain {
+            var openers = [
+                ("lightbulb", "Explain something simply"),
+                ("pencil.line", "Help me write or rewrite something"),
+                ("globe", "Summarise a web page"),
+                ("list.bullet.clipboard", "Plan something with me"),
             ]
+            for skill in skills.prefix(2) { openers.append(("graduationcap", "Use the \(skill.name) skill")) }
+            return openers
         }
         return [
             ("map", "Give me a tour of this codebase — the entry points and how it fits together"),
@@ -1076,7 +1170,7 @@ private struct ChatStarterView: View {
                     .font(.title2)
                     .foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.projectName ?? "No project open")
+                    Text(session.projectName ?? session.title)
                         .font(.title3.weight(.semibold))
                     Text(model.config.activeProvider.map { "Running on \($0.displayName)" }
                          ?? "No model configured")
@@ -1088,11 +1182,7 @@ private struct ChatStarterView: View {
 
             ForEach(suggestions, id: \.1) { icon, text in
                 Button {
-                    if session.cwd == nil, icon == "folder.badge.plus" {
-                        model.chooseProject()
-                    } else {
-                        send(text)
-                    }
+                    send(text)
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: icon)
@@ -1112,6 +1202,19 @@ private struct ChatStarterView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            if session.isPlain {
+                Button("Open a folder to work on code") { model.chooseProject() }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.tint)
+            }
+        }
+        .task(id: session.id) {
+            guard session.isPlain else { return }
+            let disabled = model.config.disabledSkills
+            skills = model.transport.skills(for: session)
+                .filter { !$0.shadowed && !disabled.contains($0.id) && $0.kind == .skill && $0.origin != .builtin }
         }
     }
 }
@@ -1155,8 +1258,8 @@ struct FlowLayout: Layout {
 
 // MARK: - Model switching
 
-/// The model in use, and one click to change it: the Spark's models (served
-/// by the Spark Swapper) and the provider routes configured in Settings.
+/// The model in use, and one click to change it: what each Spark Swapper box serves (switching it), and the
+/// routes configured in Settings.
 private struct ModelMenu: View {
     @Environment(AppModel.self) private var model
     let session: SessionVM
@@ -1167,68 +1270,72 @@ private struct ModelMenu: View {
         let limit = model.transport.contextLimit()
         Menu {
             if spark.isConfigured {
-                Section("DGX Spark — what it serves") {
-                    if let status = spark.status {
-                        ForEach(status.ordered) { m in
-                            Button {
-                                spark.request(m)
-                            } label: {
-                                Label("\(m.title) — \(Self.short(m.context))"
-                                      + (m.key == status.active ? "  (serving)" : m.running ? "  (loading)" : ""),
-                                      systemImage: m.key == status.active ? "checkmark.circle.fill"
-                                          : m.running ? "hourglass" : "arrow.triangle.2.circlepath")
+                ForEach(spark.boxes) { box in
+                    Section("\(box.name) — what it serves") {
+                        if let status = box.status {
+                            ForEach(status.ordered) { m in
+                                Button {
+                                    spark.request(m, on: box)
+                                } label: {
+                                    Label(Self.line(m, status: status),
+                                          systemImage: m.key == status.active ? "checkmark.circle.fill"
+                                              : !m.isInstalled ? "arrow.down.circle"
+                                              : m.running ? "hourglass" : "arrow.triangle.2.circlepath")
+                                }
+                                // Installing happens in Settings ▸ Model Servers, not from here.
+                                .disabled(m.key == status.active || status.isSwitching || !m.isInstalled)
                             }
-                            .disabled(m.key == status.active || status.isSwitching)
+                        } else {
+                            Text(box.lastError ?? "Connecting to \(box.name)…")
                         }
-                    } else {
-                        Text(spark.lastError ?? "Connecting to the Spark…")
                     }
-                    Button("Refresh") { Task { await spark.refresh() } }
                 }
+                Button("Refresh") { Task { await spark.refreshAll() } }
             } else {
-                Button("Set Up Spark Model Switching…") { model.showSettings = true }
+                Button("Connect a Spark Swapper…") { model.showSwapperGuide() }
             }
-            Section("Providers") {
-                ForEach(model.config.providers, id: \.routeID) { p in
-                    Button {
-                        model.config.activeRoute = p.routeID
-                        model.transport.resetRouteCache()
-                    } label: {
-                        Label(p.displayName, systemImage: p.routeID == model.config.activeRoute ? "checkmark" : "")
-                    }
-                }
-            }
+            RouteMenuSections()
         } label: {
-            Label("\(current) · \(Self.short(limit))", systemImage: spark.isSwitching ? "hourglass" : "cpu")
+            Label("\(current) · \(ModelSizes.short(limit))", systemImage: spark.isSwitchingMainModel ? "hourglass" : "cpu")
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .foregroundStyle(.secondary)
         .disabled(session.running)
-        .help("Model in use and its context window. Pick a Spark model to switch what the Spark serves (also /swap), or another configured provider.")
-        .task { if spark.isConfigured && spark.status == nil { await spark.refresh() } }
+        .help("Model in use and its context window. Pick a model a Spark Swapper box serves to switch it (also /swap), or another configured route.")
+        .task { if spark.boxes.contains(where: { $0.status == nil }) { await spark.refreshAll() } }
     }
 
-    static func short(_ n: Int) -> String {
-        n >= 1_000_000
-            ? String(format: "%.1fM", Double(n) / 1_000_000).replacingOccurrences(of: ".0M", with: "M")
-            : "\(n / 1024)K"
+    /// "Qwen3.8 27B — 1M · 27 tok/s measured here  (serving)"
+    static func line(_ m: SwapperStatus.Model, status: SwapperStatus) -> String {
+        var text = "\(m.title) — \(ModelSizes.short(m.window))"
+        if let speed = m.speedText() { text += " · \(speed)" }
+        if !m.isInstalled { text += " · Not installed" }
+        else if m.key == status.active { text += "  (serving)" } else if m.running { text += "  (loading)" }
+        return text
     }
+
+    static func short(_ n: Int) -> String { ModelSizes.short(n) }
 }
 
-/// Live progress while the Spark switches models, above the composer.
+/// Live progress while a box switches models, above the composer.
 private struct SparkSwapBanner: View {
     @Environment(AppModel.self) private var model
     @State private var tick = Date()
 
     var body: some View {
-        if let line = model.spark.progressLine {
+        let lines = model.spark.progressLines
+        if !lines.isEmpty {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(line)
-                    .font(.system(size: 11))
-                    .monospacedDigit()
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(lines, id: \.self) { line in
+                        Text(line)
+                            .font(.system(size: 11))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                    }
+                }
                 Spacer()
                 Text(tick, style: .time).hidden()   // keeps the timer line redrawing
             }

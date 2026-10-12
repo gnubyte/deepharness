@@ -30,13 +30,34 @@ public struct ToolContext: Sendable {
     /// Background subagents this chat has launched (`agent` with
     /// run_in_background, `agent_status`, `agent_stop`). Nil for subagents.
     public let backgroundAgents: BackgroundAgents?
+    /// The model servers subagents run on (workers first, the primary as
+    /// overflow). Nil = a subagent uses this run's own client.
+    public let fleet: AgentFleet?
+    /// Every subagent this chat has started, for the UI. Nil = not tracked.
+    public let roster: AgentRoster?
+    /// The kinds of subagent available (nil = the built-in ones).
+    public let agentTypes: AgentCatalog?
+    /// How the parent retries a model that doesn't answer; subagents follow it
+    /// (nil = the standard policy).
+    public let retry: RetryPolicy?
+    /// The parent's model settings, which a subagent on the same server shares
+    /// (a subagent on another server uses that server's — see `FleetTarget`).
+    public let visionEnabled: Bool
+    public let temperature: Double?
+    public let maxOutputTokens: Int?
+    /// The run is unattended work (a queue task, `/goal`): subagents keep off servers whose plans allow
+    /// interactive use only.
+    public let unattended: Bool
 
     public init(workspace: URL, policy: PermissionPolicy,
                 client: any LLMClient, registry: ToolRegistry, depth: Int = 0,
                 model: String = "", contextWindow: Int? = nil, thinking: ThinkingLevel? = nil,
                 requestPermission: @escaping @Sendable (_ id: String, _ name: String, _ detail: String) async -> Bool = { _, _, _ in true },
                 vault: CredentialVault? = nil, vaultGrants: VaultGrants = VaultGrants(),
-                backgroundAgents: BackgroundAgents? = nil) {
+                backgroundAgents: BackgroundAgents? = nil,
+                fleet: AgentFleet? = nil, roster: AgentRoster? = nil, agentTypes: AgentCatalog? = nil,
+                retry: RetryPolicy? = nil, visionEnabled: Bool = true,
+                temperature: Double? = nil, maxOutputTokens: Int? = nil, unattended: Bool = false) {
         self.workspace = workspace
         self.policy = policy
         self.client = client
@@ -49,6 +70,14 @@ public struct ToolContext: Sendable {
         self.vault = vault
         self.vaultGrants = vaultGrants
         self.backgroundAgents = backgroundAgents
+        self.fleet = fleet
+        self.roster = roster
+        self.agentTypes = agentTypes
+        self.retry = retry
+        self.visionEnabled = visionEnabled
+        self.temperature = temperature
+        self.maxOutputTokens = maxOutputTokens
+        self.unattended = unattended
     }
 }
 
@@ -204,18 +233,39 @@ public struct ToolRegistry: Sendable {
 
     /// A copy without the named tools (subagents lose `agent`).
     public func removing(_ names: String...) -> ToolRegistry {
+        removing(names)
+    }
+
+    /// A copy without the named tools.
+    public func removing(_ names: [String]) -> ToolRegistry {
         ToolRegistry(tools: tools.filter { !names.contains($0.name) })
     }
 
-    public static func standard(depth: Int = 0) -> ToolRegistry {
-        // `agent` is only offered at the top level: subagents don't spawn
+    /// A copy with only the named tools (an agent type's allow list).
+    public func only(_ names: [String]) -> ToolRegistry {
+        ToolRegistry(tools: tools.filter { names.contains($0.name) })
+    }
+
+    /// A copy with every tool replaced by `transform` of it.
+    func mapping(_ transform: (any ToolExecutor) -> any ToolExecutor) -> ToolRegistry {
+        ToolRegistry(tools: tools.map(transform))
+    }
+
+    /// The built-in tool set. `agents` are the agent types the `agent` and `delegate` tools offer in their
+    /// descriptions (nil = the built-in ones); `servers`, the subagent servers and their privacy, which they name.
+    public static func standard(depth: Int = 0, agents: AgentCatalog? = nil,
+                                servers: [SubagentServers.Entry]? = nil) -> ToolRegistry {
+        // `agent` and `delegate` are only offered at the top level: subagents don't spawn
         // subagents (keeps the permission surface and cost predictable).
         var tools: [any ToolExecutor] = [
             ReadFileTool(), WriteFileTool(), EditTool(), ListDirectoryTool(),
             ReadManyFilesTool(), GlobTool(), GrepTool(),
             RunShellCommandTool(), WebFetchTool(), TodoWriteTool(), ExitPlanModeTool(),
         ]
-        if depth == 0 { tools.append(AgentTool()) }
+        if depth == 0 {
+            tools.append(AgentTool(catalog: agents, servers: servers))
+            tools.append(DelegateTool(catalog: agents, servers: servers))
+        }
         return ToolRegistry(tools: tools)
     }
 

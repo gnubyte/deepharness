@@ -30,11 +30,18 @@ public struct RetryPolicy: Sendable {
     public var enabled: Bool
     /// Seconds to wait before retry attempt `n` (1-based).
     public var delay: @Sendable (Int) -> TimeInterval
+    /// Give up (surface the error) after this many failures in a row, whatever
+    /// their kind. Nil = keep retrying transient failures for as long as it
+    /// takes. A subagent on a multi-server fleet sets this so a dead server
+    /// hands its task to another instead of being waited on for ever.
+    public var maxFailures: Int?
 
     public init(enabled: Bool = true,
-                delay: @escaping @Sendable (Int) -> TimeInterval = RequestRetry.backoff(attempt:)) {
+                delay: @escaping @Sendable (Int) -> TimeInterval = RequestRetry.backoff(attempt:),
+                maxFailures: Int? = nil) {
         self.enabled = enabled
         self.delay = delay
+        self.maxFailures = maxFailures
     }
 
     /// Retry transient failures indefinitely with the standard backoff.
@@ -76,6 +83,11 @@ public enum RequestRetry {
                 return .untilAvailable
             case .http(let code, let body):
                 return disposition(httpStatus: code, body: body)
+            case .rejected(let code, _, let body, let permanent):
+                // The client knows better than the status code: a Bedrock 404
+                // for a model id will not appear by waiting, unlike a
+                // self-hosted server that is swapping models.
+                return permanent ? .fail : disposition(httpStatus: code, body: body)
             }
         }
         if let url = error as? URLError { return disposition(urlCode: url.code) }
@@ -141,7 +153,7 @@ public enum RequestRetry {
     public static func reason(for error: Error) -> String {
         if let llm = error as? LLMError {
             switch llm {
-            case .http(let code, let body):
+            case .http(let code, let body), .rejected(let code, _, let body, _):
                 let snippet = body.trimmingCharacters(in: .whitespacesAndNewlines)
                     .replacingOccurrences(of: "\n", with: " ")
                 return snippet.isEmpty ? "HTTP \(code)" : "HTTP \(code): \(snippet.prefix(80))"

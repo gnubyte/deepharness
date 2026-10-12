@@ -13,7 +13,13 @@ public final class AppTransport {
 
     public private(set) var sessions: [SessionVM] = []
     public var selectedID: String?
-    public var banner: String?
+    public var banner: String? {
+        // A banner about something else is no longer about the AWS sign-in.
+        didSet { awsSignInProfile = nil }
+    }
+    /// Set right after a banner that says a Bedrock route's AWS sign-in ran out: the AWS CLI profile
+    /// the banner's "Sign in to AWS…" button signs in again.
+    public var awsSignInProfile: String?
     /// Plugin manifests loaded for the current project, and any that failed.
     public private(set) var plugins: [PluginManifest] = []
     public private(set) var pluginErrors: [String] = []
@@ -33,12 +39,23 @@ public final class AppTransport {
     @ObservationIgnored private var vaultGrants: [String: VaultGrants] = [:]
     /// Per chat: background subagents it launched.
     @ObservationIgnored private var backgroundPools: [String: BackgroundAgents] = [:]
+    /// The model servers subagents run on: the main route is the primary, the routes flagged "Use for
+    /// subagents" are workers. One per app, shared by every chat, so two chats can't both fill the same Spark.
+    @ObservationIgnored let fleet = AgentFleet()
+    /// Per chat: every subagent it started — waiting for a server, working, finished.
+    @ObservationIgnored var rosters: [String: AgentRoster] = [:]
+    /// Worker route → what the server said it serves, and when (a Spark may have swapped models since).
+    @ObservationIgnored var workerProbe: [String: (info: ModelInfo, at: Date)] = [:]
+    /// Agent types by project folder, with the stamp of the files they were read from.
+    @ObservationIgnored var agentCatalogs: [String: (catalog: AgentCatalog, stamp: String)] = [:]
     /// Per chat: queue tasks the agent has added (capped, so a runaway loop
     /// can't flood the queue).
     @ObservationIgnored private var agentQueuedCount: [String: Int] = [:]
     static let maxAgentQueuedTasksPerChat = 20
     /// Automatic continuations since the user last sent something, per chat.
     @ObservationIgnored private var autoContinuations: [String: Int] = [:]
+    /// Chats carrying on by themselves right now (after their background agents finished): unattended work.
+    @ObservationIgnored private var autoTurns: Set<String> = []
     static let maxAutoContinuations = 3
     /// Where the task queue is persisted.
     @ObservationIgnored private let queueFile: URL
@@ -72,6 +89,8 @@ public final class AppTransport {
     private var routeInfo: [String: RouteInfo] = [:]
     /// Route IDs whose probe is already in flight (avoids duplicate requests).
     @ObservationIgnored private var probingContext: Set<String> = []
+    /// Chats told this turn that it ran on a backup.
+    @ObservationIgnored private var failoverNoticed: Set<String> = []
 
     // MARK: - Task queue
 
@@ -121,6 +140,14 @@ public final class AppTransport {
         var vision: Bool
         /// The vault's names are in the prompt; a change rebuilds it.
         var vault: Int
+        /// The subagent types (and the files they come from) are in the tool descriptions.
+        var agents: String
+        /// The backups the main model's client falls over to.
+        var backups: [ProviderProfile]
+        /// The subagent servers and their privacy are in the prompt and the agent tools' descriptions.
+        var servers: [SubagentServers.Entry]
+        /// Unattended work (a queue task, `/goal`): no backups or subagent servers that are interactive-only.
+        var unattended: Bool
     }
 
     /// Everything about skills one turn needs: what exists, what's on, and the prompt text.
@@ -140,6 +167,37 @@ public final class AppTransport {
     @ObservationIgnored var isServerSwitching: (() -> Bool)?
     /// Handles `/swap [model]`.
     @ObservationIgnored var onSwapCommand: ((String?, SessionVM) -> Void)?
+
+    // MARK: - Chats without a project
+
+    /// The folder a chat without a project works in: its own scratch folder under the app's data folder (made on
+    /// first use), or the one it was lent.
+    func scratchFolder(for vm: SessionVM, create: Bool = false) -> URL {
+        let folder = vm.workFolder.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? ChatPrompt.scratchFolder(chatID: vm.id, appSupport: skillLocations.appSupport)
+        if create { try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        return folder
+    }
+
+    /// The start of a chat's system prompt: with a project, the coding agent's prompt and the project's
+    /// instructions; without one, a regular conversation's, with the user's own instruction files (and memory) from
+    /// their home folder as before, and no project context.
+    static func basePrompt(for vm: SessionVM, workspace: URL, coding: String, model: String,
+                           projectContext: ProjectContext?, home: URL) -> String {
+        if let project = vm.workspaceURL {
+            // Project instructions + skills + plugin tools are what make this a
+            // harness rather than a chat window.
+            let context = projectContext?.root == project ? projectContext! : ProjectContext.load(root: project)
+            let environment = ProjectContext.environmentBlock(workspace: project, model: model, preset: vm.preset)
+            return coding + "\n\n" + context.promptSupplement(environment: environment, includeSkills: false)
+        }
+        var prompt = ChatPrompt.base(project: nil, scratch: workspace, codingPrompt: coding)
+        prompt += "\n\n" + ChatPrompt.environment(scratch: workspace, model: model, preset: vm.preset)
+        if let own = ChatPrompt.userInstructions(ProjectContext.instructionFiles(root: home)) {
+            prompt += "\n\n" + own
+        }
+        return prompt
+    }
 
     /// Post a notice into the chat the user is looking at.
     func broadcast(_ text: String, error: Bool = false) {
@@ -163,6 +221,8 @@ public final class AppTransport {
         reload()
         refreshDrafts()
         loadQueue()
+        config.onRoutesChanged = { [weak self] in self?.refreshFleet() }
+        refreshFleet()
     }
 
     public var selected: SessionVM? {
@@ -179,10 +239,13 @@ public final class AppTransport {
     read before you edit, and check your work after you change something. When a task needs more than a
     couple of steps, track it with `todo_write` so the user can see the plan.
 
-    Parallel and background work: for a well-scoped side task, launch a subagent with `agent` — with \
-    run_in_background: true it works while you continue (several can run at once); you're told when each \
-    finishes, and agent_status / agent_stop manage them. Long-running programs go in `process_start`. \
-    Follow-up work that can happen later, unattended, goes on the task queue with `queue_task`.
+    Parallel and background work: for a well-scoped side task, launch a subagent with `agent` — pick an \
+    `agent_type` (explore: read-only research; plan; review; worker: makes changes). To fan several \
+    independent tasks out at once use `delegate`; with several model servers configured they run on \
+    different machines. With run_in_background: true a subagent works while you continue (several can run \
+    at once); you're told when each finishes, and agent_status / agent_stop manage them. Long-running \
+    programs go in `process_start`. Follow-up work that can happen later, unattended, goes on the task \
+    queue with `queue_task`.
 
     Rules that matter:
     - Never claim a command succeeded unless you ran it and saw the output.
@@ -218,17 +281,27 @@ public final class AppTransport {
     // MARK: - Sessions
 
     @discardableResult
-    public func newSession(cwd: String?, preset: PermissionPreset? = nil, select: Bool = true) -> SessionVM {
+    public func newSession(cwd: String?, preset: PermissionPreset? = nil, select: Bool = true,
+                           workFolder: String? = nil) -> SessionVM {
         let id = UUID().uuidString
         let resolved = preset ?? config.asPreset
         let vm = SessionVM(id: id, title: "New chat", cwd: cwd, preset: resolved)
+        if cwd == nil { vm.workFolder = workFolder }
         sessions.insert(vm, at: 0)
-        log.upsert(id: id, cwd: cwd, title: "New chat", preset: resolved.rawValue)
+        log.upsert(id: id, cwd: cwd, title: "New chat", preset: resolved.rawValue, scratch: vm.workFolder)
         if select { selectedID = id }
         return vm
     }
 
     public func deleteSession(_ id: String) {
+        // A chat without a project takes its own scratch folder with it — unless tasks it queued still work there:
+        // then the folder goes when the last of them is done (`releaseBorrowedFolder`).
+        if let vm = sessions.first(where: { $0.id == id }), vm.isPlain {
+            let own = ChatPrompt.scratchFolder(chatID: id, appSupport: skillLocations.appSupport)
+            if !queue.tasks.contains(where: { $0.workFolder == own.path && Self.mayStillRun($0.status) }) {
+                try? FileManager.default.removeItem(at: own)
+            }
+        }
         resolveAllGates(for: id, with: false)
         runTasks[id]?.cancel()
         runTasks[id] = nil
@@ -307,9 +380,11 @@ public final class AppTransport {
     @discardableResult
     public func queueAdd(_ title: String, details: String = "", atFront: Bool = false) -> QueueTask {
         // The task runs in the project it was queued in, even if the app has
-        // moved on to another project by the time its turn comes.
+        // moved on to another project by the time its turn comes — or, with
+        // no project open, in the scratch folder of the chat without one.
         let cwd = projectContext?.root.path ?? selected?.cwd
-        let t = queue.add(title, details: details, atFront: atFront, cwd: cwd)
+        let folder = cwd == nil ? selected.map { scratchFolder(for: $0).path } : nil
+        let t = queue.add(title, details: details, atFront: atFront, cwd: cwd, workFolder: folder)
         return queue[t.id] ?? t
     }
 
@@ -322,8 +397,28 @@ public final class AppTransport {
         // store marks a running task skipped (keeping its record), so the
         // runner moves on to the next task rather than pausing.
         let sessionID = queueSessions.first(where: { $0.value == id })?.key
+        let borrowed = queue.task(id)?.workFolder
         queue.remove(id: id)
         if let sessionID { stopSession(sessionID) }
+        releaseBorrowedFolder(borrowed)
+    }
+
+    /// A task may still work in its folder: it is waiting, running, or could be resumed.
+    static func mayStillRun(_ status: QueueTaskStatus) -> Bool {
+        [.queued, .running, .blocked, .failed].contains(status)
+    }
+
+    /// The scratch folder a chat without a project lent its queued tasks outlives the chat while one of them may
+    /// still work there; once none may, and the chat is gone, the folder goes too. (Only ever a folder under the
+    /// app's own Chats folder.)
+    func releaseBorrowedFolder(_ path: String?) {
+        guard let path else { return }
+        let folder = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        let chats = skillLocations.appSupport.appendingPathComponent("Chats", isDirectory: true).standardizedFileURL
+        guard folder.deletingLastPathComponent().path == chats.path,
+              !sessions.contains(where: { $0.id == folder.lastPathComponent }),
+              !queue.tasks.contains(where: { $0.workFolder == path && Self.mayStillRun($0.status) }) else { return }
+        try? FileManager.default.removeItem(at: folder)
     }
 
     /// Put a blocked, failed or skipped task back in line — at the front, so
@@ -381,6 +476,11 @@ public final class AppTransport {
     public func startQueue(only taskID: String? = nil) {
         guard config.isConfigured else {
             broadcast("No model is configured — run the setup wizard, then start the queue.", error: true)
+            return
+        }
+        // A plan whose terms allow only interactive use never works unattended.
+        if let route = config.interactiveOnlyMain {
+            broadcast(Self.interactiveOnlyQueueMessage(route), error: true)
             return
         }
         if queueRunning {
@@ -469,6 +569,12 @@ public final class AppTransport {
         var first = true
         while queueActive(generation), !Task.isCancelled {
             guard let task = nextQueueTask() else { break }
+            // The primary was changed to an interactive-only plan while the queue ran: pause before the next task.
+            if let route = config.interactiveOnlyMain {
+                config.queuePaused = true
+                broadcast(Self.interactiveOnlyQueueMessage(route), error: true)
+                return
+            }
             let outcome = await work(taskID: task.id, generation: generation, first: first)
             first = false
             switch outcome {
@@ -517,6 +623,11 @@ public final class AppTransport {
             guard let task = queue.task(taskID), task.status == .queued else { return .finished }
             if let existing = task.sessionID.flatMap({ id in sessions.first(where: { $0.id == id }) }) {
                 vm = existing
+            } else if task.cwd == nil, let folder = task.workFolder {
+                // Queued from a chat without a project: a chat without one, working in that chat's folder.
+                vm = newSession(cwd: nil, select: false, workFolder: folder)
+                renameSession(vm.id, to: "🚀 \(task.title)")
+                queue.attachSession(taskID, vm.id)
             } else {
                 let cwd = task.cwd ?? projectContext?.root.path ?? sessions.first?.cwd
                 vm = newSession(cwd: cwd, select: false)
@@ -571,6 +682,8 @@ public final class AppTransport {
 
         let status = queue.task(taskID)?.status
         finishTaskSession(vm, taskID: taskID)
+        // A folder borrowed from a chat that has since been deleted goes once its last task is done.
+        if status == .complete { releaseBorrowedFolder(queue.task(taskID)?.workFolder) }
         // Archive finished tasks: the transcript stays on disk (auto-compaction
         // kept it small), the in-memory transcript + engine go — so 100 tasks
         // over a week don't pile up in RAM. Blocked tasks keep their session
@@ -710,6 +823,7 @@ public final class AppTransport {
             let cwd = (row.cwd?.isEmpty ?? true) ? nil : row.cwd
             let vm = SessionVM(id: row.id, title: row.title, cwd: cwd,
                                preset: PermissionPreset(rawValue: row.preset ?? "") ?? .workspaceWrite)
+            if cwd == nil { vm.workFolder = row.scratch }
             vm.updatedAt = row.updatedAt
             vm.loaded = false
             return vm
@@ -809,25 +923,22 @@ public final class AppTransport {
     // MARK: - Engine
 
     private func engine(for sessionID: String, vm: SessionVM, client: any LLMClient,
-                        window: Int, thinking: ThinkingLevel?, skillState: SkillState) -> Engine {
-        let workspace = vm.workspaceURL ?? FileManager.default.homeDirectoryForCurrentUser
+                        window: Int, thinking: ThinkingLevel?, skillState: SkillState, unattended: Bool) -> Engine {
+        // A chat without a project works in its own scratch folder, which the permission preset then confines it to
+        // exactly as a project folder would.
+        let workspace = vm.workspaceURL ?? scratchFolder(for: vm, create: true)
         let policy = PermissionPolicy(preset: vm.preset, workspaceRoot: workspace)
-        let model = (client as? OpenAIClient)?.profile.model ?? "model"
+        let model = (client as? any ProviderClient)?.profile.model ?? "model"
 
-        // Project instructions + skills + plugin tools are what make this a
-        // harness rather than a chat window.
-        let context = projectContext?.root == workspace ? projectContext : ProjectContext.load(root: workspace)
-        let environment = ProjectContext.environmentBlock(workspace: workspace, model: model, preset: vm.preset)
-        var prompt = basePrompt
-        if let context {
-            prompt += "\n\n" + context.promptSupplement(environment: environment, includeSkills: false)
-        } else {
-            prompt += "\n\n" + environment
-        }
+        var prompt = Self.basePrompt(for: vm, workspace: workspace, coding: basePrompt, model: model,
+                                     projectContext: projectContext, home: skillLocations.home)
         // Skills: always-on rules, the ones the user selected for this chat,
         // and a catalog the model can load from with `use_skill`.
         if !skillState.result.text.isEmpty { prompt += "\n\n" + skillState.result.text }
         prompt += "\n\n" + Self.vaultPrompt(vault.all)
+        // Which subagent servers may see sensitive data.
+        let servers = subagentServerEntries
+        if let note = SubagentServers.note(servers) { prompt += "\n\n--- Subagent servers ---\n" + note }
         if vm.preset == .plan {
             prompt += """
 
@@ -838,7 +949,7 @@ public final class AppTransport {
         }
         systemPrompts[sessionID] = prompt
 
-        let builtins = ToolRegistry.standard()
+        let builtins = ToolRegistry.standard(agents: agentCatalog(for: vm), servers: servers.isEmpty ? nil : servers)
         var extra: [any ToolExecutor] = PluginLoader.tools(from: plugins, reserved: Set(builtins.names))
         if !skillState.active.isEmpty { extra.append(UseSkillTool(skills: skillState.active)) }
         extra.append(VaultSearchTool(vault: vault))
@@ -863,17 +974,20 @@ public final class AppTransport {
         }
         let registry = builtins.adding(extra)
 
+        var engineConfig = EngineConfig(model: model,
+                                        temperature: (client as? any ProviderClient)?.profile.temperature,
+                                        maxOutputTokens: (client as? any ProviderClient)?.profile.maxOutputTokens,
+                                        contextWindow: window,
+                                        thinking: thinking,
+                                        visionEnabled: visionOn(for: (client as? any ProviderClient)?.profile),
+                                        retry: retryPolicy)
+        // Subagents of a queue task or a /goal keep off servers that are for interactive use only.
+        engineConfig.unattended = unattended
         let engine = Engine(
             client: client,
             registry: registry,
             systemPrompt: prompt,
-            config: .init(model: model,
-                          temperature: (client as? OpenAIClient)?.profile.temperature,
-                          maxOutputTokens: (client as? OpenAIClient)?.profile.maxOutputTokens,
-                          contextWindow: window,
-                          thinking: thinking,
-                          visionEnabled: visionOn(for: (client as? OpenAIClient)?.profile),
-                          retry: retryPolicy),
+            config: engineConfig,
             workspace: workspace,
             policy: policy,
             permissionGate: { [weak self] id, name, detail in
@@ -882,7 +996,9 @@ public final class AppTransport {
             },
             onTodos: { [weak self] todos in
                 Task { @MainActor [weak self] in
-                    self?.sessions.first { $0.id == sessionID }?.setTodos(todos)
+                    guard let self, let vm = self.sessions.first(where: { $0.id == sessionID }) else { return }
+                    vm.setTodos(todos)
+                    if !todos.isEmpty { self.planAppeared(in: vm) }
                 }
             },
             compaction: { [weak self] used, messages in
@@ -895,7 +1011,10 @@ public final class AppTransport {
             },
             vault: vault,
             vaultGrants: vaultGrants(for: sessionID),
-            backgroundAgents: backgroundPool(for: sessionID)
+            backgroundAgents: backgroundPool(for: sessionID),
+            fleet: fleet,
+            roster: roster(for: sessionID),
+            agentTypes: agentCatalog(for: vm)
         )
         engines[sessionID] = engine
         return engine
@@ -938,6 +1057,11 @@ public final class AppTransport {
               vm.runningBackgroundJobs.isEmpty,
               let pool = backgroundPools[vm.id], pool.all.contains(where: { $0.status == .done || $0.status == .failed }),
               isServerSwitching?() != true else { return }
+        // Carrying on by itself is unattended work, which an interactive-only plan doesn't allow.
+        if config.interactiveOnlyMain != nil {
+            vm.note("Background agents finished — reply to continue.")
+            return
+        }
         // At most a few automatic continuations in a row: a model that keeps
         // relaunching agents must not loop unattended forever.
         guard autoContinuations[vm.id, default: 0] < Self.maxAutoContinuations else {
@@ -950,7 +1074,11 @@ public final class AppTransport {
         autoContinuations[vm.id, default: 0] += 1
         let modelText = "(Automatic — not from the user.) Your background agents finished:\n\n"
             + BackgroundAgents.notice(for: unseen) + "\n\nContinue the task with their results."
-        runTasks[vm.id] = Task { await runTurn(vm, text: "🤖 Background agents finished — continuing", modelText: modelText) }
+        runTasks[vm.id] = Task {
+            autoTurns.insert(vm.id)
+            defer { autoTurns.remove(vm.id) }
+            await runTurn(vm, text: "🤖 Background agents finished — continuing", modelText: modelText)
+        }
     }
 
     public func stopBackgroundAgent(sessionID: String, id: String) {
@@ -969,8 +1097,11 @@ public final class AppTransport {
         }
         agentQueuedCount[sessionID] = count + 1
         let vm = sessions.first { $0.id == sessionID }
-        let cwd = vm?.cwd ?? projectContext?.root.path
-        let task = queue.add(title, details: details, atFront: front, cwd: cwd)
+        // From a chat without a project, the task works in that chat's own folder.
+        let plain = vm?.isPlain ?? false
+        let cwd = plain ? nil : (vm?.cwd ?? projectContext?.root.path)
+        let task = queue.add(title, details: details, atFront: front, cwd: cwd,
+                             workFolder: plain ? vm.map { scratchFolder(for: $0).path } : nil)
         queue.note(task.id, "Queued by the agent in “\(vm?.title ?? "a chat")”.")
         let position = queue.position(of: task.id) ?? 0
         var out = "Queued “\(task.title)” at #\(position) (\(queue.queuedCount) waiting)."
@@ -1112,7 +1243,7 @@ public final class AppTransport {
         if attachments.isEmpty, let (skill, args) = matchSkillCommand(text, vm: vm),
            let expanded = invocationText(skill, arguments: args) {
             if isServerSwitching?() == true {
-                vm.note("The Spark is switching models right now — send again once it says it's ready.")
+                vm.note("The main model's server is switching models right now — send again once it says it's ready.")
                 return
             }
             let display = "/\(skill.slug)" + (args.isEmpty ? "" : " \(args)")
@@ -1120,7 +1251,7 @@ public final class AppTransport {
             return
         }
         if isServerSwitching?() == true {
-            vm.note("The Spark is switching models right now — send again once it says it's ready (usually a few minutes).")
+            vm.note("The main model's server is switching models right now — send again once it says it's ready (usually a few minutes).")
             return
         }
         runTasks[sessionID] = Task { await runTurn(vm, text: text, attachments: attachments) }
@@ -1196,9 +1327,16 @@ public final class AppTransport {
                 }
             }
 
+        case .agents:
+            agentsCommand(vm)
+
         case .goal(let goal):
+            if let route = config.interactiveOnlyMain {
+                vm.note(Self.interactiveOnlyGoalMessage(route), role: .error)
+                return
+            }
             if isServerSwitching?() == true {
-                vm.note("The Spark is switching models right now — send again once it says it's ready.")
+                vm.note("The main model's server is switching models right now — send again once it says it's ready.")
                 return
             }
             // A bare `/goal` picks the chat's unfinished goal back up (after a
@@ -1263,7 +1401,7 @@ public final class AppTransport {
         }
         vm.activity = "Compacting conversation…"
         defer { vm.activity = nil }
-        let client = OpenAIClient(profile: profile)
+        let client = ProviderClients.make(profile)
         guard let summary = await Compaction.summarize(client: client, plan: plan,
                                                        model: profile.model, focus: focus),
               !Task.isCancelled else {
@@ -1346,12 +1484,34 @@ public final class AppTransport {
                 log.recordItem(sessionID, kind: "notice", text: "Stopped.", toolName: nil, argSummary: nil, output: nil, isError: false)
                 return
             }
-            let message = Self.describe(error)
+            let message = PlanCatalog.explainChatError(error, route: config.activeProvider) ?? Self.describe(error)
             vm.endStreaming()
             vm.note(message, role: .error)
             log.recordItem(sessionID, kind: "error", text: message, toolName: nil, argSummary: nil, output: nil, isError: true)
             banner = message
+            awsSignInProfile = Self.expiredAWSProfile(for: error, route: config.activeProvider)
         }
+    }
+
+    /// Why the queue won't start on the main model.
+    static func interactiveOnlyQueueMessage(_ route: ProviderProfile) -> String {
+        "\(routeLabel(route)) is for interactive use only under its plan's terms, so the queue won't run on it. Make another model primary for unattended work."
+    }
+
+    /// Why `/goal` won't start on the main model (a goal keeps working without the user).
+    static func interactiveOnlyGoalMessage(_ route: ProviderProfile) -> String {
+        "\(routeLabel(route)) is for interactive use only under its plan's terms, so /goal — which keeps working without you — won't run on it. Make another model primary for unattended work."
+    }
+
+    /// The AWS CLI profile to sign in again when `error` means a Bedrock route's sign-in ran out or was
+    /// refused; nil for anything else. A Bedrock client marks exactly those refusals permanent with a
+    /// 401/403 (a missing model or a busy service are not), so on a route that signs in with an AWS
+    /// profile the remedy is always "sign in again" — and one click, not a cryptic error.
+    static func expiredAWSProfile(for error: Error, route: ProviderProfile?) -> String? {
+        guard let route, route.kind == .bedrock, let profile = route.awsProfile, !profile.isEmpty,
+              case LLMError.rejected(let status, _, _, let permanent) = error,
+              permanent, status == 401 || status == 403 else { return nil }
+        return profile
     }
 
     /// How a goal loop ends. There is no round cap: only the model's verdict,
@@ -1418,6 +1578,13 @@ public final class AppTransport {
         var markerMisplaced = false
         while true {
             if Task.isCancelled { return .stopped }
+            // The primary became an interactive-only plan while the goal ran (the user switched it): no more
+            // unattended rounds on it.
+            if let route = config.interactiveOnlyMain {
+                let why = auto ? Self.interactiveOnlyQueueMessage(route) : Self.interactiveOnlyGoalMessage(route)
+                notice(why, error: true)
+                return .blocked(why)
+            }
             let modelText: String
             let displayText: String
             if !kickedOff {
@@ -1530,9 +1697,12 @@ public final class AppTransport {
         let window = contextLimit()
         let thinking = vm.thinking
         let skillState = self.skillState(for: vm)
+        let unattended = isUnattended(vm)
+        let backups = backupProfiles(unattended: unattended)
         let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset,
                             skills: skillState.signature, computerTools: config.computerToolsEnabled,
-                            vision: visionOn(for: profile), vault: vault.revision)
+                            vision: visionOn(for: profile), vault: vault.revision, agents: agentsStamp(for: vm),
+                            backups: backups, servers: subagentServerEntries, unattended: unattended)
         if let previous = engineKeys[sessionID], previous.profile.model != profile.model {
             vm.note("The server is now serving `\(profile.model)` (was `\(previous.profile.model)`) — switched to it, \(window.formatted())-token window.")
         }
@@ -1540,11 +1710,12 @@ public final class AppTransport {
         if let existing = engines[sessionID], engineKeys[sessionID] == key {
             engine = existing
         } else {
-            engine = self.engine(for: sessionID, vm: vm, client: OpenAIClient(profile: profile),
-                                 window: window, thinking: thinking, skillState: skillState)
+            engine = self.engine(for: sessionID, vm: vm, client: mainClient(profile, backups: backups, sessionID: sessionID),
+                                 window: window, thinking: thinking, skillState: skillState, unattended: unattended)
             engineKeys[sessionID] = key
         }
         retryRoute[sessionID] = nil
+        failoverNoticed.remove(sessionID)
         let input = transcripts[sessionID] ?? []
 
         // Engine events arrive on a pool thread; hop to main so the
@@ -1569,6 +1740,8 @@ public final class AppTransport {
                 // The model never saw this message: say so, and keep it out of
                 // the replayed conversation (and compaction's counting).
                 markUndelivered(vm, entryID: userEntryID)
+                // Nor the finished background agents' reports that rode on it: announce them with the next message.
+                backgroundPools[sessionID]?.requeue(progress.takenReports)
             }
             vm.endStreaming()
             // A server overflow that still surfaced tells us the real window is
@@ -1584,6 +1757,11 @@ public final class AppTransport {
         vm.retry = nil
         transcripts[sessionID] = result.messages
         vm.lastUsage = result.usage
+        // A mask report still waiting for an answer to sit on goes on the turn's last answer.
+        if let pending = vm.pendingMask, let answer = vm.currentAnswerID {
+            vm.masked[answer] = pending
+            vm.pendingMask = nil
+        }
         // How full the context is now: server-reported prompt tokens when
         // available, otherwise a character-based estimate of the whole
         // request (system prompt + transcript).
@@ -1645,7 +1823,13 @@ public final class AppTransport {
             log.recordItem(sessionID, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
             if let taskID = queueSessions[sessionID] { queue.note(taskID, text) }
 
-        case .assistantMessage(_, let text, _):
+        case .assistantMessage(_, let text, let calls):
+            // A plan-mode run's proposed plan goes to the plan panel.
+            if let plan = calls.last(where: { $0.name == ExitPlanModeTool.name }).flatMap({ JSONArgs.string($0.arguments, "plan") }),
+               !plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                vm.proposedPlan = plan
+                planAppeared(in: vm)
+            }
             // Fold a turn's complete text if deltas never arrived, then close
             // the bubble so any tool calls render after it.
             if vm.streamingID == nil, !text.isEmpty {
@@ -1697,12 +1881,24 @@ public final class AppTransport {
         }
     }
 
+    // MARK: - The plan panel
+
+    /// The agent wrote a todo list or proposed a plan: the first time in the chat the user is looking at, the
+    /// plan panel opens by itself (when they want that).
+    private func planAppeared(in vm: SessionVM) {
+        guard !vm.planAutoOpened else { return }
+        vm.planAutoOpened = true
+        if vm.id == selectedID, config.planPanelAutoOpen, !config.planPanelOpen {
+            config.planPanelOpen = true
+        }
+    }
+
     // MARK: - Images
 
     /// Routes whose server rejected an image (learned at runtime).
     @ObservationIgnored private var noVisionRoutes: Set<String> = []
 
-    fileprivate func visionOn(for profile: ProviderProfile?) -> Bool {
+    func visionOn(for profile: ProviderProfile?) -> Bool {
         guard let profile else { return true }
         if noVisionRoutes.contains(profile.routeID) { return false }
         return profile.vision ?? true
@@ -1716,9 +1912,10 @@ public final class AppTransport {
         skillsRevision += 1
     }
 
-    /// Every skill visible from a chat's project (shadowed ones included).
+    /// Every skill visible from a chat's project (shadowed ones included). A chat without a project has the user's
+    /// own and the built-in skills — no project's. (With no chat, the open project's.)
     public func skills(for vm: SessionVM?) -> [Skill] {
-        SkillCatalog.loadAll(project: vm?.workspaceURL ?? projectContext?.root,
+        SkillCatalog.loadAll(project: vm.map(\.workspaceURL) ?? projectContext?.root,
                              locations: skillLocations, sources: config.skillSources)
     }
 
@@ -1853,7 +2050,7 @@ public final class AppTransport {
         let conversation = vm.flatMap { transcripts[$0.id] } ?? []
         let request = SkillGenerationRequest(goal: goal, conversation: conversation,
                                              existingNames: skills(for: vm).map(\.name), improving: improving)
-        return try await SkillGenerator.generate(client: OpenAIClient(profile: profile),
+        return try await SkillGenerator.generate(client: ProviderClients.make(profile),
                                                  model: profile.model, request: request)
     }
 
@@ -1899,6 +2096,14 @@ public final class AppTransport {
     }
 
     public func note(_ message: String) { banner = message }
+
+    // MARK: - The fleet's routes
+
+    /// How a route is named next to a subagent: the route's own name (e.g. "Spark 2").
+    public static func routeLabel(_ route: ProviderProfile) -> String { AppConfig.routeLabel(route) }
+
+    /// The routes subagents currently run on (see `AppConfig.workerRoutes`).
+    public var workerRoutes: [ProviderProfile] { config.workerRoutes }
 
     // MARK: - Context window
 
@@ -1959,7 +2164,7 @@ public final class AppTransport {
         let routeID = provider.routeID
         let fresh = routeInfo[routeID].map { Date().timeIntervalSince($0.at) < 15 } ?? false
         if force || !fresh {
-            if let info = await OpenAIClient(profile: provider).modelInfo(), !info.servedModels.isEmpty {
+            if let info = await ProviderClients.make(provider).modelInfo(nil), !info.servedModels.isEmpty {
                 routeInfo[routeID] = RouteInfo(servedModel: info.id, servedModels: info.servedModels,
                                                context: info.contextWindow, at: .now)
                 if let limit = info.contextWindow, limit > 0, probedContext[routeID] != limit {
@@ -1980,7 +2185,68 @@ public final class AppTransport {
         // Compare with the route the run is on now (a retry may have moved it).
         guard profile != (retryRoute[sessionID] ?? engineKeys[sessionID]?.profile) else { return nil }
         retryRoute[sessionID] = profile
-        return (OpenAIClient(profile: profile), profile.model)
+        let unattended = sessions.first(where: { $0.id == sessionID }).map(isUnattended) ?? false
+        return (mainClient(profile, backups: backupProfiles(unattended: unattended), sessionID: sessionID), profile.model)
+    }
+
+    // MARK: - Backups
+
+    /// The routes that take over when the main model fails before answering, with their keys. Unattended work
+    /// leaves out the ones whose plans allow interactive use only.
+    func backupProfiles(unattended: Bool = false) -> [ProviderProfile] {
+        config.backupRoutes.filter { !unattended || !$0.isInteractiveOnly }.map { route in
+            var profile = route
+            let key = config.apiKey(for: route)
+            profile.apiKey = key.isEmpty ? nil : key
+            return profile
+        }
+    }
+
+    /// Whether a chat is doing unattended work: a queue task, a `/goal` that keeps going without the user, or
+    /// carrying on by itself after its background agents finished.
+    func isUnattended(_ vm: SessionVM) -> Bool {
+        vm.goal != nil || queueSessions[vm.id] != nil || autoTurns.contains(vm.id)
+    }
+
+    /// A chat's client for the main model: with the backups, which take over a request the main model fails
+    /// before it answers. A turn that ran on a backup says so in the chat (once per turn).
+    func mainClient(_ profile: ProviderProfile, backups: [ProviderProfile], sessionID: String) -> any ProviderClient {
+        ProviderClients.make(profile, backups: backups, events: ClientEvents(failover: { [weak self] notice in
+            Task { @MainActor [weak self] in self?.noteFailover(notice, sessionID: sessionID) }
+        }, shield: { [weak self] report in
+            Task { @MainActor [weak self] in self?.noteMasked(report, sessionID: sessionID) }
+        }))
+    }
+
+    /// What the shield masked for a request in this chat: a chip on the turn's answer (and, the first time a
+    /// picture or a file that isn't plain text goes to a model that isn't private, a word that those can't be
+    /// checked).
+    private func noteMasked(_ report: ShieldReport, sessionID: String) {
+        guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
+        if report.unchecked, !vm.toldAboutUnchecked {
+            vm.toldAboutUnchecked = true
+            let text = Self.uncheckedNotice
+            vm.note(text)
+            log.recordItem(sessionID, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+        }
+        guard !report.isEmpty else { return }
+        // Each request masks the whole conversation, so the newest report covers the earlier ones.
+        if let answer = vm.currentAnswerID {
+            vm.masked[answer] = report
+            vm.pendingMask = nil
+        } else {
+            vm.pendingMask = report
+        }
+    }
+
+    static let uncheckedNotice =
+        "Pictures and files that aren't plain text are sent as they are — DSH can't check them for sensitive details."
+
+    private func noteFailover(_ notice: FailoverNotice, sessionID: String) {
+        guard !failoverNoticed.contains(sessionID), let vm = sessions.first(where: { $0.id == sessionID }) else { return }
+        failoverNoticed.insert(sessionID)
+        vm.note(notice.text)
+        log.recordItem(sessionID, kind: "notice", text: notice.text, toolName: nil, argSummary: nil, output: nil, isError: false)
     }
 
     /// Fire the server probe for the active route so `contextLimit` fills in a
@@ -2003,6 +2269,7 @@ public final class AppTransport {
     @MainActor
     public func resetRouteCache() {
         routeInfo.removeAll()
+        resetWorkerProbes()
         probedContext.removeAll()
         overflowCeiling.removeAll()
         engines.removeAll()
@@ -2089,7 +2356,7 @@ public final class AppTransport {
     private func summarize(sessionID: String, plan: Compaction.Plan) async -> String? {
         await resolveRoute()
         guard let profile = engineKeys[sessionID]?.profile ?? config.activeProvider.map(effective) else { return nil }
-        return await Compaction.summarize(client: OpenAIClient(profile: profile), plan: plan, model: profile.model)
+        return await Compaction.summarize(client: ProviderClients.make(profile), plan: plan, model: profile.model)
     }
 
     /// Rewrite the session's display + persisted log so the summarized part is

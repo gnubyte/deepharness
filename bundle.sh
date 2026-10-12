@@ -30,8 +30,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key>            <string>DSH</string>
   <key>CFBundleDisplayName</key>     <string>DSH</string>
   <key>CFBundleIdentifier</key>      <string>dev.local.dsh.mac</string>
-  <key>CFBundleVersion</key>         <string>14</string>
-  <key>CFBundleShortVersionString</key> <string>0.12.0</string>
+  <key>CFBundleVersion</key>         <string>16</string>
+  <key>CFBundleShortVersionString</key> <string>0.14.0</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleExecutable</key>      <string>DSH</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
@@ -44,6 +44,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <dict>
     <key>NSAllowsLocalNetworking</key> <true/>
   </dict>
+  <!-- Newer macOS asks before an app talks to other machines on your network.
+       This is the wording of that prompt. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>DSH connects to the model servers you set up on your network — DGX Sparks, Ollama or LM Studio — and to the Spark Swapper that switches their models.</string>
   <!-- The agent reads and writes the project folder you open, and the
        integrated terminal runs your login shell there. -->
   <key>NSDesktopFolderUsageDescription</key>

@@ -47,6 +47,14 @@ public struct ProjectContext: Sendable {
     /// Read the project's instruction files and skill catalog from disk.
     public static func load(root: URL, locations: SkillLocations = .standard,
                             sources: SkillSources = .all) -> ProjectContext {
+        let instructions = instructionFiles(root: root)
+        let skills = SkillCatalog.load(project: root, locations: locations, sources: sources)
+        return ProjectContext(root: root, instructions: instructions, skills: skills)
+    }
+
+    /// The instruction files in a folder (`instructionNames`, then today's daily memory log). In the home folder
+    /// these are the user's own, read into every chat without a project.
+    public static func instructionFiles(root: URL) -> [InstructionFile] {
         var instructions: [InstructionFile] = []
         for name in instructionNames {
             let url = root.appendingPathComponent(name)
@@ -54,16 +62,14 @@ public struct ProjectContext: Sendable {
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             instructions.append(InstructionFile(url: url, text: text, label: name))
         }
-        // Today's daily memory log, if the project keeps one.
+        // Today's daily memory log, if the folder keeps one.
         let today = Self.dayStamp()
         let daily = root.appendingPathComponent("memory/\(today).md")
         if let text = try? String(contentsOf: daily, encoding: .utf8),
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             instructions.append(InstructionFile(url: daily, text: text, label: "memory/\(today).md"))
         }
-
-        let skills = SkillCatalog.load(project: root, locations: locations, sources: sources)
-        return ProjectContext(root: root, instructions: instructions, skills: skills)
+        return instructions
     }
 
     public static func dayStamp(_ date: Date = .now) -> String {

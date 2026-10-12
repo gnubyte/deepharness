@@ -9,23 +9,58 @@ prompt on first launch — right-click the app and choose **Open**, or run:
 xattr -d com.apple.quarantine /Applications/DSH.app
 ```
 
-## What's new in 0.12.0 — background subagents and background tasks
+## What's new in 0.14.0 — connect a Swapper with one code, subscription plans, private models
 
-- **Background subagents.** The agent can launch a subagent with
-  `run_in_background` and keep working while it runs; up to four run in
-  parallel per chat. It checks on them with `agent_status` (optionally
-  waiting) and stops one with `agent_stop`. Reports arrive automatically when
-  an agent finishes, and a chat that went idle picks the work back up by
-  itself once its background agents are done.
-- **A bar above the composer** shows running background agents, with a menu
-  to stop one or all. Stop in the chat (and Stop All) stops them too.
-- **Background tasks.** The agent can put follow-up work on the Task Queue
-  with `queue_task` (and start the queue), so it runs unattended in its own
-  chat, in the same project. At most 20 per chat.
-- A foreground subagent may now run for up to an hour (was 5 minutes).
+- **Connect a Spark Swapper with one code.** Copy the connection code from the
+  Swapper's Connect tab (Swapper 2.0, on a DGX Spark or a Strix Halo) and
+  choose **My Spark Swapper** in the setup wizard. DSH checks the box's
+  certificate against the code, shows what it serves with each model's context
+  and speed, can switch models or install one the box hasn't downloaded, and
+  saves the route with the certificate pinned and an app token in your
+  Keychain — your Swapper password isn't kept. Older Swappers still connect
+  with an address and login.
+- **Several Swapper boxes.** **Settings ▸ Model Servers** lists every box — what
+  it serves, its models installed or not (**Install on <box>**), its
+  certificate — and the model menu has a section per box. `/swap` lists every
+  box's models and switches the box behind the primary, or the one you name.
+  Your existing Spark setup is carried over.
+- **Subscription plans: GLM, Kimi, Qwen, OpenAI.** A guide for Z.ai's GLM
+  Coding Plan and API, Kimi Code and the Moonshot API, Alibaba Cloud's Qwen
+  Coding Plan and Model Studio, and the OpenAI API: where to get the key, a
+  check with errors in plain words, the plan's models, done. GLM-5.3's
+  always-on thinking is handled, DSH identifies itself honestly to Kimi, and
+  the Qwen Coding Plan is marked *interactive use only*, so the queue and
+  `/goal` won't run on it.
+- **The AI roster.** **Settings ▸ AI Models** has a row per model with
+  switches for On, Primary, Subagent, Backup and Private, and the model menu
+  groups them the same way. A **backup** takes over a turn when the primary
+  doesn't answer, and the chat says so.
+- **Private models and the sensitive-data shield.** Models on your own network
+  are private; online services aren't. Before anything goes to a model that
+  isn't private, DSH swaps keys, passwords, emails, phone numbers, ID and card
+  numbers and your own custom terms for placeholders, and puts the real values
+  back as the answer arrives — a shield on the reply says what was masked.
+  Tasks marked `sensitive` run only on a private subagent server. Choose what
+  counts, and try it, in Settings ▸ AI Models ▸ Sensitive data.
+- **The plan panel.** ⇧⌘P (or the checklist button) shows the selected chat's
+  goal, steps, proposed plan and running subagents beside the chat, in both
+  modes. It opens by itself when the agent makes a plan.
+- **Chats without a project are just chats.** No more asking for a folder: a
+  chat without a project is a regular conversation, with your own instructions
+  and skills, and a folder of its own for any files. **New Chat Without a
+  Project** (⇧⌘N) starts one even while a project is open.
+- Any route can trust a self-signed server by its certificate's fingerprint
+  (Settings ▸ AI Models ▸ Edit).
 
 ## Earlier
 
+- **0.13.0** — several model servers at once (subagents on a second Spark or
+  Bedrock, **Make Main**, **Test All**) and Amazon Bedrock, with a guide for
+  people new to AWS.
+- **0.12.0** — background subagents and background tasks: `agent` with
+  `run_in_background` (up to four per chat, `agent_status` / `agent_stop`, an
+  idle chat picks the work back up), a bar above the composer, and
+  `queue_task` for unattended follow-up work.
 - **0.11.0** — the Credentials Vault: API keys and passwords in the Keychain that
   the agent uses as `{{vault:NAME}}` without ever seeing them.
 - **0.10.0** — the queue works unattended: model outages retry until the model
