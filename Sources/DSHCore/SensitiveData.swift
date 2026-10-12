@@ -151,6 +151,11 @@ public struct SensitiveDetector: Sendable {
         var accept: (@Sendable (String) -> Bool)? = nil
         /// Narrows the value's range (a trailing full stop, surrounding quotes) or turns it down (nil).
         var refine: (@Sendable (NSString, NSRange) -> NSRange?)? = nil
+        /// Literals at least one of which a match always contains: a text with none of them is skipped without
+        /// running the regex (a byte search is far cheaper than a regex over a long file). Empty = always run.
+        var hints: [String] = []
+        /// The hints are matched in any case (the regex is case-insensitive).
+        var hintsAnyCase = false
     }
 
     private static func re(_ pattern: String, _ options: NSRegularExpression.Options = []) -> NSRegularExpression {
@@ -159,52 +164,57 @@ public struct SensitiveDetector: Sendable {
 
     private static let secretPatterns: [Pattern] = [
         // A private key, header to footer (or to the end of a text that cuts it off).
-        Pattern(regex: re(#"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"#), category: .secret),
-        Pattern(regex: re(#"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"#), category: .secret),
-        Pattern(regex: re(#"\bgh[pousr]_[A-Za-z0-9]{36,}\b"#), category: .secret),
-        Pattern(regex: re(#"\bgithub_pat_[A-Za-z0-9_]{60,}\b"#), category: .secret),
-        Pattern(regex: re(#"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}\b"#), category: .secret),
-        Pattern(regex: re(#"\bsk-ant-[A-Za-z0-9_\-]{20,}\b"#), category: .secret),
-        Pattern(regex: re(#"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"#), category: .secret),
-        Pattern(regex: re(#"\bAIza[0-9A-Za-z_\-]{35}\b"#), category: .secret),
-        Pattern(regex: re(#"\b[rs]k_(?:live|test)_[0-9A-Za-z]{16,}\b"#), category: .secret),
-        Pattern(regex: re(#"\bsst_[0-9a-f]{8}_[A-Za-z0-9_\-]{20,}\b"#), category: .secret),
-        Pattern(regex: re(#"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b"#), category: .secret),
+        Pattern(regex: re(#"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"#), category: .secret,
+                hints: ["PRIVATE KEY-----"]),
+        Pattern(regex: re(#"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"#), category: .secret, hints: ["AKIA", "ASIA"]),
+        Pattern(regex: re(#"\bgh[pousr]_[A-Za-z0-9]{36,}\b"#), category: .secret, hints: ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"]),
+        Pattern(regex: re(#"\bgithub_pat_[A-Za-z0-9_]{60,}\b"#), category: .secret, hints: ["github_pat_"]),
+        Pattern(regex: re(#"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}\b"#), category: .secret, hints: ["sk-"]),
+        Pattern(regex: re(#"\bsk-ant-[A-Za-z0-9_\-]{20,}\b"#), category: .secret, hints: ["sk-ant-"]),
+        Pattern(regex: re(#"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"#), category: .secret, hints: ["xox"]),
+        Pattern(regex: re(#"\bAIza[0-9A-Za-z_\-]{35}\b"#), category: .secret, hints: ["AIza"]),
+        Pattern(regex: re(#"\b[rs]k_(?:live|test)_[0-9A-Za-z]{16,}\b"#), category: .secret, hints: ["k_live_", "k_test_"]),
+        Pattern(regex: re(#"\bsst_[0-9a-f]{8}_[A-Za-z0-9_\-]{20,}\b"#), category: .secret, hints: ["sst_"]),
+        Pattern(regex: re(#"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b"#), category: .secret, hints: ["eyJ"]),
         // Bearer <token>: the token.
-        Pattern(regex: re(#"\bBearer\s+([A-Za-z0-9._~+/=\-]{16,})"#, [.caseInsensitive]), category: .secret, group: 1),
+        Pattern(regex: re(#"\bBearer\s+([A-Za-z0-9._~+/=\-]{16,})"#, [.caseInsensitive]), category: .secret, group: 1,
+                hints: ["bearer"], hintsAnyCase: true),
         // scheme://user:PASSWORD@host: the password.
         Pattern(regex: re(#"\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@]+:([^\s/]+)@[A-Za-z0-9\[]"#), category: .secret, group: 1,
-                accept: { !SensitiveDetector.isPlaceholderValue($0) }),
+                accept: { !SensitiveDetector.isPlaceholderValue($0) }, hints: ["://"]),
         // password = "…", "api_key": '…': a quoted value is the secret.
         Pattern(regex: re(assignmentKey + #""([^"\n]{6,})""#, [.caseInsensitive]), category: .secret, group: 1,
-                accept: { !SensitiveDetector.isPlaceholderValue($0) }),
+                accept: { !SensitiveDetector.isPlaceholderValue($0) }, hints: [":", "="]),
         Pattern(regex: re(assignmentKey + #"'([^'\n]{6,})'"#, [.caseInsensitive]), category: .secret, group: 1,
-                accept: { !SensitiveDetector.isPlaceholderValue($0) }),
+                accept: { !SensitiveDetector.isPlaceholderValue($0) }, hints: [":", "="]),
         // password: hunter2pass — a bare value only when it looks like a secret rather than code
         // (`let token: String`, `token = getToken()`, `password = user_password` are code).
         Pattern(regex: re(assignmentKey + #"([^\s"'`;,(){}\[\]<>]{6,})"#, [.caseInsensitive]), category: .secret, group: 1,
-                refine: { SensitiveDetector.bareSecret($0, $1) }),
+                refine: { SensitiveDetector.bareSecret($0, $1) }, hints: [":", "="]),
         // DB_PASSWORD=… in an env file: the value, always (unless it stands in for one).
         Pattern(regex: re(#"^\s*(?:export\s+)?[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY)[A-Z0-9_]*\s*=\s*(\S+)"#,
                           [.anchorsMatchLines]),
-                category: .secret, group: 1, refine: { SensitiveDetector.envValue($0, $1) }),
+                category: .secret, group: 1, refine: { SensitiveDetector.envValue($0, $1) }, hints: ["="]),
     ]
 
     /// `password`, `"api_key"`, `token =`: the start of an assignment whose value is a secret.
     private static let assignmentKey = #"(?:password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)["']?\s*[:=]\s*"#
 
-    private static let emailPattern = Pattern(regex: re(#"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#), category: .email)
+    // Tried only where a run of address characters starts (the same matches, without re-scanning every run from
+    // each of its characters — a file of addresses is three times quicker).
+    private static let emailPattern = Pattern(regex: re(#"(?<![A-Za-z0-9._%+\-])[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#),
+                                              category: .email, hints: ["@"])
 
     private static let phonePatterns: [Pattern] = [
         // E.164
-        Pattern(regex: re(#"(?<![\w+])\+[1-9]\d{7,14}(?!\d)"#), category: .phone),
+        Pattern(regex: re(#"(?<![\w+])\+[1-9]\d{7,14}(?!\d)"#), category: .phone, hints: ["+"]),
         // North American, with at least one separator (a plain run of digits in code isn't a phone number).
         Pattern(regex: re(#"(?<![\w(])\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)"#), category: .phone),
     ]
 
     private static let idPatterns: [Pattern] = [
         // US Social Security number
-        Pattern(regex: re(#"\b\d{3}-\d{2}-\d{4}\b"#), category: .id),
+        Pattern(regex: re(#"\b\d{3}-\d{2}-\d{4}\b"#), category: .id, hints: ["-"]),
         // IBAN, with a valid check
         Pattern(regex: re(#"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"#), category: .id, accept: { SensitiveDetector.ibanIsValid($0) }),
         // A card number: 13–19 digits, single spaces or dashes between them allowed, only when Luhn says so.
@@ -212,7 +222,7 @@ public struct SensitiveDetector: Sendable {
     ]
 
     private static let ipPattern = Pattern(regex: re(#"(?<![vV\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\d])(?!\.\d)"#), category: .ip,
-                                           accept: { SensitiveDetector.isMaskableIPv4($0) })
+                                           accept: { SensitiveDetector.isMaskableIPv4($0) }, hints: ["."])
 
     /// Placeholders already in a text: never matched inside.
     static let placeholderRegex = re(#"⟦[A-Z]+_\d+⟧"#)
@@ -227,7 +237,11 @@ public struct SensitiveDetector: Sendable {
         let whole = NSRange(location: 0, length: ns.length)
         var candidates: [(range: NSRange, category: SensitiveCategory)] = []
 
+        let literals = HintSearch(text)
         func run(_ pattern: Pattern) {
+            if !pattern.hints.isEmpty, !pattern.hints.contains(where: { literals.contains($0, anyCase: pattern.hintsAnyCase) }) {
+                return
+            }
             for match in pattern.regex.matches(in: text, range: whole) {
                 var range = match.range(at: pattern.group)
                 guard range.location != NSNotFound, range.length > 0 else { continue }
@@ -308,14 +322,19 @@ public struct SensitiveDetector: Sendable {
         let lower = value.lowercased()
         if value.isEmpty { return true }
         if value.allSatisfy({ $0 == "*" || $0 == "•" || $0 == "." }) { return true }
-        if value.hasPrefix("<") || value.hasPrefix("${") || value.hasPrefix("$(") || value.hasPrefix("{{") || value.hasPrefix("%") { return true }
+        if value.hasPrefix("<") || value.hasPrefix("${") || value.hasPrefix("$(") || value.hasPrefix("{{") { return true }
         if value.hasPrefix("⟦") { return true }
         if lower.hasPrefix("xxx") || lower.hasPrefix("changeme") || lower.hasPrefix("your-") || lower.hasPrefix("your_") { return true }
         if lower.hasPrefix("process.env") || lower.hasPrefix("os.environ") || lower.contains("getenv") { return true }
-        // $GITHUB_TOKEN: a reference to another variable.
-        if value.range(of: #"^\$[A-Z_][A-Z0-9_]*$"#, options: .regularExpression) != nil { return true }
+        // A type rather than a value, quoted or not: `{"password": "string"}` in an API's documentation.
+        if typeWords.contains(value) { return true }
+        // A reference to an environment variable: $VAR, ${VAR}, $env:VAR (PowerShell), %VAR% (cmd).
+        if envReference.firstMatch(in: value, range: NSRange(location: 0, length: (value as NSString).length)) != nil { return true }
         return false
     }
+
+    private static let envReference =
+        re(#"^(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]+\}|(?i:\$env):[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%)$"#)
 
     /// Words that name a type rather than being a value (`let token: String`, `password: string;`).
     static let typeWords: Set<String> = [
@@ -424,5 +443,43 @@ public struct SensitiveDetector: Sendable {
         let parts = raw.split(separator: ".")
         guard parts.count == 4, parts.allSatisfy({ Int($0).map { $0 <= 255 } ?? false }) else { return false }
         return raw != "127.0.0.1" && raw != "0.0.0.0"
+    }
+}
+
+/// Literal searches over one text's bytes (`memmem`): how a pattern's hints are checked before its regex runs.
+private final class HintSearch {
+    private let bytes: [UInt8]
+    /// The bytes with ASCII letters in lower case, made the first time a hint is wanted in any case.
+    private var folded: [UInt8]?
+
+    init(_ text: String) {
+        bytes = text.utf8.withContiguousStorageIfAvailable { Array($0) } ?? Array(text.utf8)
+    }
+
+    func contains(_ needle: String, anyCase: Bool) -> Bool {
+        let wanted = Array((anyCase ? needle.lowercased() : needle).utf8)
+        guard !wanted.isEmpty else { return true }
+        let haystack = anyCase ? lowered() : bytes
+        guard haystack.count >= wanted.count else { return false }
+        return haystack.withUnsafeBytes { text in
+            wanted.withUnsafeBytes { word in
+                memmem(text.baseAddress, text.count, word.baseAddress, word.count) != nil
+            }
+        }
+    }
+
+    private func lowered() -> [UInt8] {
+        if let folded { return folded }
+        var out = [UInt8](repeating: 0, count: bytes.count)
+        bytes.withUnsafeBufferPointer { source in
+            out.withUnsafeMutableBufferPointer { target in
+                for i in 0..<source.count {
+                    let byte = source[i]
+                    target[i] = byte >= 0x41 && byte <= 0x5A ? byte | 0x20 : byte
+                }
+            }
+        }
+        folded = out
+        return out
     }
 }

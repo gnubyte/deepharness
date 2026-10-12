@@ -87,6 +87,26 @@ final class ShieldTwoPassTests: XCTestCase {
         XCTAssertEqual(masked("The password: hunter2pass."), "The password: ⟦SECRET_1⟧.", "a full stop isn't part of it")
     }
 
+    func testATypeIsNoSecretEvenInQuotes() {
+        for text in [#"{"password": "string"}"#, #"password: "String""#, "api_key = 'Token'", #"{"secret": "undefined"}"#] {
+            XCTAssertEqual(masked(text), text, text)
+        }
+        // A documented example doesn't make "string" a value masked all through the conversation.
+        let out = Shield.mask(LLMRequest(systemPrompt: "", messages: [.user(#"Send {"password": "string"}, a string field."#)],
+                                         tools: [], model: "m"), detector: plain())
+        XCTAssertTrue(out.map.isEmpty)
+    }
+
+    func testAnEnvironmentReferenceIsNoSecret() {
+        for text in ["password=$DB_PASSWORD", "token: $github_token", "PASSWORD=${DB_PASSWORD}", "api_key = $env:API_KEY",
+                     "api_key = $Env:API_KEY", "token: %GITHUB_TOKEN%", #"DB_PASSWORD="$env:DB_PASS""#, "DB_SECRET=%APP_SECRET%"] {
+            XCTAssertEqual(masked(text), text, text)
+        }
+        // A value with a $ or a % in it is still one.
+        XCTAssertEqual(masked("password: pa$$word123"), "password: ⟦SECRET_1⟧")
+        XCTAssertEqual(masked("PASSWORD=%secret%2024"), "PASSWORD=⟦SECRET_1⟧")
+    }
+
     func testEnvFileLines() {
         let env = "export GITHUB_TOKEN=\"ghx_1234abcd\"\nAPI_KEY=${OTHER_KEY}\nDB_SECRET=$VAULT_SECRET\nSESSION_SECRET=Kx9-PLAIN"
         XCTAssertEqual(masked(env), "export GITHUB_TOKEN=\"⟦SECRET_1⟧\"\nAPI_KEY=${OTHER_KEY}\nDB_SECRET=$VAULT_SECRET\nSESSION_SECRET=⟦SECRET_2⟧")
