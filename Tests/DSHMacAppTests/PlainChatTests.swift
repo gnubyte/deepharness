@@ -148,4 +148,50 @@ final class PlainChatTests: XCTestCase {
         XCTAssertTrue(taskChat.isPlain)
         XCTAssertEqual(taskChat.workFolder, folder.path)
     }
+
+    func testAFolderLentToAQueuedTaskOutlivesItsChatUntilTheTaskIsDone() async throws {
+        FakeModelServer.reset { seen, _ in
+            if seen.lastUser.contains("GOAL: Write the letter"), seen.fresh {
+                return .toolCall("write_file", #"{"file_path":"letter.txt","content":"Dear Ann"}"#)
+            }
+            return .text("Done.\nGOAL_COMPLETE")
+        }
+        let vm = transport.newSession(cwd: nil)
+        let folder = transport.scratchFolder(for: vm, create: true)
+        let task = transport.queueAdd("Write the letter")
+        XCTAssertEqual(task.workFolder, folder.path)
+
+        transport.deleteSession(vm.id)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path), "the queued task still works there")
+
+        transport.startQueue()
+        let deadline = Date().addingTimeInterval(15)
+        while transport.queueRunning {
+            if Date() > deadline { return XCTFail("the queue never finished") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(transport.queue.task(task.id)?.status, .complete)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path), "its chat is gone and its last task is done")
+    }
+
+    func testAFolderStaysWhileItsChatDoes() async throws {
+        FakeModelServer.reset { _, _ in .text("Done.\nGOAL_COMPLETE") }
+        let vm = transport.newSession(cwd: nil)
+        let folder = transport.scratchFolder(for: vm, create: true)
+        let task = transport.queueAdd("Tidy up")
+        transport.startQueue()
+        let deadline = Date().addingTimeInterval(15)
+        while transport.queueRunning {
+            if Date() > deadline { return XCTFail("the queue never finished") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(transport.queue.task(task.id)?.status, .complete)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path), "the chat that owns it is still here")
+        // Removing a task never reaches outside the app's own Chats folder.
+        let outside = dir.appendingPathComponent("not-a-chat", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        transport.releaseBorrowedFolder(outside.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+    }
 }
+

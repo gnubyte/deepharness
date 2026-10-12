@@ -294,10 +294,13 @@ public final class AppTransport {
     }
 
     public func deleteSession(_ id: String) {
-        // A chat without a project takes its own scratch folder with it.
+        // A chat without a project takes its own scratch folder with it — unless tasks it queued still work there:
+        // then the folder goes when the last of them is done (`releaseBorrowedFolder`).
         if let vm = sessions.first(where: { $0.id == id }), vm.isPlain {
             let own = ChatPrompt.scratchFolder(chatID: id, appSupport: skillLocations.appSupport)
-            try? FileManager.default.removeItem(at: own)
+            if !queue.tasks.contains(where: { $0.workFolder == own.path && Self.mayStillRun($0.status) }) {
+                try? FileManager.default.removeItem(at: own)
+            }
         }
         resolveAllGates(for: id, with: false)
         runTasks[id]?.cancel()
@@ -394,8 +397,28 @@ public final class AppTransport {
         // store marks a running task skipped (keeping its record), so the
         // runner moves on to the next task rather than pausing.
         let sessionID = queueSessions.first(where: { $0.value == id })?.key
+        let borrowed = queue.task(id)?.workFolder
         queue.remove(id: id)
         if let sessionID { stopSession(sessionID) }
+        releaseBorrowedFolder(borrowed)
+    }
+
+    /// A task may still work in its folder: it is waiting, running, or could be resumed.
+    static func mayStillRun(_ status: QueueTaskStatus) -> Bool {
+        [.queued, .running, .blocked, .failed].contains(status)
+    }
+
+    /// The scratch folder a chat without a project lent its queued tasks outlives the chat while one of them may
+    /// still work there; once none may, and the chat is gone, the folder goes too. (Only ever a folder under the
+    /// app's own Chats folder.)
+    func releaseBorrowedFolder(_ path: String?) {
+        guard let path else { return }
+        let folder = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        let chats = skillLocations.appSupport.appendingPathComponent("Chats", isDirectory: true).standardizedFileURL
+        guard folder.deletingLastPathComponent().path == chats.path,
+              !sessions.contains(where: { $0.id == folder.lastPathComponent }),
+              !queue.tasks.contains(where: { $0.workFolder == path && Self.mayStillRun($0.status) }) else { return }
+        try? FileManager.default.removeItem(at: folder)
     }
 
     /// Put a blocked, failed or skipped task back in line — at the front, so
@@ -659,6 +682,8 @@ public final class AppTransport {
 
         let status = queue.task(taskID)?.status
         finishTaskSession(vm, taskID: taskID)
+        // A folder borrowed from a chat that has since been deleted goes once its last task is done.
+        if status == .complete { releaseBorrowedFolder(queue.task(taskID)?.workFolder) }
         // Archive finished tasks: the transcript stays on disk (auto-compaction
         // kept it small), the in-memory transcript + engine go — so 100 tasks
         // over a week don't pile up in RAM. Blocked tasks keep their session
