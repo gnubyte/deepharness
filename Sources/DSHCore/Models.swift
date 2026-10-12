@@ -184,6 +184,11 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     /// How many subagents may work on this server at once (nil = 2 for a
     /// worker, 4 for the main route).
     public var subagentParallel: Int?
+    /// SHA-256 fingerprint ("3A:9F:…:C2", as openssl prints it) of a
+    /// self-signed certificate this server is trusted to present — a Spark
+    /// Swapper's HTTPS front on :11443, say. Checked only when normal trust
+    /// fails; nil = normal trust only.
+    public var pinnedCertificate: String?
 
     public init(kind: Kind, name: String, baseURL: String, apiKey: String? = nil,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
@@ -191,7 +196,8 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
                 customHeaders: [String: String]? = nil, reasoningEffort: String? = nil,
                 vision: Bool? = nil,
                 awsProfile: String? = nil, awsRegion: String? = nil,
-                subagentWorker: Bool? = nil, subagentParallel: Int? = nil) {
+                subagentWorker: Bool? = nil, subagentParallel: Int? = nil,
+                pinnedCertificate: String? = nil) {
         self.kind = kind
         self.name = name
         self.baseURL = baseURL
@@ -207,6 +213,7 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         self.awsRegion = awsRegion
         self.subagentWorker = subagentWorker
         self.subagentParallel = subagentParallel
+        self.pinnedCertificate = pinnedCertificate
     }
 
     /// Whether this route is flagged to serve subagents (see `subagentWorker`).

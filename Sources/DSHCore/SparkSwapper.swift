@@ -96,42 +96,6 @@ public enum SwapperError: LocalizedError, Sendable, Equatable {
     }
 }
 
-/// Trust handling: system trust first, then the one pinned fingerprint.
-final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
-    let pinned: String?
-    private let lock = NSLock()
-    private var _seen: String?
-    var seenFingerprint: String? { lock.lock(); defer { lock.unlock() }; return _seen }
-
-    init(pinned: String?) { self.pinned = pinned }
-
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
-                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil)
-            return
-        }
-        if SecTrustEvaluateWithError(trust, nil) {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-            return
-        }
-        let fp = Self.fingerprint(trust)
-        lock.lock(); _seen = fp; lock.unlock()
-        if let fp, let pinned, fp == pinned {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-        }
-    }
-
-    static func fingerprint(_ trust: SecTrust) -> String? {
-        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let leaf = chain.first else { return nil }
-        let der = SecCertificateCopyData(leaf) as Data
-        return SHA256.hash(data: der).map { String(format: "%02X", $0) }.joined(separator: ":")
-    }
-}
-
 public final class SparkSwapperClient: @unchecked Sendable {
     public let baseURL: URL
     private let username: String
@@ -174,7 +138,7 @@ public final class SparkSwapperClient: @unchecked Sendable {
             return ((resp as? HTTPURLResponse)?.statusCode ?? 0, data)
         } catch let e as URLError where e.code == .cancelled || e.code == .serverCertificateUntrusted
                     || e.code == .secureConnectionFailed || e.code == .serverCertificateHasUnknownRoot {
-            if let fp = delegate.seenFingerprint, fp != delegate.pinned {
+            if let fp = delegate.seenFingerprint, !CertificatePin.matches(fp, delegate.pinned) {
                 throw SwapperError.untrustedCertificate(fingerprint: fp)
             }
             throw SwapperError.transport(e.localizedDescription)

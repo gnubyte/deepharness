@@ -15,6 +15,8 @@ import Foundation
 public struct OpenAIClient: LLMClient {
     public let profile: ProviderProfile
     private let session: URLSession
+    /// The session's certificate handling: the route's pin, and which certificate each host showed.
+    private let trust: PinningDelegate
 
     public init(profile: ProviderProfile, session: URLSession = .shared) {
         self.profile = profile
@@ -31,7 +33,7 @@ public struct OpenAIClient: LLMClient {
             cfg.protocolClasses = stubs + (cfg.protocolClasses ?? [])
             cfg.waitsForConnectivity = false
         }
-        self.session = Self.sharedSession(cfg)
+        (self.session, self.trust) = Self.sharedSession(cfg, pinned: profile.pinnedCertificate)
     }
 
     /// Seconds without a byte before a request times out (and is retried).
@@ -41,18 +43,37 @@ public struct OpenAIClient: LLMClient {
     nonisolated(unsafe) static var protocolClassesForTesting: [AnyClass]?
 
     /// Clients are made per request and per retry; they share one session
-    /// (all use the same settings) instead of leaking one URLSession each —
-    /// a multi-day outage retries thousands of times.
+    /// per pinned certificate (all use the same settings) instead of leaking
+    /// one URLSession each — a multi-day outage retries thousands of times.
     private static let sessionLock = NSLock()
-    nonisolated(unsafe) private static var sessions: [String: URLSession] = [:]
-    private static func sharedSession(_ cfg: URLSessionConfiguration) -> URLSession {
-        let key = (cfg.protocolClasses ?? []).map { NSStringFromClass($0) }.joined(separator: ",")
+    nonisolated(unsafe) private static var sessions: [String: (URLSession, PinningDelegate)] = [:]
+    private static func sharedSession(_ cfg: URLSessionConfiguration, pinned: String?) -> (URLSession, PinningDelegate) {
+        let pin = CertificatePin.normalized(pinned) ?? ""
+        let key = (cfg.protocolClasses ?? []).map { NSStringFromClass($0) }.joined(separator: ",") + "|" + pin
         sessionLock.lock(); defer { sessionLock.unlock() }
         if let cached = sessions[key] { return cached }
-        let session = URLSession(configuration: cfg)
-        sessions[key] = session
-        return session
+        let delegate = PinningDelegate(pinned: pin.isEmpty ? nil : pin)
+        let made = (URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil), delegate)
+        sessions[key] = made
+        return made
     }
+
+    /// How many sessions exist (one per pin), for tests.
+    static var sessionCount: Int { sessionLock.withLock { sessions.count } }
+
+    /// A certificate the system doesn't trust, and that isn't this route's pin, in plain words: it fails at
+    /// once (retrying can't fix it) and says which certificate it was, so the user can compare it.
+    private func certificateError(_ error: Error, url: URL) -> Error {
+        guard let failure = error as? URLError, PinningDelegate.certificateFailures.contains(failure.code),
+              let seen = trust.fingerprint(host: url.host),
+              !CertificatePin.matches(seen, profile.pinnedCertificate) else { return error }
+        return LLMError.rejected(status: Self.untrustedCertificateStatus,
+                                 message: "The server's certificate isn't trusted (SHA-256 \(seen)).",
+                                 body: "certificate not trusted", permanent: true)
+    }
+
+    /// The status an untrusted certificate is reported with (nginx's "SSL certificate error").
+    public static let untrustedCertificateStatus = 495
 
     // MARK: LLMClient
 
@@ -91,7 +112,12 @@ public struct OpenAIClient: LLMClient {
         var req = URLRequest(url: url)
         req.timeoutInterval = 10
         applyHeaders(&req)
-        let (data, response) = try await session.data(for: req)
+        let data: Data, response: URLResponse
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch {
+            throw certificateError(error, url: url)
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw LLMError.http(http.statusCode, String(decoding: data, as: UTF8.self))
         }
@@ -249,7 +275,12 @@ public struct OpenAIClient: LLMClient {
         applyHeaders(&req)
         req.httpBody = try makeBody(request)
 
-        let (bytes, response) = try await session.bytes(for: req)
+        let bytes: URLSession.AsyncBytes, response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: req)
+        } catch {
+            throw certificateError(error, url: url)
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             var errData = Data()
             for try await chunk in bytes {
@@ -649,8 +680,10 @@ public struct OpenAIClient: LLMClient {
         return parts
     }
 
-    /// Authorization + user-supplied custom headers on every request.
+    /// Who is calling, authorization + user-supplied custom headers on every request.
     private func applyHeaders(_ req: inout URLRequest) {
+        // DSH names itself honestly (a plan like Kimi Code checks which app is calling).
+        req.setValue(DSHIdentity.userAgent, forHTTPHeaderField: "User-Agent")
         if let key = profile.apiKey, !key.isEmpty {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }

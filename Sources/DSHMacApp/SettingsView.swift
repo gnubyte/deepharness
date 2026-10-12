@@ -99,6 +99,8 @@ struct ProviderEditor: View {
     @State private var headerRows: [HeaderRow] = []
     @State private var reasoning: String = ""
     @State private var detected: String?
+    /// A certificate the server presented that this Mac doesn't trust (offered for pinning).
+    @State private var untrusted: String?
     private let original: ProviderProfile
 
     init(profile: ProviderProfile) {
@@ -132,6 +134,9 @@ struct ProviderEditor: View {
                         Text("Stored locally and only used to make API requests from this app.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                }
+                if draft.kind != .bedrock, draft.pinnedCertificate != nil || untrusted != nil {
+                    certificateSection
                 }
                 Section("Model") {
                     TextField("Model", text: $draft.model)
@@ -207,8 +212,37 @@ struct ProviderEditor: View {
         .onAppear { apiKey = model.config.apiKey(for: original) }
     }
 
+    /// The self-signed certificate this route trusts, with a way to forget it — or, when the server showed one
+    /// this Mac doesn't trust, the fingerprint and a way to trust it.
+    @ViewBuilder
+    private var certificateSection: some View {
+        Section("Security certificate") {
+            if let pin = draft.pinnedCertificate {
+                LabeledContent("Trusted (SHA-256)") {
+                    HStack(alignment: .top) {
+                        Text(pin).font(Theme.mono(10)).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Forget") { draft.pinnedCertificate = nil }
+                    }
+                }
+                Text("The server uses its own (self-signed) certificate, trusted by this fingerprint. Forget it to trust only certificates your Mac trusts.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let fingerprint = untrusted {
+                Text("The server showed a certificate your Mac doesn't trust. Trust it only if this fingerprint matches the server's own:")
+                    .font(.caption).fixedSize(horizontal: false, vertical: true)
+                Text(fingerprint).font(Theme.mono(10)).textSelection(.enabled)
+                Button("Trust This Certificate") {
+                    draft.pinnedCertificate = fingerprint
+                    untrusted = nil
+                    status = nil
+                }
+            }
+        }
+    }
+
     private func discover() async {
         status = "Connecting…"
+        untrusted = nil
         var probe = draft
         probe.apiKey = apiKey.isEmpty ? nil : apiKey
         do {
@@ -218,6 +252,10 @@ struct ProviderEditor: View {
         } catch {
             models = []
             status = AppTransport.describe(error)
+            if case LLMError.rejected(OpenAIClient.untrustedCertificateStatus, _, _, _) = error,
+               let url = URL(string: probe.endpoint(path: "models")) {
+                untrusted = await CertificatePin.probe(url)
+            }
         }
     }
 

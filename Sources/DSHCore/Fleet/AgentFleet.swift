@@ -323,11 +323,11 @@ public final class AgentFleet: @unchecked Sendable {
     public static func isServerFault(_ error: Error) -> Bool {
         if error is CancellationError { return false }
         // Credentials that one server rejects may be fine on another (a worker with a stale key, a
-        // Bedrock sign-in that expired).
+        // Bedrock sign-in that expired), and so may a certificate this Mac doesn't trust.
         if let llm = error as? LLMError {
             switch llm {
             case .http(let status, _), .rejected(let status, _, _, _):
-                if status == 401 || status == 403 { return true }
+                if status == 401 || status == 403 || status == OpenAIClient.untrustedCertificateStatus { return true }
             default:
                 break
             }
