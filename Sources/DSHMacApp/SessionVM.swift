@@ -177,6 +177,13 @@ public final class SessionVM: Identifiable {
     public var pendingMask: ShieldReport?
     /// The chat was told that pictures can't be checked.
     public var toldAboutImages = false
+    /// The plan a plan-mode run handed to `exit_plan_mode` (shown in the plan panel).
+    public var proposedPlan: String?
+    /// The plan panel already opened by itself for this chat (it does that only the first time).
+    public var planAutoOpened = false
+
+    /// Whether the chat has anything for the plan panel.
+    public var hasPlan: Bool { !todos.isEmpty || proposedPlan != nil || goal != nil || lastGoal != nil || !agentRuns.isEmpty }
 
     /// The assistant entry of the turn in progress: the newest one after the last user message.
     public var currentAnswerID: String? {

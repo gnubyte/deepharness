@@ -447,7 +447,12 @@ private struct EntryRow: View {
         case .tool(let activity):
             ToolCard(activity: activity, session: session)
         case .todos(let items):
-            TodoCard(items: items)
+            // With the plan panel open the plan is there; the transcript keeps just a line.
+            if model.config.planPanelOpen {
+                CollapsedTodoCard(items: items)
+            } else {
+                TodoCard(items: items)
+            }
         case .compaction(let note):
             CompactionCard(note: note)
         }
@@ -712,6 +717,34 @@ private struct TodoCard: View {
             }
         }
         .padding(.leading, Theme.gutter)
+    }
+}
+
+/// The plan as one line while the plan panel shows it in full: "Plan updated — 3 of 7 done · Show".
+private struct CollapsedTodoCard: View {
+    let items: [TodoItem]
+    @State private var expanded = false
+
+    var body: some View {
+        if expanded {
+            VStack(alignment: .leading, spacing: 4) {
+                TodoCard(items: items)
+                Button("Hide") { expanded = false }
+                    .buttonStyle(.plain).font(Theme.metaFont).foregroundStyle(.tint)
+                    .padding(.leading, Theme.gutter)
+            }
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: "checklist").font(.system(size: 11))
+                Text("Plan updated — \(items.filter { $0.status == .completed }.count) of \(items.count) done")
+                    .font(Theme.metaFont)
+                Text("·").font(Theme.metaFont)
+                Button("Show") { expanded = true }
+                    .buttonStyle(.plain).font(Theme.metaFont).foregroundStyle(.tint)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.leading, Theme.gutter)
+        }
     }
 }
 

@@ -104,6 +104,11 @@ final class AppModel {
 
     var selectedSession: SessionVM? { transport.selected }
 
+    /// Show or hide the plan panel.
+    func togglePlan() {
+        withAnimation(.easeInOut(duration: 0.18)) { config.planPanelOpen.toggle() }
+    }
+
     /// Open the Amazon Bedrock guide — from the start, or on one page for an existing route
     /// (change its model, sign in again).
     func showBedrockGuide(page: BedrockPage = .welcome, route: ProviderProfile? = nil) {

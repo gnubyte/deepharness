@@ -56,6 +56,9 @@ struct AppCommands: Commands {
             .disabled(model.project == nil)
         }
 
+        // Nothing here prints; leaving Page Setup out keeps ⇧⌘P for the plan.
+        CommandGroup(replacing: .printItem) {}
+
         CommandGroup(replacing: .saveItem) {
             Button("Save") { model.code.saveActive() }
                 .keyboardShortcut("s", modifiers: .command)
@@ -95,6 +98,8 @@ struct AppCommands: Commands {
             Button("Code Mode") { model.mode = .code }
                 .keyboardShortcut("2", modifiers: .command)
             Divider()
+            Button(model.config.planPanelOpen ? "Hide Plan" : "Show Plan") { model.togglePlan() }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
             Button("Toggle File Tree") { model.code.showTree.toggle() }
                 .keyboardShortcut("b", modifiers: .command)
             Button("Toggle Terminal") {
@@ -126,8 +131,15 @@ struct RootView: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 340)
         } detail: {
-            detail
-                .toolbar { toolbar }
+            HStack(spacing: 0) {
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if model.config.planPanelOpen {
+                    PlanPanelColumn()
+                        .transition(.move(edge: .trailing))
+                }
+            }
+            .toolbar { toolbar }
         }
         .inspector(isPresented: $model.showQueuePanel) {
             QueueView()
@@ -223,6 +235,15 @@ struct RootView: View {
                 Label("Credentials Vault", systemImage: "key.horizontal")
             }
             .help("Credentials vault (⌘⇧K) — API keys and passwords the agent can use without seeing them")
+        }
+
+        ToolbarItem {
+            Button {
+                model.togglePlan()
+            } label: {
+                Label("Plan", systemImage: "checklist")
+            }
+            .help(model.config.planPanelOpen ? "Hide the plan (⇧⌘P)" : "Show the plan (⇧⌘P)")
         }
 
         ToolbarItem {

@@ -924,7 +924,9 @@ public final class AppTransport {
             },
             onTodos: { [weak self] todos in
                 Task { @MainActor [weak self] in
-                    self?.sessions.first { $0.id == sessionID }?.setTodos(todos)
+                    guard let self, let vm = self.sessions.first(where: { $0.id == sessionID }) else { return }
+                    vm.setTodos(todos)
+                    if !todos.isEmpty { self.planAppeared(in: vm) }
                 }
             },
             compaction: { [weak self] used, messages in
@@ -1734,7 +1736,13 @@ public final class AppTransport {
             log.recordItem(sessionID, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
             if let taskID = queueSessions[sessionID] { queue.note(taskID, text) }
 
-        case .assistantMessage(_, let text, _):
+        case .assistantMessage(_, let text, let calls):
+            // A plan-mode run's proposed plan goes to the plan panel.
+            if let plan = calls.last(where: { $0.name == ExitPlanModeTool.name }).flatMap({ JSONArgs.string($0.arguments, "plan") }),
+               !plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                vm.proposedPlan = plan
+                planAppeared(in: vm)
+            }
             // Fold a turn's complete text if deltas never arrived, then close
             // the bubble so any tool calls render after it.
             if vm.streamingID == nil, !text.isEmpty {
@@ -1783,6 +1791,18 @@ public final class AppTransport {
         case .failed(let message):
             vm.note(message, role: .error)
             banner = message
+        }
+    }
+
+    // MARK: - The plan panel
+
+    /// The agent wrote a todo list or proposed a plan: the first time in the chat the user is looking at, the
+    /// plan panel opens by itself (when they want that).
+    private func planAppeared(in vm: SessionVM) {
+        guard !vm.planAutoOpened else { return }
+        vm.planAutoOpened = true
+        if vm.id == selectedID, config.planPanelAutoOpen, !config.planPanelOpen {
+            config.planPanelOpen = true
         }
     }
 

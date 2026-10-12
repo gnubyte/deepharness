@@ -34,6 +34,9 @@ public final class AppConfig {
         static let queueResume = "queue.resumeOnLaunch.v1"
         static let subagentsUsePrimary = "subagents.usePrimary.v1"
         static let shield = "shield.v1"
+        static let planPanelOpen = "planPanel.open.v1"
+        static let planPanelWidth = "planPanel.width.v1"
+        static let planPanelAutoOpen = "planPanel.autoOpen.v1"
     }
 
     private let defaults: UserDefaults
@@ -98,6 +101,15 @@ public final class AppConfig {
 
     /// Screen, mouse/keyboard and background-process tools offered to the agent.
     public var computerToolsEnabled: Bool = true { didSet { persist() } }
+
+    // The plan panel.
+    /// Whether the plan panel is showing (it follows whichever chat is selected).
+    public var planPanelOpen = false { didSet { persist() } }
+    /// Its width, as the user last dragged it.
+    public var planPanelWidth: Double = 320 { didSet { persist() } }
+    /// "Show when the agent makes a plan": the panel opens by itself the first time a chat's agent writes a todo
+    /// list or proposes a plan.
+    public var planPanelAutoOpen = true { didSet { persist() } }
 
     /// The task queue is deliberately paused (the user pressed Stop). A crash
     /// or restart does *not* set this, so an interrupted queue resumes on
@@ -372,6 +384,9 @@ public final class AppConfig {
         if let data = defaults.data(forKey: Keys.shield), let decoded = try? JSONDecoder().decode(ShieldSettings.self, from: data) {
             shield = decoded
         }
+        planPanelOpen = defaults.bool(forKey: Keys.planPanelOpen)
+        planPanelWidth = defaults.object(forKey: Keys.planPanelWidth) as? Double ?? 320
+        planPanelAutoOpen = defaults.object(forKey: Keys.planPanelAutoOpen) as? Bool ?? true
     }
 
     private func persist() {
@@ -396,6 +411,9 @@ public final class AppConfig {
         defaults.set(queueResumeOnLaunch, forKey: Keys.queueResume)
         defaults.set(subagentsUsePrimary, forKey: Keys.subagentsUsePrimary)
         if let data = try? JSONEncoder().encode(shield) { defaults.set(data, forKey: Keys.shield) }
+        defaults.set(planPanelOpen, forKey: Keys.planPanelOpen)
+        defaults.set(planPanelWidth, forKey: Keys.planPanelWidth)
+        defaults.set(planPanelAutoOpen, forKey: Keys.planPanelAutoOpen)
     }
 }
 
