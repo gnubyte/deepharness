@@ -24,8 +24,9 @@ xattr -d com.apple.quarantine /Applications/DSH.app
   the fleet as a subagent server, so two Sparks and Bedrock are still three
   servers afterwards. **Test All** asks every route whether it answers.
 - **See where subagents run.** The bar above the composer says "Spark 2 ×2 ·
-  Amazon Bedrock ×1" and, expanded, what each subagent is doing. `/agents` lists
-  the servers with how busy each is.
+  Amazon Bedrock" — a count only when two or more subagents share a server —
+  and, expanded, what each subagent is doing. `/agents` lists the servers with
+  how busy each is.
 - **Amazon Bedrock.** A guide for people who have never used the AWS CLI:
   it installs the CLI (Amazon's signed package, no administrator prompt),
   signs you in with your browser (or an existing SSO/CLI profile), lists the

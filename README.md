@@ -137,8 +137,9 @@ server, so two Sparks and Bedrock are still three servers afterwards, in differe
 - Each subagent server is asked which model it is serving *right now*, so a Spark that swapped models is
   still used correctly. A hosted service such as Bedrock serves every model at once, so a cheaper Bedrock
   model can take the side tasks while a stronger one leads.
-- The bar above the composer shows where the running subagents are ("Spark 2 ×2 · Amazon Bedrock ×1")
-  and, expanded, what each is doing; `/agents` lists the servers with how busy each is.
+- The bar above the composer shows where the running subagents are ("Spark 2 ×2 · Amazon Bedrock").
+  A count is printed only when two or more subagents share a server, so a lone Bedrock agent is just
+  "Amazon Bedrock". Expanded, the bar shows what each is doing; `/agents` lists the servers with how busy each is.
 
 ### Using Amazon Bedrock
 
@@ -201,12 +202,18 @@ name for name, so prompts, skills, and habits from that ecosystem carry over:
 | `exit_plan_mode` | hand back a plan instead of doing the work |
 | `agent` | a subagent for a scoped task; `agent_type` picks the kind (`general`, `explore`, `plan`, `review`, `worker`, or your own agent file), `run_in_background` keeps it working while you carry on |
 | `delegate` | hand out a list of independent tasks and get every report back together; with several model servers they run on different machines |
-| `agent` | spawn a subagent for a scoped task |
 
 **Models without function calling still work.** Many Qwen-class models on Ollama or older vLLM emit
 tool calls as XML inside plain text instead of `tool_calls`. When a turn finishes with no native
 calls, the text is run through an XML parser that understands both the `<function=…>` and
 `<tool_name>…` conventions, and the recovered calls execute normally.
+
+### Since 0.8
+
+- **Live processes and the machine** (0.8). `process_start`, `process_read`, `process_write`, `process_stop` and `process_list` talk to a running program. `screenshot`, `list_windows`, `screen_watch`, `ui_tree`, `inspect_process`, `mouse`, `keyboard`, `focus_app` and `view_image` look at and drive the Mac.
+- **Task Queue** (0.9; unattended since 0.10). `queue_task` adds follow-up work; `/queue` runs the queue one task at a time. A model outage retries until the server is back.
+- **Credentials Vault** (0.11). API keys and passwords live in the Keychain. The agent writes `{{vault:NAME}}` and never sees the value; `vault_search` lists names, not secrets.
+- **Background subagents** (0.12). `agent` with `run_in_background` (up to four per chat), plus `agent_status` and `agent_stop`.
 
 ## Code mode
 
@@ -234,14 +241,15 @@ between the text that preceded it and the text that followed, expandable to its 
 renders with headings, fenced code (with copy), lists, task lists, quotes, and tables, including an
 unterminated fence while a response is still streaming.
 
-The composer sends on ↩ and inserts a newline on ⇧↩. Files the turn touched appear as chips that jump
-straight to the editor.
+The composer sends on ↩ and inserts a newline on ⇧↩. The **+** menu attaches an image or a file.
+Files the turn touched appear as chips that jump straight to the editor.
 
 ### Slash commands
 
 | Command | What it does |
 |---|---|
-| `/goal <task>` | Works on the task round after round until the model ends a reply with `GOAL_COMPLETE` (or `GOAL_BLOCKED: …` when it needs you). The goal is restated every round so it survives compaction; capped at 40 rounds; ⌘. stops it. |
+| `/goal <task>` | Works on the task round after round until the model ends a reply with `GOAL_COMPLETE` (or `GOAL_BLOCKED: …` when it needs you). The goal is restated every round so it survives compaction. There is no round cap. ⌘. stops it. |
+| `/queue` | Starts the task queue. It works queued tasks one at a time, unattended. |
 | `/compact [focus]` | Summarizes the conversation now, keeping a short recent tail. Earlier messages stay visible above the divider; the model carries the summary. |
 | `/think off\|low\|medium\|high\|max\|default` | Thinking level for this chat. |
 | `/context` | Window size, usage, and where the window figure came from. |
@@ -405,7 +413,7 @@ DSHMacApp/                 SwiftUI
 swift test
 ```
 
-1,110 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
+1,121 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
 cancellation), permission containment, the Qwen XML fallback, glob, markdown, plugin interpolation
 and quoting, prompt assembly, editor-buffer conflict resolution, 34 over the terminal emulator, and 8
 that spawn a real shell on a real pty and assert on what lands on the screen — plus the fleet (server
@@ -431,8 +439,6 @@ Verified on macOS 14+ / Apple Silicon:
 
 - **The terminal is a subset, not a full VT.** Shells, build logs, `git`, and `less` are fine; a
   full-screen curses app that relies on mouse reporting or sixel is not.
-- **No image attachments.** The old client had them against the harness's attachment API; nothing has
-  replaced that here yet.
 - **Amazon Bedrock and the multi-server fleet are covered by tests against fakes** (a scripted AWS CLI,
   stubbed HTTP, two fake model servers); the first run against real AWS and a second real Spark is yours.
 - **Spark model switching (`/swap`) drives one Spark** — the one set up in Settings ▸ Spark. A second Spark
