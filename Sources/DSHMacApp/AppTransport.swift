@@ -1137,7 +1137,7 @@ public final class AppTransport {
         if attachments.isEmpty, let (skill, args) = matchSkillCommand(text, vm: vm),
            let expanded = invocationText(skill, arguments: args) {
             if isServerSwitching?() == true {
-                vm.note("The Spark is switching models right now — send again once it says it's ready.")
+                vm.note("The main model's server is switching models right now — send again once it says it's ready.")
                 return
             }
             let display = "/\(skill.slug)" + (args.isEmpty ? "" : " \(args)")
@@ -1145,7 +1145,7 @@ public final class AppTransport {
             return
         }
         if isServerSwitching?() == true {
-            vm.note("The Spark is switching models right now — send again once it says it's ready (usually a few minutes).")
+            vm.note("The main model's server is switching models right now — send again once it says it's ready (usually a few minutes).")
             return
         }
         runTasks[sessionID] = Task { await runTurn(vm, text: text, attachments: attachments) }
@@ -1226,7 +1226,7 @@ public final class AppTransport {
 
         case .goal(let goal):
             if isServerSwitching?() == true {
-                vm.note("The Spark is switching models right now — send again once it says it's ready.")
+                vm.note("The main model's server is switching models right now — send again once it says it's ready.")
                 return
             }
             // A bare `/goal` picks the chat's unfinished goal back up (after a

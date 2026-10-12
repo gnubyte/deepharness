@@ -1,5 +1,4 @@
 import Foundation
-import Security
 import DSHCore
 
 /// Persisted app configuration: providers, active model, permission preset,
@@ -9,8 +8,9 @@ import DSHCore
 @Observable
 public final class AppConfig {
     public static let shared = AppConfig()
-    public init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard, secrets: any SecretStore = KeychainSecretStore()) {
         self.defaults = defaults
+        self.secrets = secrets
         load()
     }
 
@@ -36,6 +36,8 @@ public final class AppConfig {
     }
 
     private let defaults: UserDefaults
+    /// Where API keys live: the Keychain (tests use memory).
+    @ObservationIgnored let secrets: any SecretStore
     /// Set while `load()` runs so the property observers don't write back.
     private var loading = false
 
@@ -294,33 +296,11 @@ public final class AppConfig {
     private static let keychainService = "DSHMac.provider"
 
     public func setAPIKey(_ key: String, for provider: ProviderProfile) {
-        let account = provider.routeID
-        let base: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(base as CFDictionary)
-        guard !key.isEmpty, let data = key.data(using: .utf8) else { return }
-        var add = base
-        add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(add as CFDictionary, nil)
+        secrets.write(key, service: Self.keychainService, account: provider.routeID)
     }
 
     public func apiKey(for provider: ProviderProfile) -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: provider.routeID,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data
-        else { return "" }
-        return String(decoding: data, as: UTF8.self)
+        secrets.read(service: Self.keychainService, account: provider.routeID) ?? ""
     }
 
     // MARK: - Projects
@@ -417,10 +397,6 @@ public struct SessionSkillSelection: Codable, Hashable, Sendable {
 }
 
 public extension ProviderProfile {
-    /// Stable identity for a configured route: survives reordering, and two
-    /// models on the same server stay distinct.
-    var routeID: String { "\(name)|\(model)" }
-
     /// A local server needs no key and should not be nagged for one.
     var needsAPIKey: Bool {
         switch kind {

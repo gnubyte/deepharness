@@ -158,6 +158,12 @@ struct SetupWizard: View {
             Text("You can change this later, and keep more than one configured.")
                 .font(.callout).foregroundStyle(.secondary)
 
+            // A Spark Swapper box sets itself up from one code: a guide of its own.
+            guideChoice(icon: "server.rack", title: "My Spark Swapper (DGX Spark or Strix Halo)",
+                        detail: "Paste the connection code from the Swapper's Connect tab. Sets up the model, switching, and the security certificate in one go.") {
+                model.showSwapperGuide(closing: true)
+            }
+
             ForEach(ProviderProfile.Kind.manual, id: \.self) { candidate in
                 Button {
                     kind = candidate
@@ -221,6 +227,31 @@ struct SetupWizard: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    /// A choice that hands over to a guide of its own (the wizard closes and the guide opens).
+    private func guideChoice(icon: String, title: String, detail: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.callout.weight(.medium))
+                    Text(detail)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
+            .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Theme.hairline))
+        }
+        .buttonStyle(.plain)
     }
 
     private func label(for kind: ProviderProfile.Kind) -> String {

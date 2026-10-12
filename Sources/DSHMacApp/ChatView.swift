@@ -24,14 +24,14 @@ struct ChatView: View {
                 set: { if !$0 { model.spark.confirmTarget = nil } })
     }
     private var sparkConfirmTitle: String {
-        "Switch the Spark to \(model.spark.confirmTarget?.title ?? "")?"
+        guard let t = model.spark.confirmTarget else { return "" }
+        return "Switch \(t.box.name) to \(t.model.title)?"
     }
     private var sparkConfirmMessage: String {
         guard let t = model.spark.confirmTarget else { return "" }
-        let current = model.spark.status?.activeModel?.title
-        let eta = t.key.contains("flash") ? "about 11 minutes" : "a few minutes"
+        let current = t.box.status?.activeModel?.title
         return (current.map { "\($0) stops, then " } ?? "")
-            + "\(t.title) loads (\(eta), \(t.context.formatted())-token context). OpenClaw and every chat here follow it automatically; "
+            + "\(t.model.title) loads (\(t.duration), \(t.model.window.formatted())-token context). Every chat using \(t.box.name) follows it automatically (and OpenClaw, if the box runs it); "
             + "if it fails to load, the previous model comes back."
     }
 
@@ -51,7 +51,7 @@ struct ChatView: View {
         .alert(sparkConfirmTitle, isPresented: sparkConfirmShown) {
             Button("Switch") {
                 if let target = model.spark.confirmTarget {
-                    Task { await model.spark.swap(to: target.key) }
+                    Task { await model.spark.swap(target.box, to: target.model.key) }
                 }
                 model.spark.confirmTarget = nil
             }
@@ -1119,8 +1119,8 @@ struct FlowLayout: Layout {
 
 // MARK: - Model switching
 
-/// The model in use, and one click to change it: the Spark's models (served
-/// by the Spark Swapper) and the provider routes configured in Settings.
+/// The model in use, and one click to change it: what each Spark Swapper box serves (switching it), and the
+/// routes configured in Settings.
 private struct ModelMenu: View {
     @Environment(AppModel.self) private var model
     let session: SessionVM
@@ -1131,59 +1131,72 @@ private struct ModelMenu: View {
         let limit = model.transport.contextLimit()
         Menu {
             if spark.isConfigured {
-                Section("DGX Spark — what it serves") {
-                    if let status = spark.status {
-                        ForEach(status.ordered) { m in
-                            Button {
-                                spark.request(m)
-                            } label: {
-                                Label("\(m.title) — \(Self.short(m.context))"
-                                      + (m.key == status.active ? "  (serving)" : m.running ? "  (loading)" : ""),
-                                      systemImage: m.key == status.active ? "checkmark.circle.fill"
-                                          : m.running ? "hourglass" : "arrow.triangle.2.circlepath")
+                ForEach(spark.boxes) { box in
+                    Section("\(box.name) — what it serves") {
+                        if let status = box.status {
+                            ForEach(status.ordered) { m in
+                                Button {
+                                    spark.request(m, on: box)
+                                } label: {
+                                    Label(Self.line(m, status: status),
+                                          systemImage: m.key == status.active ? "checkmark.circle.fill"
+                                              : !m.isInstalled ? "arrow.down.circle"
+                                              : m.running ? "hourglass" : "arrow.triangle.2.circlepath")
+                                }
+                                // Installing happens in Settings ▸ Model Servers, not from here.
+                                .disabled(m.key == status.active || status.isSwitching || !m.isInstalled)
                             }
-                            .disabled(m.key == status.active || status.isSwitching)
+                        } else {
+                            Text(box.lastError ?? "Connecting to \(box.name)…")
                         }
-                    } else {
-                        Text(spark.lastError ?? "Connecting to the Spark…")
                     }
-                    Button("Refresh") { Task { await spark.refresh() } }
                 }
+                Button("Refresh") { Task { await spark.refreshAll() } }
             } else {
-                Button("Set Up Spark Model Switching…") { model.showSettings = true }
+                Button("Connect a Spark Swapper…") { model.showSwapperGuide() }
             }
             RouteMenuSections()
         } label: {
-            Label("\(current) · \(Self.short(limit))", systemImage: spark.isSwitching ? "hourglass" : "cpu")
+            Label("\(current) · \(ModelSizes.short(limit))", systemImage: spark.isSwitchingMainModel ? "hourglass" : "cpu")
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .foregroundStyle(.secondary)
         .disabled(session.running)
-        .help("Model in use and its context window. Pick a Spark model to switch what the Spark serves (also /swap), or another configured provider.")
-        .task { if spark.isConfigured && spark.status == nil { await spark.refresh() } }
+        .help("Model in use and its context window. Pick a model a Spark Swapper box serves to switch it (also /swap), or another configured route.")
+        .task { if spark.boxes.contains(where: { $0.status == nil }) { await spark.refreshAll() } }
     }
 
-    static func short(_ n: Int) -> String {
-        n >= 1_000_000
-            ? String(format: "%.1fM", Double(n) / 1_000_000).replacingOccurrences(of: ".0M", with: "M")
-            : "\(n / 1024)K"
+    /// "Qwen3.8 27B — 1M · 27 tok/s measured here  (serving)"
+    static func line(_ m: SwapperStatus.Model, status: SwapperStatus) -> String {
+        var text = "\(m.title) — \(ModelSizes.short(m.window))"
+        if let speed = m.speedText() { text += " · \(speed)" }
+        if !m.isInstalled { text += " · Not installed" }
+        else if m.key == status.active { text += "  (serving)" } else if m.running { text += "  (loading)" }
+        return text
     }
+
+    static func short(_ n: Int) -> String { ModelSizes.short(n) }
 }
 
-/// Live progress while the Spark switches models, above the composer.
+/// Live progress while a box switches models, above the composer.
 private struct SparkSwapBanner: View {
     @Environment(AppModel.self) private var model
     @State private var tick = Date()
 
     var body: some View {
-        if let line = model.spark.progressLine {
+        let lines = model.spark.progressLines
+        if !lines.isEmpty {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text(line)
-                    .font(.system(size: 11))
-                    .monospacedDigit()
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(lines, id: \.self) { line in
+                        Text(line)
+                            .font(.system(size: 11))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                    }
+                }
                 Spacer()
                 Text(tick, style: .time).hidden()   // keeps the timer line redrawing
             }

@@ -39,6 +39,8 @@ final class AppModel {
     var showVault = false
     /// The Amazon Bedrock guide, when it is open (nil = closed).
     var bedrockGuide: BedrockGuideRequest?
+    /// The "Connect my Spark Swapper" guide, when it is open.
+    var swapperGuide: SwapperGuideRequest?
     /// Which Settings tab is showing; set before `showSettings` to deep-link.
     var settingsTab: SettingsTab = .general
     /// A skills action a caller wants the Skills tab to start with.
@@ -55,7 +57,7 @@ final class AppModel {
         showWizard = !config.wizardCompleted || !config.isConfigured
 
         let spark = spark
-        transport.isServerSwitching = { spark.isSwitching }
+        transport.isServerSwitching = { spark.isSwitchingMainModel }
         transport.onSwapCommand = { arg, vm in
             Task { @MainActor in await spark.handleCommand(arg, in: vm) }
         }
@@ -93,6 +95,22 @@ final class AppModel {
     /// (change its model, sign in again).
     func showBedrockGuide(page: BedrockPage = .welcome, route: ProviderProfile? = nil) {
         bedrockGuide = BedrockGuideRequest(page: page, route: route)
+    }
+
+    /// Open the "Connect my Spark Swapper" guide (a connection code, or an address and login). From a sheet
+    /// (the wizard, Settings), that sheet closes first so this one can open.
+    func showSwapperGuide(closing sheet: Bool = false) {
+        guard sheet || showSettings || showWizard else {
+            swapperGuide = SwapperGuideRequest()
+            return
+        }
+        showSettings = false
+        showWizard = false
+        Task { @MainActor in
+            // Let the sheet finish closing before the next one opens.
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            swapperGuide = SwapperGuideRequest()
+        }
     }
 
     // MARK: - Projects

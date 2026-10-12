@@ -233,6 +233,10 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         self.interactiveOnly = interactiveOnly
     }
 
+    /// Stable identity for a configured route: survives reordering, and two
+    /// models on the same server stay distinct.
+    public var routeID: String { "\(name)|\(model)" }
+
     /// Whether this route is flagged to serve subagents (see `subagentWorker`).
     public var isSubagentWorker: Bool { subagentWorker ?? false }
     /// Whether the route is switched on (see `enabled`).

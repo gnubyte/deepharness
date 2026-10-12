@@ -149,6 +149,9 @@ struct RootView: View {
         .sheet(item: $model.bedrockGuide) { request in
             BedrockGuideView(request: request, appModel: model).environment(model)
         }
+        .sheet(item: $model.swapperGuide) { request in
+            SwapperGuideView(request: request, appModel: model).environment(model)
+        }
         .overlay(alignment: .top) { banner }
     }
 

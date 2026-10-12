@@ -67,12 +67,37 @@ public struct SwapperStatus: Decodable, Sendable, Equatable {
         public var perf: Perf?
         public var measured: Measured?
         public var family: String?
+        /// What installing it takes ("60 GB", "15–30 minutes: …"); nil when it can't be installed from the Swapper.
+        public var install: Install?
+        /// How long switching to it takes ("about 11 minutes").
+        public var eta: String?
         public var id: String { key }
+
+        public struct Install: Decodable, Sendable, Equatable {
+            public var size_gb: Double?
+            public var time: String?
+
+            public init(size_gb: Double? = nil, time: String? = nil) {
+                self.size_gb = size_gb
+                self.time = time
+            }
+
+            /// "60 GB · 15–30 minutes: pulls or builds the image…"
+            public var summary: String? {
+                var parts: [String] = []
+                if let size_gb, size_gb > 0 {
+                    parts.append(size_gb.rounded() == size_gb ? "\(Int(size_gb)) GB" : String(format: "%.1f GB", size_gb))
+                }
+                if let time, !time.isEmpty { parts.append(time) }
+                return parts.isEmpty ? nil : parts.joined(separator: " · ")
+            }
+        }
 
         public init(key: String, title: String, tagline: String? = nil, engine: String? = nil, context: Int,
                     served_context: Int? = nil, served_id: String, vision: Bool? = nil, running: Bool = false,
                     healthy: Bool = false, order: Int? = nil, installed: Bool? = nil, platform: String? = nil,
-                    perf: Perf? = nil, measured: Measured? = nil, family: String? = nil) {
+                    perf: Perf? = nil, measured: Measured? = nil, family: String? = nil, install: Install? = nil,
+                    eta: String? = nil) {
             self.key = key
             self.title = title
             self.tagline = tagline
@@ -89,6 +114,8 @@ public struct SwapperStatus: Decodable, Sendable, Equatable {
             self.perf = perf
             self.measured = measured
             self.family = family
+            self.install = install
+            self.eta = eta
         }
 
         /// In the catalog *and* on the box. (A 1.x Swapper only lists what it has.) Only installed models can
@@ -109,14 +136,39 @@ public struct SwapperStatus: Decodable, Sendable, Equatable {
             }
             return "~\(Int(decode.rounded())) tok/s"
         }
+
+        /// How long switching to it takes, for a sentence ("takes about 11 minutes"): the Swapper's own figure, else
+        /// a rough one.
+        public var switchDuration: String {
+            if let eta, !eta.trimmingCharacters(in: .whitespaces).isEmpty { return eta }
+            return key.contains("flash") || title.lowercased().contains("flash") ? "about 11 minutes" : "a few minutes"
+        }
     }
 
     public struct Step: Decodable, Sendable, Equatable {
         public var key: String
         public var label: String
         public var state: String
+
+        public init(key: String, label: String, state: String) {
+            self.key = key
+            self.label = label
+            self.state = state
+        }
     }
 
+    /// One line of a job's log: seconds since the epoch, and the text.
+    public struct LogLine: Decodable, Sendable, Equatable {
+        public var t: Double
+        public var m: String
+
+        public init(t: Double, m: String) {
+            self.t = t
+            self.m = m
+        }
+    }
+
+    /// A swap — or, from /api/provisioning/job, an install (target "install:model:<key>").
     public struct Job: Decodable, Sendable, Equatable {
         public var id: String
         public var target: String
@@ -127,9 +179,32 @@ public struct SwapperStatus: Decodable, Sendable, Equatable {
         public var started: Double
         public var finished: Double?
         public var steps: [Step]
+        public var log: [LogLine]?
+
+        public init(id: String, target: String, source: String? = nil, state: String, error: String? = nil,
+                    note: String? = nil, started: Double, finished: Double? = nil, steps: [Step] = [], log: [LogLine]? = nil) {
+            self.id = id
+            self.target = target
+            self.source = source
+            self.state = state
+            self.error = error
+            self.note = note
+            self.started = started
+            self.finished = finished
+            self.steps = steps
+            self.log = log
+        }
 
         public var isRunning: Bool { state == "running" }
         public var currentStep: Step? { steps.first { $0.state == "running" } ?? steps.last { $0.state == "failed" } }
+        /// The newest line of its log, for a progress line.
+        public var lastLogLine: String? {
+            log?.last.map { $0.m.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        /// The model an install job is for ("install:model:flash" → "flash"); nil for anything else.
+        public var installingModel: String? {
+            target.hasPrefix("install:model:") ? String(target.dropFirst("install:model:".count)) : nil
+        }
     }
 
     public var active: String?
@@ -142,10 +217,12 @@ public struct SwapperStatus: Decodable, Sendable, Equatable {
     public var version: String?
     public var platform: String?
     public var hostname: String?
+    /// The install running now (or finished in the last few minutes).
+    public var install_job: Job?
 
     public init(active: String? = nil, loading: String? = nil, busy: Bool = false, models: [String: Model] = [:],
                 job: Job? = nil, openclaw_primary: String? = nil, version: String? = nil, platform: String? = nil,
-                hostname: String? = nil) {
+                hostname: String? = nil, install_job: Job? = nil) {
         self.active = active
         self.loading = loading
         self.busy = busy
@@ -155,6 +232,7 @@ public struct SwapperStatus: Decodable, Sendable, Equatable {
         self.version = version
         self.platform = platform
         self.hostname = hostname
+        self.install_job = install_job
     }
 
     /// Models in display order.
@@ -265,6 +343,12 @@ public struct SwapperCredentials: Sendable, Equatable {
     public var apiKey: String?
     public var apiBase: String?
     public var model: String?
+
+    public init(apiKey: String? = nil, apiBase: String? = nil, model: String? = nil) {
+        self.apiKey = apiKey
+        self.apiBase = apiBase
+        self.model = model
+    }
 }
 
 public enum SwapperError: LocalizedError, Sendable, Equatable {
@@ -277,6 +361,10 @@ public enum SwapperError: LocalizedError, Sendable, Equatable {
     case revoked
     /// The Swapper is older than the endpoint (e.g. no app tokens before 2.0).
     case unsupported(String)
+    /// A switch to a model the box hasn't installed yet.
+    case notInstalled
+    /// Another install is running on the box (one at a time).
+    case installBusy(String)
     case server(Int, String)
     case transport(String)
 
@@ -289,6 +377,8 @@ public enum SwapperError: LocalizedError, Sendable, Equatable {
         case .badLogin(let m): "Spark Swapper login failed: \(m)"
         case .revoked: "The Swapper no longer accepts this app's connection (it was revoked or the Swapper was reset). Paste a new connection code."
         case .unsupported(let what): "This Swapper is older than \(what). Update it, or connect with an address and login."
+        case .notInstalled: "That model isn't installed on the box yet — install it from Settings ▸ Model Servers."
+        case .installBusy(let m): "Another install is already running on the box (\(m)). Wait for it to finish, then try again."
         case .server(let code, let m): "Spark Swapper replied \(code): \(m)"
         case .transport(let m): "Couldn't reach the Spark Swapper: \(m)"
         }
@@ -406,8 +496,8 @@ public final class SparkSwapperClient: @unchecked Sendable {
         setLoggedIn(true)
     }
 
-    /// Call `path` signed in: with the token, or logging in first (or again, after a 401).
-    private func authed(_ path: String, body: [String: Any]? = nil) async throws -> Data {
+    /// Call `path` signed in: with the token, or logging in first (or again, after a 401). The reply as it came.
+    private func signedIn(_ path: String, body: [String: Any]? = nil) async throws -> (Int, Data) {
         var (code, data): (Int, Data)
         switch auth {
         case .token:
@@ -421,6 +511,12 @@ public final class SparkSwapperClient: @unchecked Sendable {
                 (code, data) = try await request(path, body: body)
             }
         }
+        return (code, data)
+    }
+
+    /// Call `path` signed in; anything but a 2xx is an error.
+    private func authed(_ path: String, body: [String: Any]? = nil) async throws -> Data {
+        let (code, data) = try await signedIn(path, body: body)
         guard (200...299).contains(code) else { throw SwapperError.server(code, Self.message(data)) }
         return data
     }
@@ -438,7 +534,37 @@ public final class SparkSwapperClient: @unchecked Sendable {
     }
 
     public func swap(to key: String) async throws {
-        _ = try await authed("api/swap", body: ["target": key])
+        let (code, data) = try await signedIn("api/swap", body: ["target": key])
+        // A switch to a model the box hasn't installed says so in a field of its own.
+        if code == 400, ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["not_installed"] as? Bool == true {
+            throw SwapperError.notInstalled
+        }
+        guard (200...299).contains(code) else { throw SwapperError.server(code, Self.message(data)) }
+    }
+
+    /// POST /api/models/install {"key"}: start installing a model the box doesn't have yet. A 409 means another
+    /// install is running. Returns the install job.
+    @discardableResult
+    public func installModel(_ key: String) async throws -> SwapperStatus.Job? {
+        let data: Data
+        do {
+            data = try await authed("api/models/install", body: ["key": key])
+        } catch SwapperError.server(409, let message) {
+            throw SwapperError.installBusy(message)
+        } catch SwapperError.server(404, _) {
+            throw SwapperError.unsupported("version 2.0")
+        }
+        return Self.job(in: data)
+    }
+
+    /// GET /api/provisioning/job: the install running now, or the last one.
+    public func provisioningJob() async throws -> SwapperStatus.Job? {
+        Self.job(in: try await authed("api/provisioning/job"))
+    }
+
+    private static func job(in data: Data) -> SwapperStatus.Job? {
+        struct Wrapper: Decodable { var job: SwapperStatus.Job? }
+        return (try? JSONDecoder().decode(Wrapper.self, from: data))?.job
     }
 
     /// GET /api/connect (Swapper 2.0): the model API's address, key and certificate.

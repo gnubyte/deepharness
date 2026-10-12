@@ -244,6 +244,70 @@ final class SparkSwapperTests: XCTestCase {
         XCTAssertEqual(grant.connect?.context, 131072)
     }
 
+    func testInstallingAModelAndFollowingIt() async throws {
+        stub { request in
+            switch request.url?.path ?? "" {
+            case "/api/models/install":
+                return Self.json(#"{"ok":true,"job":{"id":"i1","target":"install:model:flash","source":null,"state":"running","error":null,"note":null,"started":1.0,"finished":null,"steps":[{"key":"requires","label":"Checking what it needs","state":"running","started":1.0,"finished":null,"detail":""}],"log_total":1,"log":[{"t":1.0,"m":"checking docker"}]}}"#,
+                                 status: 202)
+            case "/api/provisioning/job":
+                return Self.json(#"{"job":{"id":"i1","target":"install:model:flash","state":"done","started":1.0,"finished":9.0,"steps":[],"log":[]}}"#)
+            default: return Self.json("{}", status: 404)
+            }
+        }
+        let client = SparkSwapperClient(baseURL: URL(string: "https://spark:8999")!, auth: .token("sst_x"), pinnedFingerprint: nil)
+        let started = try await client.installModel("flash")
+        let job = try XCTUnwrap(started)
+        XCTAssertTrue(job.isRunning)
+        XCTAssertEqual(job.installingModel, "flash")
+        XCTAssertEqual(job.currentStep?.label, "Checking what it needs")
+        XCTAssertEqual(job.lastLogLine, "checking docker")
+        let polled = try await client.provisioningJob()
+        let later = try XCTUnwrap(polled)
+        XCTAssertEqual(later.state, "done")
+    }
+
+    func testABusyInstallerAndAModelThatIsNotInstalledAreTheirOwnErrors() async {
+        stub { request in
+            switch request.url?.path ?? "" {
+            case "/api/models/install": return Self.json(#"{"error":"An install is already in progress."}"#, status: 409)
+            case "/api/swap": return Self.json(#"{"error":"Qwen3.8 Flash isn't installed yet.","not_installed":true}"#, status: 400)
+            default: return Self.json("{}", status: 404)
+            }
+        }
+        let client = SparkSwapperClient(baseURL: URL(string: "https://spark:8999")!, auth: .token("sst_x"), pinnedFingerprint: nil)
+        do { try await client.installModel("flash"); XCTFail("busy") } catch {
+            XCTAssertEqual(error as? SwapperError, .installBusy("An install is already in progress."))
+        }
+        do { try await client.swap(to: "flash"); XCTFail("not installed") } catch {
+            XCTAssertEqual(error as? SwapperError, .notInstalled)
+        }
+    }
+
+    func testAnotherFourHundredFromSwapIsAnOrdinaryError() async {
+        stub { _ in Self.json(#"{"error":"Unknown model."}"#, status: 400) }
+        let client = SparkSwapperClient(baseURL: URL(string: "https://spark:8999")!, auth: .token("sst_x"), pinnedFingerprint: nil)
+        do { try await client.swap(to: "nope"); XCTFail("unknown") } catch {
+            XCTAssertEqual(error as? SwapperError, .server(400, "Unknown model."))
+        }
+    }
+
+    func testInstallDetailsAndTheSwitchTimeComeFromTheCatalog() throws {
+        let json = #"""
+        {"busy":false,"models":{"x":{"key":"x","title":"X Flash","context":8192,"served_id":"x","running":false,"healthy":false,
+          "installed":false,"install":{"size_gb":16.8,"time":"5–15 minutes: downloads 16.8 GB","requires":["docker"]},"eta":"about 20 seconds"},
+          "y":{"key":"y","title":"Y Flash","context":8192,"served_id":"y","running":false,"healthy":false,"install":null}},
+         "install_job":{"id":"i9","target":"install:model:x","state":"running","started":5.0,"steps":[]}}
+        """#
+        let status = try JSONDecoder().decode(SwapperStatus.self, from: Data(json.utf8))
+        XCTAssertEqual(status.models["x"]?.install?.summary, "16.8 GB · 5–15 minutes: downloads 16.8 GB")
+        XCTAssertEqual(status.models["x"]?.switchDuration, "about 20 seconds")
+        XCTAssertNil(status.models["y"]?.install)
+        XCTAssertEqual(status.models["y"]?.switchDuration, "about 11 minutes", "no figure: the rough one")
+        XCTAssertEqual(status.install_job?.installingModel, "x")
+        XCTAssertEqual(SwapperStatus.Model.Install(size_gb: 60).summary, "60 GB")
+    }
+
     func testATypedAddressBecomesTheSwappersAddress() {
         XCTAssertEqual(SparkSwapperClient.normalizedURL("192.168.1.42")?.absoluteString, "https://192.168.1.42:8999")
         XCTAssertEqual(SparkSwapperClient.normalizedURL(" spark.local ")?.absoluteString, "https://spark.local:8999")
