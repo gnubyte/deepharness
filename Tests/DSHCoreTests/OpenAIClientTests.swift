@@ -63,4 +63,63 @@ final class OpenAIClientTests: XCTestCase {
         XCTAssertEqual(messages[0]["role"] as? String, "system")
         XCTAssertEqual(messages[0]["content"] as? String, "note one\n\nnote two")
     }
+
+    /// Compaction inside a long tool run can leave a summary plus assistant and tool
+    /// turns and no user message. Qwen's chat template rejects that, so the wire
+    /// request grows a placeholder user note (after the merged system message).
+    func testCompactionWithoutAUserMessageInsertsAPlaceholder() throws {
+        let request = LLMRequest(
+            systemPrompt: "You are a helpful agent.",
+            messages: [
+                .system(Compaction.summaryHeader + "Earlier work: edited files."),
+                .assistant("Edited it.", calls: [ToolCall(id: "c1", name: "edit", arguments: #"{"file_path":"a.txt"}"#)]),
+                .toolResult(id: "c1", name: "edit", output: "Edited a.txt."),
+            ],
+            tools: [], model: "test-model")
+        let messages = try wireMessages(request)
+        XCTAssertEqual(messages.map { $0["role"] as? String }, ["system", "user", "assistant", "tool"])
+        XCTAssertEqual(messages[1]["content"] as? String, OpenAIClient.noUserTurnNote)
+        let system = messages[0]["content"] as? String ?? ""
+        XCTAssertTrue(system.contains("You are a helpful agent."))
+        XCTAssertTrue(system.contains("Earlier work: edited files."))
+    }
+
+    func testARequestThatAlreadyHasAUserMessageDoesNotGrowAPlaceholder() throws {
+        let request = LLMRequest(
+            systemPrompt: "sys",
+            messages: [.assistant("thinking", calls: []), .user("the real question")],
+            tools: [], model: "test-model")
+        let messages = try wireMessages(request)
+        let users = messages.filter { $0["role"] as? String == "user" }
+        XCTAssertEqual(users.count, 1)
+        XCTAssertEqual(users[0]["content"] as? String, "the real question")
+    }
+
+    /// vLLM fails the whole conversation if a replayed tool call's arguments are not a
+    /// JSON object. Cut-off or empty arguments go out as `{}`; a real object is unchanged.
+    func testBrokenToolArgumentsGoOutAsAnEmptyObject() throws {
+        let request = LLMRequest(
+            systemPrompt: "",
+            messages: [
+                .user("go"),
+                .assistant("", calls: [
+                    ToolCall(id: "c1", name: "edit", arguments: #"{"file_path":"#),
+                    ToolCall(id: "c2", name: "edit", arguments: "  "),
+                    ToolCall(id: "c3", name: "edit", arguments: "[1, 2]"),
+                    ToolCall(id: "c4", name: "edit", arguments: #"{"file_path":"a.txt"}"#),
+                ]),
+            ],
+            tools: [], model: "m")
+        let messages = try wireMessages(request)
+        let assistant = try XCTUnwrap(messages.first { $0["role"] as? String == "assistant" })
+        let calls = try XCTUnwrap(assistant["tool_calls"] as? [[String: Any]])
+        func args(_ index: Int) -> String {
+            let function = calls[index]["function"] as! [String: Any]
+            return function["arguments"] as! String
+        }
+        XCTAssertEqual(args(0), "{}")
+        XCTAssertEqual(args(1), "{}")
+        XCTAssertEqual(args(2), "{}")
+        XCTAssertEqual(args(3), #"{"file_path":"a.txt"}"#)
+    }
 }

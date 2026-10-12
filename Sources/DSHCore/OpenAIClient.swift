@@ -512,6 +512,20 @@ public struct OpenAIClient: LLMClient {
 
     // MARK: Request body
 
+    /// Inserted when compaction has cut the user's own turn out of a long tool run.
+    /// Qwen chat templates refuse a request that has no user message.
+    static let noUserTurnNote = "(Earlier work in this conversation was summarised above. Carry on with the task.)"
+
+    /// A tool call's arguments as the wire wants them: a JSON object. Empty or broken
+    /// text (a call the model cut off or mangled) becomes `{}`. Servers that hand the
+    /// arguments to a chat template as a parsed object (vLLM) fail the whole request
+    /// on anything else, and would keep failing for the rest of the conversation.
+    static func safeArguments(_ arguments: String) -> String {
+        let trimmed = arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let parsed = JSONValue(parsing: trimmed), parsed.object != nil else { return "{}" }
+        return arguments
+    }
+
     func makeBody(_ request: LLMRequest) throws -> Data {
         var messages: [[String: Any]] = []
         // Some OpenAI-compatible servers (SGLang on the DGX Spark, notably)
@@ -535,7 +549,7 @@ public struct OpenAIClient: LLMClient {
                 if let calls = m.toolCalls, !calls.isEmpty {
                     msg["tool_calls"] = calls.map { c -> [String: Any] in
                         ["id": c.id, "type": "function",
-                         "function": ["name": c.name, "arguments": c.arguments.raw]]
+                         "function": ["name": c.name, "arguments": Self.safeArguments(c.arguments.raw)]]
                     }
                 }
                 messages.append(msg)
@@ -544,6 +558,12 @@ public struct OpenAIClient: LLMClient {
                                  "tool_call_id": m.toolCallID ?? "",
                                  "content": m.content ?? ""])
             }
+        }
+        // Chat templates that look for the user's question (Qwen's, among others) refuse a
+        // request that has none — and that is what a long run looks like after compaction
+        // cuts inside it: the summary, then assistant and tool turns.
+        if !messages.isEmpty && !messages.contains(where: { ($0["role"] as? String) == "user" }) {
+            messages.insert(["role": "user", "content": Self.noUserTurnNote], at: 0)
         }
         if !systemParts.isEmpty {
             messages.insert(["role": "system", "content": systemParts.joined(separator: "\n\n")], at: 0)
