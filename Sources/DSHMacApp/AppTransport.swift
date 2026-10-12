@@ -87,6 +87,8 @@ public final class AppTransport {
     private var routeInfo: [String: RouteInfo] = [:]
     /// Route IDs whose probe is already in flight (avoids duplicate requests).
     @ObservationIgnored private var probingContext: Set<String> = []
+    /// Chats told this turn that it ran on a backup.
+    @ObservationIgnored private var failoverNoticed: Set<String> = []
 
     // MARK: - Task queue
 
@@ -138,6 +140,8 @@ public final class AppTransport {
         var vault: Int
         /// The subagent types (and the files they come from) are in the tool descriptions.
         var agents: String
+        /// The backups the main model's client falls over to.
+        var backups: [ProviderProfile]
     }
 
     /// Everything about skills one turn needs: what exists, what's on, and the prompt text.
@@ -1600,9 +1604,11 @@ public final class AppTransport {
         let window = contextLimit()
         let thinking = vm.thinking
         let skillState = self.skillState(for: vm)
+        let backups = backupProfiles()
         let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset,
                             skills: skillState.signature, computerTools: config.computerToolsEnabled,
-                            vision: visionOn(for: profile), vault: vault.revision, agents: agentsStamp(for: vm))
+                            vision: visionOn(for: profile), vault: vault.revision, agents: agentsStamp(for: vm),
+                            backups: backups)
         if let previous = engineKeys[sessionID], previous.profile.model != profile.model {
             vm.note("The server is now serving `\(profile.model)` (was `\(previous.profile.model)`) — switched to it, \(window.formatted())-token window.")
         }
@@ -1610,11 +1616,12 @@ public final class AppTransport {
         if let existing = engines[sessionID], engineKeys[sessionID] == key {
             engine = existing
         } else {
-            engine = self.engine(for: sessionID, vm: vm, client: ProviderClients.make(profile),
+            engine = self.engine(for: sessionID, vm: vm, client: mainClient(profile, backups: backups, sessionID: sessionID),
                                  window: window, thinking: thinking, skillState: skillState)
             engineKeys[sessionID] = key
         }
         retryRoute[sessionID] = nil
+        failoverNoticed.remove(sessionID)
         let input = transcripts[sessionID] ?? []
 
         // Engine events arrive on a pool thread; hop to main so the
@@ -2060,7 +2067,34 @@ public final class AppTransport {
         // Compare with the route the run is on now (a retry may have moved it).
         guard profile != (retryRoute[sessionID] ?? engineKeys[sessionID]?.profile) else { return nil }
         retryRoute[sessionID] = profile
-        return (ProviderClients.make(profile), profile.model)
+        return (mainClient(profile, backups: backupProfiles(), sessionID: sessionID), profile.model)
+    }
+
+    // MARK: - Backups
+
+    /// The routes that take over when the main model fails before answering, with their keys.
+    func backupProfiles() -> [ProviderProfile] {
+        config.backupRoutes.map { route in
+            var profile = route
+            let key = config.apiKey(for: route)
+            profile.apiKey = key.isEmpty ? nil : key
+            return profile
+        }
+    }
+
+    /// A chat's client for the main model: with the backups, which take over a request the main model fails
+    /// before it answers. A turn that ran on a backup says so in the chat (once per turn).
+    func mainClient(_ profile: ProviderProfile, backups: [ProviderProfile], sessionID: String) -> any ProviderClient {
+        ProviderClients.make(profile, backups: backups, events: ClientEvents(failover: { [weak self] notice in
+            Task { @MainActor [weak self] in self?.noteFailover(notice, sessionID: sessionID) }
+        }))
+    }
+
+    private func noteFailover(_ notice: FailoverNotice, sessionID: String) {
+        guard !failoverNoticed.contains(sessionID), let vm = sessions.first(where: { $0.id == sessionID }) else { return }
+        failoverNoticed.insert(sessionID)
+        vm.note(notice.text)
+        log.recordItem(sessionID, kind: "notice", text: notice.text, toolName: nil, argSummary: nil, output: nil, isError: false)
     }
 
     /// Fire the server probe for the active route so `contextLimit` fills in a

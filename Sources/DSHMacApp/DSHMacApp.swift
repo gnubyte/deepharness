@@ -331,7 +331,7 @@ private struct ModelMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help(model.config.activeProvider.map { "Main model: \($0.displayName)" } ?? "No model configured")
+        .help(model.config.activeProvider.map { "Primary: \($0.displayName)" } ?? "No model configured")
     }
 }
 

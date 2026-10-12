@@ -15,7 +15,7 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
             ProviderSettings()
-                .tabItem { Label("Models", systemImage: "cpu") }
+                .tabItem { Label("AI Models", systemImage: "cpu") }
                 .tag(SettingsTab.models)
             SwapperSettings()
                 .tabItem { Label("Model Servers", systemImage: "server.rack") }
@@ -30,7 +30,7 @@ struct SettingsView: View {
                 .tabItem { Label("Editor", systemImage: "text.cursor") }
                 .tag(SettingsTab.editor)
         }
-        .frame(width: 780, height: 600)
+        .frame(width: 860, height: 640)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") { dismiss() }
