@@ -275,20 +275,22 @@ public final class AgentFleet: @unchecked Sendable {
             try Task.checkCancellation()
             let step: Step = try lock.withLock {
                 if configured.isEmpty { throw FleetUnavailableError("No model server is configured.") }
-                if sensitive, !hasPrivateServerLocked() { throw FleetUnavailableError(Self.noPrivateServer) }
-                let eligible = sensitive ? configured.filter(\.isPrivate) : configured
+                let eligible = eligibleLocked(sensitive: sensitive)
+                // Every server that may take it was tried and failed (or, for a sensitive task, there is none):
+                // say so rather than wait for something that can't come.
                 if eligible.allSatisfy({ tried.contains($0.id) }) {
+                    if sensitive { throw FleetUnavailableError(Self.noPrivateServer, underlying: lastError) }
                     throw FleetUnavailableError("No model server answered"
                                                 + (lastError.map { ": \($0.localizedDescription)" } ?? "."),
                                                 underlying: lastError)
                 }
-                if let chosen = chooseLocked(preferred: preferred, tried: tried, sensitive: sensitive) {
+                if let chosen = chooseLocked(preferred: preferred, tried: tried, among: eligible, sensitive: sensitive) {
                     states[chosen.id, default: State()].inFlight += 1
                     return .chosen(chosen)
                 }
                 let waiter = Waiter()
                 waiters.append(waiter)
-                return .wait(waiter, recovery: nextRecoveryLocked(tried: tried))
+                return .wait(waiter, recovery: nextRecoveryLocked(among: eligible, tried: tried))
             }
 
             switch step {
@@ -381,11 +383,12 @@ public final class AgentFleet: @unchecked Sendable {
 
     // MARK: Choosing
 
-    /// Somewhere a sensitive task may run: a private worker, or a private primary that may take subagents (it
-    /// always may when there are no workers at all).
-    private func hasPrivateServerLocked() -> Bool {
-        if configured.contains(where: { !$0.isPrimary && $0.isPrivate }) { return true }
-        return primaryTakesSensitiveLocked()
+    /// The servers a task may run on: any, or for a sensitive task the private workers — and the primary when it is
+    /// private and may take subagents (it always may when there are no workers at all).
+    private func eligibleLocked(sensitive: Bool) -> [FleetServer] {
+        guard sensitive else { return configured }
+        let primaryMay = primaryTakesSensitiveLocked()
+        return configured.filter { $0.isPrivate && (!$0.isPrimary || primaryMay) }
     }
 
     private func primaryTakesSensitiveLocked() -> Bool {
@@ -393,9 +396,10 @@ public final class AgentFleet: @unchecked Sendable {
         return primaryTakesOverflow || !configured.contains(where: { !$0.isPrimary })
     }
 
-    private func chooseLocked(preferred: String?, tried: Set<String>, sensitive: Bool = false) -> FleetServer? {
+    private func chooseLocked(preferred: String?, tried: Set<String>, among eligible: [FleetServer],
+                              sensitive: Bool) -> FleetServer? {
         let at = now()
-        let candidates = configured.filter { !tried.contains($0.id) && (!sensitive || $0.isPrivate) }
+        let candidates = eligible.filter { !tried.contains($0.id) }
         if candidates.isEmpty { return nil }
         // Skip servers that just failed — unless that would leave none.
         var healthy = candidates.filter { isHealthyLocked(states[$0.id], at) }
@@ -422,19 +426,19 @@ public final class AgentFleet: @unchecked Sendable {
         let workers = healthy.filter { !$0.isPrimary }
         if let worker = pick(from: workers) { return worker }
         let primaries = healthy.filter(\.isPrimary)
-        // A sensitive task goes to the primary only when it is private and may take subagents.
-        if sensitive { return primaryTakesSensitiveLocked() ? pick(from: primaries) : nil }
+        // For a sensitive task the primary is eligible only when it is private and may take subagents.
+        if sensitive { return pick(from: primaries) }
         // No workers at all, or the primary may take overflow: use it. Otherwise wait for a worker.
         if workers.isEmpty || primaryTakesOverflow { return pick(from: primaries) }
         return nil
     }
 
-    /// How long until the first blacklisted server (one not yet tried) is trusted again; nil if none is
-    /// waiting out a ban.
-    private func nextRecoveryLocked(tried: Set<String>) -> TimeInterval? {
+    /// How long until the first blacklisted server (an eligible one not yet tried) is trusted again; nil if none
+    /// is waiting out a ban.
+    private func nextRecoveryLocked(among eligible: [FleetServer], tried: Set<String>) -> TimeInterval? {
         let at = now()
         var soonest: TimeInterval?
-        for server in configured where !tried.contains(server.id) {
+        for server in eligible where !tried.contains(server.id) {
             guard let until = states[server.id]?.unhealthyUntil, until > at else { continue }
             let left = until.timeIntervalSince(at) + 0.05
             if soonest == nil || left < soonest! { soonest = left }

@@ -92,7 +92,43 @@ final class SensitiveDelegationTests: XCTestCase {
         overflow.release()
     }
 
+    func testThePrivateWorkerBeingDownEndsInAnAnswerNotAWait() async throws {
+        // A private primary that may not take subagents, and the only private worker offline.
+        let fleet = AgentFleet()
+        fleet.usePrimaryWhenWorkersBusy = false
+        fleet.configure([server("spark", primary: true, max: 4, private: true),
+                         FleetServer(id: "spark-2", label: "spark-2", isPrimary: false, maxParallel: 2, isPrivate: true) {
+                             throw LLMError.connection("offline")
+                         }])
+        do {
+            _ = try await FleetPending { try await fleet.acquire(sensitive: true) }.value(within: 3)
+            XCTFail("nothing private may take it")
+        } catch let error as FleetUnavailableError {
+            XCTAssertEqual(error.message, AgentFleet.noPrivateServer)
+        }
+        // An ordinary task still runs, on the primary.
+        let ordinary = try await fleet.acquire()
+        XCTAssertEqual(ordinary.label, "spark")
+        ordinary.release()
+        // With the primary allowed to take subagents, the sensitive task goes there instead.
+        fleet.usePrimaryWhenWorkersBusy = true
+        let lease = try await FleetPending { try await fleet.acquire(sensitive: true) }.value(within: 3)
+        XCTAssertEqual(lease.label, "spark")
+        lease.release()
+    }
+
     // MARK: The tools
+
+    func testWithoutAFleetASensitiveTaskRunsOnlyOnAPrivateModel() async throws {
+        let notPrivate = fleetContext(FleetReportsClient("parent"), root: dir.url, retry: fleetFastRetry)
+        let refused = await AgentTool().execute(args: #"{"description":"payroll","prompt":"p","sensitive":true}"#, in: notPrivate)
+        XCTAssertTrue(refused.output.contains(AgentFleet.noPrivateServer), refused.output)
+
+        let spark = ProviderProfile(kind: .openAICompat, name: "Spark", baseURL: "https://192.168.1.42:11443/v1", model: "q")
+        let onPrivate = fleetContext(PrivateModel(profile: spark), root: dir.url, retry: fleetFastRetry)
+        let ran = await AgentTool().execute(args: #"{"description":"payroll","prompt":"p","sensitive":true}"#, in: onPrivate)
+        XCTAssertTrue(ran.output.contains("finished"), ran.output)
+    }
 
     func testTheAgentToolSaysWhenNothingPrivateCanTakeIt() async throws {
         let fleet = AgentFleet()
@@ -134,4 +170,20 @@ final class SensitiveDelegationTests: XCTestCase {
             XCTAssertTrue(spec.parameters.contains(#""sensitive":{"type":"boolean","description":"Set true when the task needs sensitive data (personal data, credentials, client details). It then runs only on a private server."#), name)
         }
     }
+}
+
+/// A model on the user's own network, answering with a report.
+private struct PrivateModel: ProviderClient {
+    let profile: ProviderProfile
+
+    func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(.text("report"))
+            continuation.yield(.done(calls: [], finish: "stop", usage: nil))
+            continuation.finish()
+        }
+    }
+
+    func listModels() async throws -> [String] { [profile.model] }
+    func modelInfo(_ model: String?) async -> ModelInfo? { nil }
 }

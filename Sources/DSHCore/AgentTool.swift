@@ -148,6 +148,12 @@ public struct AgentTool: ToolExecutor {
                     if firstServer == nil { firstServer = leased.label }
                     if let runID, choice { roster?.setServer(runID, leased.label) }
                 } else {
+                    // No fleet: it would run on the chat's own model — for a sensitive task, only if that is private.
+                    if sensitive, (context.client as? any ProviderClient)?.profile.isPrivateRoute != true {
+                        if let runID { roster?.finish(runID, status: .failed, report: AgentFleet.noPrivateServer) }
+                        return SubagentOutcome(ok: false, report: AgentFleet.noPrivateServer, agentType: definition.name,
+                                               server: nil, elapsed: elapsed(), failovers: failovers)
+                    }
                     target = FleetTarget(client: context.client, model: context.model, contextWindow: context.contextWindow)
                 }
 
