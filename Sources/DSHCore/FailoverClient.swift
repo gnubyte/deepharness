@@ -85,38 +85,50 @@ public struct FailoverClient: ProviderClient {
                     if Task.isCancelled { continuation.finish(throwing: CancellationError()); return }
                     var sent = request
                     if !candidate.isPrimary { sent = request.with(model: candidate.client.profile.model) }
-                    var started = false
-                    do {
-                        for try await event in candidate.client.stream(sent) {
-                            if !started {
-                                started = true
-                                if candidate.isPrimary {
-                                    state.primaryAnswered()
-                                } else {
-                                    let why = primaryError ?? state.lastPrimaryError
-                                    report(FailoverNotice(primary: Self.label(primary.profile), backup: Self.label(candidate.client.profile),
-                                                          reason: why.map(RequestRetry.reason(for:)) ?? "it failed a moment ago"))
+                    var reprobed = false
+                    while true {
+                        var started = false
+                        do {
+                            for try await event in candidate.client.stream(sent) {
+                                if !started {
+                                    started = true
+                                    if candidate.isPrimary {
+                                        state.primaryAnswered()
+                                    } else {
+                                        let why = primaryError ?? state.lastPrimaryError
+                                        report(FailoverNotice(primary: Self.label(primary.profile), backup: Self.label(candidate.client.profile),
+                                                              reason: why.map(RequestRetry.reason(for:)) ?? "it failed a moment ago"))
+                                    }
                                 }
+                                continuation.yield(event)
                             }
-                            continuation.yield(event)
-                        }
-                        continuation.finish()
-                        return
-                    } catch {
-                        // Mid-stream, or stopped: that's the answer.
-                        if started || error is CancellationError || Task.isCancelled {
-                            continuation.finish(throwing: error)
+                            continuation.finish()
                             return
-                        }
-                        if firstFailure == nil { firstFailure = error }
-                        if candidate.isPrimary {
-                            primaryError = error
-                            // A failure that isn't the server's (a malformed request, an overflow): no backup helps.
-                            guard Self.failsOver(error), !backups.isEmpty else {
+                        } catch {
+                            // Mid-stream, or stopped: that's the answer.
+                            if started || error is CancellationError || Task.isCancelled {
                                 continuation.finish(throwing: error)
                                 return
                             }
-                            state.primaryFailed(error)
+                            // A backup that no longer serves the model it was set up with (a Spark Swapper box switched
+                            // models since): ask it what it serves now, once, and send that.
+                            if !candidate.isPrimary, !reprobed, Self.modelGone(error),
+                               let served = await candidate.client.modelInfo(nil)?.id, !served.isEmpty, served != sent.model {
+                                reprobed = true
+                                sent = request.with(model: served)
+                                continue
+                            }
+                            if firstFailure == nil { firstFailure = error }
+                            if candidate.isPrimary {
+                                primaryError = error
+                                // A failure that isn't the server's (a malformed request, an overflow): no backup helps.
+                                guard Self.failsOver(error), !backups.isEmpty else {
+                                    continuation.finish(throwing: error)
+                                    return
+                                }
+                                state.primaryFailed(error)
+                            }
+                            break
                         }
                     }
                 }
@@ -124,6 +136,14 @@ public struct FailoverClient: ProviderClient {
                 continuation.finish(throwing: primaryError ?? state.lastPrimaryError ?? firstFailure ?? LLMError.connection("no model answered"))
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// The server doesn't know the model asked for (404).
+    static func modelGone(_ error: Error) -> Bool {
+        switch error as? LLMError {
+        case .http(404, _)?, .rejected(404, _, _, _)?: return true
+        default: return false
         }
     }
 

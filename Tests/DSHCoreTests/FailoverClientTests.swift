@@ -9,8 +9,12 @@ private final class FailoverScript: ProviderClient, @unchecked Sendable {
     private var steps: [Step]
     private var _models: [String] = []
 
-    init(_ name: String, model: String = "m", _ steps: [Step]) {
+    /// What the server says it serves (nil: it doesn't say).
+    private let served: String?
+
+    init(_ name: String, model: String = "m", served: String? = nil, _ steps: [Step]) {
         profile = ProviderProfile(kind: .openAICompat, name: name, baseURL: "http://\(name.lowercased()).test/v1", model: model)
+        self.served = served
         self.steps = steps
     }
 
@@ -38,7 +42,7 @@ private final class FailoverScript: ProviderClient, @unchecked Sendable {
     }
 
     func listModels() async throws -> [String] { [profile.model] }
-    func modelInfo(_ model: String?) async -> ModelInfo? { nil }
+    func modelInfo(_ model: String?) async -> ModelInfo? { served.map { ModelInfo(id: $0, servedModels: [$0]) } }
 }
 
 /// Notices several threads report.
@@ -155,6 +159,25 @@ final class FailoverClientTests: XCTestCase {
         let third = try await run(client)
         XCTAssertEqual(third, "back again")
         XCTAssertEqual(primary.calls, 2)
+    }
+
+    func testABackupBoxThatSwitchedModelsIsAskedWhatItServesNow() async throws {
+        // The backup was set up while its box served "qwen-27b"; it has switched to "qwen-flash" since.
+        let primary = FailoverScript("Spark", [.fail(LLMError.connection("refused"))])
+        let backup = FailoverScript("Spark 2", model: "qwen-27b", served: "qwen-flash",
+                                    [.fail(LLMError.http(404, "The model `qwen-27b` does not exist.")), .reply("from flash")])
+        let client = FailoverClient(primary: primary, backups: [backup])
+        let text = try await run(client)
+        XCTAssertEqual(text, "from flash")
+        XCTAssertEqual(backup.models, ["qwen-27b", "qwen-flash"], "asked once, then the model it serves")
+
+        // A backup that says it serves what was asked doesn't get the same request twice.
+        let stale = FailoverScript("Spark 3", model: "qwen-27b", served: "qwen-27b", [.fail(LLMError.http(404, "gone"))])
+        let other = FailoverScript("Kimi", [.reply("from kimi")])
+        let again = FailoverClient(primary: FailoverScript("Spark", [.fail(LLMError.connection("refused"))]), backups: [stale, other])
+        let answer = try await run(again)
+        XCTAssertEqual(answer, "from kimi")
+        XCTAssertEqual(stale.calls, 1)
     }
 
     func testWithoutBackupsTheClientIsThePrimaryItself() {
