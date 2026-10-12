@@ -100,6 +100,23 @@ public protocol SecretStore: Sendable {
     func read(service: String, account: String) -> String?
     /// Store `value`, or delete the secret when it is nil or empty.
     func write(_ value: String?, service: String, account: String)
+    /// Like `read`, but telling "there is none" from "it couldn't be read".
+    func lookup(service: String, account: String) -> SecretLookup
+}
+
+/// What looking a secret up came to.
+public enum SecretLookup: Equatable, Sendable {
+    case found(String)
+    /// There is none.
+    case missing
+    /// It couldn't be read (a locked Keychain, access refused): there may well be one.
+    case unavailable
+}
+
+extension SecretStore {
+    public func lookup(service: String, account: String) -> SecretLookup {
+        read(service: service, account: account).map(SecretLookup.found) ?? .missing
+    }
 }
 
 /// Generic passwords in the login Keychain.
@@ -107,26 +124,44 @@ public struct KeychainSecretStore: SecretStore {
     public init() {}
 
     public func read(service: String, account: String) -> String? {
+        if case .found(let value) = lookup(service: service, account: account) { return value }
+        return nil
+    }
+
+    public func lookup(service: String, account: String) -> SecretLookup {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: service,
                                     kSecAttrAccount as String: account,
                                     kSecReturnData as String: true,
                                     kSecMatchLimit as String: kSecMatchLimitOne]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return String(decoding: data, as: UTF8.self)
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            guard let data = item as? Data else { return .unavailable }
+            return .found(String(decoding: data, as: UTF8.self))
+        case errSecItemNotFound:
+            return .missing
+        default:
+            return .unavailable
+        }
     }
 
     public func write(_ value: String?, service: String, account: String) {
         let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                    kSecAttrService as String: service,
                                    kSecAttrAccount as String: account]
-        SecItemDelete(base as CFDictionary)
-        guard let value, !value.isEmpty else { return }
-        var add = base
-        add[kSecValueData as String] = Data(value.utf8)
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(add as CFDictionary, nil)
+        guard let value, !value.isEmpty else {
+            SecItemDelete(base as CFDictionary)
+            return
+        }
+        // Update in place, adding only when there is none: the old value is never gone before the new one is in.
+        let data = Data(value.utf8)
+        if SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecItemNotFound {
+            var add = base
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            SecItemAdd(add as CFDictionary, nil)
+        }
     }
 }
 

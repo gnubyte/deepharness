@@ -22,7 +22,7 @@ final class FleetConfigTests: XCTestCase {
     }
 
     private func config(_ routes: [ProviderProfile], main: String? = nil, defaults: UserDefaults? = nil) -> AppConfig {
-        let config = AppConfig(defaults: defaults ?? self.defaults())
+        let config = AppConfig(defaults: defaults ?? self.defaults(), secrets: MemorySecretStore())
         config.providers = routes
         config.activeRoute = main ?? routes.first?.routeID
         return config
@@ -216,7 +216,7 @@ final class FleetConfigTests: XCTestCase {
         first.setSubagentParallel(bedrock().routeID, 3)
         first.subagentsUsePrimary = false
 
-        let second = AppConfig(defaults: store)
+        let second = AppConfig(defaults: store, secrets: MemorySecretStore())
         XCTAssertEqual(second.mainRoute?.name, "Spark 1")
         XCTAssertEqual(names(second.workerRoutes), ["Spark 2", "Amazon Bedrock"])
         XCTAssertEqual(second.workerRoutes.last?.subagentParallel, 3)
@@ -229,7 +229,7 @@ final class FleetConfigTests: XCTestCase {
         let old = #"[{"kind":"openAICompat","name":"Spark","baseURL":"http://spark:8002/v1","model":"qwen"}]"#
         store.set(Data(old.utf8), forKey: "providers.v2")
         store.set("Spark|qwen", forKey: "activeModel.v2")
-        let c = AppConfig(defaults: store)
+        let c = AppConfig(defaults: store, secrets: MemorySecretStore())
         XCTAssertEqual(c.mainRoute?.name, "Spark")
         XCTAssertTrue(c.subagentsUsePrimary, "on by default")
         XCTAssertTrue(c.workerRoutes.isEmpty)

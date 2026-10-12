@@ -35,7 +35,7 @@ final class FleetHostTests: XCTestCase {
 
     private func makeTransport(_ routes: [ProviderProfile]) -> AppTransport {
         defaultsSuite = "dsh-fleet-tests-\(UUID().uuidString)"
-        let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!)
+        let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!, secrets: MemorySecretStore())
         config.providers = routes
         config.activeRoute = routes.first?.routeID
         config.preset = PermissionPreset.fullAccess.rawValue

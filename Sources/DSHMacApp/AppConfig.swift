@@ -12,6 +12,8 @@ public final class AppConfig {
         self.defaults = defaults
         self.secrets = secrets
         load()
+        // Custom terms an earlier build kept in the settings file move to the Keychain now.
+        persistShield()
     }
 
     private enum Keys {
@@ -44,6 +46,10 @@ public final class AppConfig {
     @ObservationIgnored let secrets: any SecretStore
     /// Set while `load()` runs so the property observers don't write back.
     private var loading = false
+    /// The shield's custom terms as the Keychain holds them, as far as this app knows (nil: it couldn't be read),
+    /// and as they were loaded — see `loadTerms`.
+    @ObservationIgnored fileprivate var keychainTerms: [String]?
+    @ObservationIgnored fileprivate var loadedTerms: [String] = []
 
     public var providers: [ProviderProfile] = [] {
         didSet { persist(); routesChanged() }
@@ -446,6 +452,7 @@ public final class AppConfig {
         if let data = defaults.data(forKey: Keys.shield), let decoded = try? JSONDecoder().decode(ShieldSettings.self, from: data) {
             shield = decoded
         }
+        loadTerms()
         planPanelOpen = defaults.bool(forKey: Keys.planPanelOpen)
         planPanelWidth = defaults.object(forKey: Keys.planPanelWidth) as? Double ?? 320
         planPanelAutoOpen = defaults.object(forKey: Keys.planPanelAutoOpen) as? Bool ?? true
@@ -472,10 +479,69 @@ public final class AppConfig {
         defaults.set(queuePaused, forKey: Keys.queuePaused)
         defaults.set(queueResumeOnLaunch, forKey: Keys.queueResume)
         defaults.set(subagentsUsePrimary, forKey: Keys.subagentsUsePrimary)
-        if let data = try? JSONEncoder().encode(shield) { defaults.set(data, forKey: Keys.shield) }
+        persistShield()
         defaults.set(planPanelOpen, forKey: Keys.planPanelOpen)
         defaults.set(planPanelWidth, forKey: Keys.planPanelWidth)
         defaults.set(planPanelAutoOpen, forKey: Keys.planPanelAutoOpen)
+    }
+}
+
+extension AppConfig {
+    // MARK: - The shield's custom terms
+    //
+    // Custom terms are client and patient names, so they live in the Keychain (one item), not in the settings
+    // file. An earlier build kept them in the file: they move over once, and leave the file only when the Keychain
+    // has them. A Keychain that can't be read never costs terms — the file keeps its copy, and nothing is written
+    // over what the Keychain may still hold unless the user changes the terms.
+
+    static let termsService = "DSHMac.shield"
+    static let termsAccount = "terms"
+
+    /// Read the terms: the Keychain's — unless the settings file still has a list, which is then the newer one (the
+    /// file keeps terms only while the Keychain couldn't take them).
+    fileprivate func loadTerms() {
+        let inFile = shield.customTerms
+        loadedTerms = inFile
+        switch secrets.lookup(service: Self.termsService, account: Self.termsAccount) {
+        case .found(let stored):
+            let saved = Self.decodeTerms(stored)
+            keychainTerms = saved
+            if inFile.isEmpty {
+                shield.customTerms = saved
+                loadedTerms = saved
+            }
+        case .missing:
+            keychainTerms = []
+        case .unavailable:
+            keychainTerms = nil
+        }
+    }
+
+    /// The shield's settings to the file, its terms to the Keychain.
+    fileprivate func persistShield() {
+        let terms = shield.customTerms
+        if keychainTerms != terms, keychainTerms != nil || terms != loadedTerms, writeTerms(terms) {
+            keychainTerms = terms
+        }
+        var file = shield
+        if keychainTerms == terms { file.customTerms = [] }
+        if let data = try? JSONEncoder().encode(file) { defaults.set(data, forKey: Keys.shield) }
+    }
+
+    /// Write the terms and read them back: only a Keychain that has them lets the file's copy go.
+    private func writeTerms(_ terms: [String]) -> Bool {
+        let value = terms.isEmpty ? nil : (try? JSONEncoder().encode(terms)).map { String(decoding: $0, as: UTF8.self) }
+        secrets.write(value, service: Self.termsService, account: Self.termsAccount)
+        switch secrets.lookup(service: Self.termsService, account: Self.termsAccount) {
+        case .found(let stored): return Self.decodeTerms(stored) == terms
+        case .missing: return terms.isEmpty
+        case .unavailable: return false
+        }
+    }
+
+    nonisolated static func decodeTerms(_ stored: String) -> [String] {
+        if let list = try? JSONDecoder().decode([String].self, from: Data(stored.utf8)) { return list }
+        return stored.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 }
 

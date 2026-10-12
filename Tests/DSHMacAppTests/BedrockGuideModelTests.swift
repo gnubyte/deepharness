@@ -157,7 +157,7 @@ final class BedrockGuideModelTests: XCTestCase {
     private func config(_ routes: [ProviderProfile] = [], main: String? = nil) -> AppConfig {
         let suite = "dsh.guide.test.\(UUID().uuidString)"
         suites.append(suite)
-        let config = AppConfig(defaults: UserDefaults(suiteName: suite)!)
+        let config = AppConfig(defaults: UserDefaults(suiteName: suite)!, secrets: MemorySecretStore())
         config.providers = routes
         config.activeRoute = main ?? routes.first?.routeID
         return config

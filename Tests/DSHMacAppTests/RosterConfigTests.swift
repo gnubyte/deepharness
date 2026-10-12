@@ -26,7 +26,7 @@ final class RosterConfigTests: XCTestCase {
     }
 
     private func config(_ routes: [ProviderProfile], defaults: UserDefaults? = nil) -> AppConfig {
-        let config = AppConfig(defaults: defaults ?? self.defaults())
+        let config = AppConfig(defaults: defaults ?? self.defaults(), secrets: MemorySecretStore())
         config.providers = routes
         config.activeRoute = routes.first?.routeID
         return config
@@ -79,7 +79,7 @@ final class RosterConfigTests: XCTestCase {
         XCTAssertFalse(c.providers[1].isPrivateRoute)
         c.setPrivate(c.providers[0].routeID, false)
         c.setPrivate(c.providers[1].routeID, true)
-        let reloaded = AppConfig(defaults: store)
+        let reloaded = AppConfig(defaults: store, secrets: MemorySecretStore())
         XCTAssertEqual(reloaded.providers.map(\.isPrivateRoute), [false, true])
         XCTAssertEqual(reloaded.providers.map(\.isPrivate), [false, true])
     }
@@ -132,7 +132,7 @@ final class RosterConfigTests: XCTestCase {
         let routes = [route("Main", host: "a.local", enabled: false), route("Other", host: "b.local")]
         store.set(try JSONEncoder().encode(routes), forKey: "providers.v2")
         store.set(routes[0].routeID, forKey: "activeModel.v2")
-        let c = AppConfig(defaults: store)
+        let c = AppConfig(defaults: store, secrets: MemorySecretStore())
         XCTAssertEqual(c.mainRoute?.name, "Main")
         XCTAssertTrue(c.mainRoute?.isEnabled == true)
     }

@@ -235,7 +235,9 @@ The **Sensitive data** section of **Settings ▸ AI Models** chooses what counts
 keys, cloud and API tokens, passwords in URLs and settings), email addresses, phone numbers, ID and card
 numbers (card numbers and IBANs only when their check digits add up), IP addresses (off by default), and
 your own **custom terms** — client or patient names, project code names, one per line, `re:` for a
-regular expression. Secrets in the Credentials Vault are always masked. **Try it** shows exactly what a
+regular expression; they are kept in your Keychain, not the settings file. A type (`"password": "string"`) or a
+reference to another variable (`$DB_PASSWORD`, `%TOKEN%`) isn't taken for a secret. Secrets in the Credentials
+Vault are always masked. **Try it** shows exactly what a
 model that isn't private would receive. Pictures and files that aren't plain text (a PDF, say) can't be
 checked; the chat says so the first time it sends one to a model that isn't private.
 
@@ -547,7 +549,7 @@ DSHMacApp/                 SwiftUI
 swift test
 ```
 
-1,251 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
+1,293 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
 cancellation), permission containment, the Qwen XML fallback, glob, markdown, plugin interpolation
 and quoting, prompt assembly, editor-buffer conflict resolution, 34 over the terminal emulator, and 8
 that spawn a real shell on a real pty and assert on what lands on the screen — plus the fleet (server
@@ -557,7 +559,8 @@ the installer), Amazon Bedrock (request mapping, streaming, every error path, th
 access checks), the Bedrock guide as a state machine over a scripted AWS, the Spark Swapper client
 (connection codes, app tokens, installs) and its guide, certificate pinning, the subscription plans and
 their guide, privacy by address, the shield's detectors and its masking and restoring (placeholders split
-across streamed pieces, values with quotes and emoji inside tool calls), backups, sensitive tasks on
+across streamed pieces, values with quotes and emoji inside tool calls, a value found once masked everywhere,
+8,000 CSV rows in well under half a second), backups, sensitive tasks on
 private servers, chats without a project, and the app host against two fake model servers. Four live
 tests are skipped unless pointed at a real server.
 

@@ -151,7 +151,7 @@ final class QueueRunnerTests: XCTestCase {
 
     private func makeTransport() -> AppTransport {
         defaultsSuite = "dsh-tests-\(UUID().uuidString)"
-        let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!)
+        let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!, secrets: MemorySecretStore())
         config.activate(.init(kind: .openAICompat, name: "stub", baseURL: "http://stub.test/v1", model: "stub-model"))
         config.preset = PermissionPreset.fullAccess.rawValue
         config.computerToolsEnabled = false
