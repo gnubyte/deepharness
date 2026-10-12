@@ -189,6 +189,18 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     /// Swapper's HTTPS front on :11443, say. Checked only when normal trust
     /// fails; nil = normal trust only.
     public var pinnedCertificate: String?
+    /// Off = never used: not the main model, not a subagent server, not a
+    /// backup — it stays in the list, greyed. Nil = on.
+    public var enabled: Bool?
+    /// Take over a turn when the main model stops answering (see
+    /// `FailoverClient`). Nil = no.
+    public var backup: Bool?
+    /// May see sensitive data. Nil = decided by the address (see
+    /// `RoutePrivacy`); an explicit choice is stored and wins.
+    public var isPrivate: Bool?
+    /// The plan's terms allow only interactive use (the Qwen Coding Plan):
+    /// the task queue and other unattended runs don't start on it. Nil = no.
+    public var interactiveOnly: Bool?
 
     public init(kind: Kind, name: String, baseURL: String, apiKey: String? = nil,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,
@@ -197,7 +209,8 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
                 vision: Bool? = nil,
                 awsProfile: String? = nil, awsRegion: String? = nil,
                 subagentWorker: Bool? = nil, subagentParallel: Int? = nil,
-                pinnedCertificate: String? = nil) {
+                pinnedCertificate: String? = nil, enabled: Bool? = nil, backup: Bool? = nil,
+                isPrivate: Bool? = nil, interactiveOnly: Bool? = nil) {
         self.kind = kind
         self.name = name
         self.baseURL = baseURL
@@ -214,10 +227,23 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         self.subagentWorker = subagentWorker
         self.subagentParallel = subagentParallel
         self.pinnedCertificate = pinnedCertificate
+        self.enabled = enabled
+        self.backup = backup
+        self.isPrivate = isPrivate
+        self.interactiveOnly = interactiveOnly
     }
 
     /// Whether this route is flagged to serve subagents (see `subagentWorker`).
     public var isSubagentWorker: Bool { subagentWorker ?? false }
+    /// Whether the route is switched on (see `enabled`).
+    public var isEnabled: Bool { enabled ?? true }
+    /// Whether the route takes over when the main model fails (see `backup`).
+    public var isBackup: Bool { backup ?? false }
+    /// Whether the plan behind the route is for interactive use only (see `interactiveOnly`).
+    public var isInteractiveOnly: Bool { interactiveOnly ?? false }
+    /// Whether the route may see sensitive data: the user's explicit choice, else the default for its address
+    /// (your own hardware is private; an online service is not).
+    public var isPrivateRoute: Bool { isPrivate ?? RoutePrivacy.isPrivateByDefault(self) }
 
     public static let presets: [ProviderProfile] = [
         .init(kind: .ollama, name: "Ollama (local)", baseURL: "http://127.0.0.1:11434/v1", model: "qwen3:8b"),
@@ -243,12 +269,20 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     /// speaks the same protocol, and it still wants `chat_template_kwargs`.
     public var isSelfHosted: Bool {
         guard let host = URL(string: baseURL)?.host?.lowercased() else { return true }
-        let hosted = ["openai.com", "openrouter.ai", "anthropic.com", "groq.com", "together.xyz",
-                      "together.ai", "fireworks.ai", "mistral.ai", "deepseek.com", "x.ai",
-                      "googleapis.com", "azure.com", "cerebras.ai", "perplexity.ai",
-                      "amazonaws.com", "api.aws"]
-        return !hosted.contains { host == $0 || host.hasSuffix("." + $0) }
+        return !Self.hostedServices.contains { host == $0 || host.hasSuffix("." + $0) }
     }
+
+    /// Hosted APIs, by domain (a host is one of them, or under one). Everything
+    /// else is taken to be a server you run yourself.
+    public static let hostedServices = [
+        "openai.com", "openrouter.ai", "anthropic.com", "groq.com", "together.xyz",
+        "together.ai", "fireworks.ai", "mistral.ai", "deepseek.com", "x.ai",
+        "googleapis.com", "azure.com", "cerebras.ai", "perplexity.ai",
+        "amazonaws.com", "api.aws",
+        // The subscription plans (see `PlanCatalog`): Z.ai / BigModel, Kimi / Moonshot, Alibaba Cloud.
+        "z.ai", "bigmodel.cn", "kimi.ai", "kimi.com", "moonshot.ai", "moonshot.cn",
+        "aliyuncs.com", "alibabacloud.com",
+    ]
 }
 
 // MARK: - Thinking / reasoning effort

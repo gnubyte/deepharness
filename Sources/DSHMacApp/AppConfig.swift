@@ -155,7 +155,9 @@ public final class AppConfig {
 
     public func removeProvider(_ provider: ProviderProfile) {
         providers.removeAll { $0.routeID == provider.routeID }
-        if activeRoute == provider.routeID { activeRoute = providers.first?.routeID }
+        if activeRoute == provider.routeID {
+            activeRoute = (providers.first(where: \.isEnabled) ?? providers.first)?.routeID
+        }
     }
 
     // MARK: - The fleet
@@ -165,10 +167,46 @@ public final class AppConfig {
     public var mainRoute: ProviderProfile? { providers.first { $0.routeID == activeRoute } }
 
     /// Routes flagged to serve subagents, the main model excluded (it cannot
-    /// be its own worker). The fleet may still collapse machines that are the
-    /// same server — see `AppTransport.workerRoutes`.
+    /// be its own worker) and so are routes that are switched off. The fleet
+    /// may still collapse machines that are the same server — see
+    /// `AppTransport.workerRoutes`.
     public var flaggedWorkers: [ProviderProfile] {
-        providers.filter { $0.isSubagentWorker && $0.routeID != activeRoute }
+        providers.filter { $0.isEnabled && $0.isSubagentWorker && $0.routeID != activeRoute }
+    }
+
+    /// The routes that take over, in order, when the main model stops answering: switched on, marked
+    /// "Use if the primary fails", and not the main model itself.
+    public var backupRoutes: [ProviderProfile] {
+        providers.filter { $0.isEnabled && $0.isBackup && $0.routeID != activeRoute }
+    }
+
+    /// Switch a route on or off. The main model can't be switched off (pick another one first): returns false.
+    @discardableResult
+    public func setEnabled(_ routeID: String, _ on: Bool) -> Bool {
+        guard let index = providers.firstIndex(where: { $0.routeID == routeID }) else { return false }
+        if !on, routeID == activeRoute { return false }
+        guard providers[index].isEnabled != on else { return true }
+        providers[index].enabled = on ? nil : false
+        return true
+    }
+
+    /// Tick or untick "Use if the primary fails" on a route.
+    public func setBackup(_ routeID: String, _ on: Bool) {
+        guard let index = providers.firstIndex(where: { $0.routeID == routeID }),
+              providers[index].isBackup != on else { return }
+        providers[index].backup = on ? true : nil
+    }
+
+    /// The user's own choice of whether a route may see sensitive data (stored, so it wins over the default).
+    public func setPrivate(_ routeID: String, _ on: Bool) {
+        guard let index = providers.firstIndex(where: { $0.routeID == routeID }),
+              providers[index].isPrivate != on else { return }
+        providers[index].isPrivate = on
+    }
+
+    /// The main model's route when the plan behind it is for interactive use only; nil otherwise.
+    public var interactiveOnlyMain: ProviderProfile? {
+        mainRoute.flatMap { $0.isInteractiveOnly ? $0 : nil }
     }
 
     /// How a route is named next to a subagent: the route's own name (e.g. "Spark 2").
@@ -204,12 +242,14 @@ public final class AppConfig {
     /// settings are untouched, and a route that was a subagent server keeps
     /// that flag for when it steps down again.
     public func makeMain(_ routeID: String) {
-        guard routeID != activeRoute, providers.contains(where: { $0.routeID == routeID }) else { return }
+        guard routeID != activeRoute, let index = providers.firstIndex(where: { $0.routeID == routeID }) else { return }
+        // The main model is always switched on.
+        if !providers[index].isEnabled { providers[index].enabled = nil }
         if let old = providers.firstIndex(where: { $0.routeID == activeRoute }),
            !providers[old].isSubagentWorker,
            // A fleet exists when some route besides the current main serves subagents — the route
            // about to become main included: {A main, B worker} must stay two servers after B leads.
-           providers.contains(where: { $0.isSubagentWorker && $0.routeID != activeRoute }) {
+           providers.contains(where: { $0.isEnabled && $0.isSubagentWorker && $0.routeID != activeRoute }) {
             providers[old].subagentWorker = true
         }
         activeRoute = routeID
@@ -316,6 +356,10 @@ public final class AppConfig {
             providers = ProviderProfile.presets
         }
         activeRoute = defaults.string(forKey: Keys.activeModel)
+        // The main model can't be switched off: a settings file that says otherwise has it on.
+        if let main = providers.firstIndex(where: { $0.routeID == activeRoute }), !providers[main].isEnabled {
+            providers[main].enabled = nil
+        }
         preset = defaults.string(forKey: Keys.preset) ?? PermissionPreset.workspaceWrite.rawValue
         recentProjects = defaults.stringArray(forKey: Keys.recentProjects) ?? []
         wizardCompleted = defaults.bool(forKey: Keys.wizardDone)
