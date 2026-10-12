@@ -43,6 +43,22 @@ final class SparkSwapperTests: XCTestCase {
         XCTAssertEqual(code.connectInfo.displayName, "DGX Spark (spark-3f2a)")
     }
 
+    /// A code made by Spark Swapper 2.0's own encoder (swapper/tokens.py `connection_code`), so the two sides can't
+    /// drift apart unnoticed.
+    func testACodeFromSparkSwapperItselfDecodes() throws {
+        let code = try SwapperConnectionCode.decode("SSC1:eyJ2IjoxLCJuYW1lIjoiREdYIFNwYXJrIChzcGFyay0zZjJhKSIsImhvc3RuYW1lIjoic3BhcmstM2YyYSIsInBsYXRmb3JtIjoibnZpZGlhLWdiMTAiLCJ2ZXJzaW9uIjoiMi4wLjAiLCJzd2FwcGVyX3VybCI6Imh0dHBzOi8vMTkyLjE2OC4xLjQyOjg5OTkiLCJhcGlfYmFzZSI6Imh0dHBzOi8vMTkyLjE2OC4xLjQyOjExNDQzL3YxIiwiYXBpX2tleSI6InNrLXNwYXJrLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1NjciLCJtb2RlbCI6IlF3ZW4zLjgtMjdCIiwiY29udGV4dCI6MjYyMTQ0LCJmaW5nZXJwcmludCI6IjNBOjlGOkMyOjAwOjExOjIyOjMzOjQ0OjU1OjY2Ojc3Ojg4Ojk5OkFBOkJCOkNDOkREOkVFOkZGOjAxOjIzOjQ1OjY3Ojg5OkFCOkNEOkVGOjEwOjMyOjU0Ojc2Ojk4IiwidG9rZW4iOiJzc3RfMWEyYjNjNGRfWm05dlltRnlMV0poZWkxeGRYVjRMVEF4TWpNME5UWTNPRGt0WVdKalpHVm0tX3giLCJ1c2VyIjoicGF0In0")
+        XCTAssertEqual(code.name, "DGX Spark (spark-3f2a)")
+        XCTAssertEqual(code.platform, "nvidia-gb10")
+        XCTAssertEqual(code.swapperURL.absoluteString, "https://192.168.1.42:8999")
+        XCTAssertEqual(code.apiBase.absoluteString, "https://192.168.1.42:11443/v1")
+        XCTAssertEqual(code.apiKey, "sk-spark-0123456789abcdef0123456789abcdef01234567")
+        XCTAssertEqual(code.model, "Qwen3.8-27B")
+        XCTAssertEqual(code.context, 262144)
+        XCTAssertEqual(code.fingerprint, "3A:9F:C2:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:01:23:45:67:89:AB:CD:EF:10:32:54:76:98")
+        XCTAssertEqual(code.token, "sst_1a2b3c4d_Zm9vYmFyLWJhei1xdXV4LTAxMjM0NTY3ODktYWJjZGVm-_x")
+        XCTAssertEqual(code.user, "pat")
+    }
+
     func testTheWayItWasPastedDoesNotMatter() throws {
         let encoded = SwapperConnectionCode.encode(fields())
         let body = String(encoded.dropFirst(SwapperConnectionCode.prefix.count))

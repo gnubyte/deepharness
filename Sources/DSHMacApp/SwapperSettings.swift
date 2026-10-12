@@ -155,7 +155,7 @@ struct SwapperBoxRow: View {
             Button("Remove", role: .destructive) { spark.remove(box) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("DSH forgets the box and its sign-in. Routes made for it stay in Settings ▸ AI Models.")
+            Text("DSH forgets the box and its sign-in. Routes made for it stay in Settings ▸ AI Models. The box still lists this app's connection: revoke it on the Swapper's Connect tab if you won't use it again.")
         }
         .alert("Switch \(box.name) to \(pending?.title ?? "")?",
                isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {

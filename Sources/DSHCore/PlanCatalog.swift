@@ -346,9 +346,10 @@ public enum PlanCatalog {
 /// GLM-5.3 always thinks: a request that turns thinking off (`enable_thinking: false`, `thinking.type: disabled`)
 /// fails, and its `reasoning_effort` words are `low`, `high` and `max`.
 public enum GLMThinking {
-    /// Whether a route's model follows these rules: anything on Z.ai / BigModel, and GLM-5.3 wherever it runs.
+    /// Whether a route's model follows these rules: anything on Z.ai / BigModel, and any GLM-5 model wherever it
+    /// runs (the Qwen Coding Plan serves `glm-5`) — the same scope as DSH for Windows.
     public static func applies(to profile: ProviderProfile, model: String) -> Bool {
-        if model.lowercased().hasPrefix("glm-5.3") { return true }
+        if model.lowercased().hasPrefix("glm-5") { return true }
         guard let host = URL(string: profile.baseURL)?.host?.lowercased() else { return false }
         return ["z.ai", "bigmodel.cn"].contains { host == $0 || host.hasSuffix("." + $0) }
     }

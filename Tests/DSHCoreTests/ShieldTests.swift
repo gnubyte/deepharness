@@ -108,6 +108,13 @@ final class ShieldTests: XCTestCase {
     func testIDsCardsAndIBANs() {
         XCTAssertEqual(masked("SSN 123-45-6789."), "SSN ⟦ID_1⟧.")
         XCTAssertEqual(masked("card 4111 1111 1111 1111"), "card ⟦CARD_1⟧", "Luhn-valid")
+        // Luhn-valid by chance, but no card network starts like that: a millisecond timestamp and an order number.
+        XCTAssertTrue(SensitiveDetector.isCardNumber("4111111111111111"))
+        XCTAssertFalse(SensitiveDetector.isCardNumber("1791827673618"), "13 digits, and a timestamp")
+        XCTAssertFalse(SensitiveDetector.isCardNumber("17918276736181"), "starts like no card")
+        XCTAssertTrue(SensitiveDetector.isCardNumber("378282246310005"), "Amex")
+        XCTAssertTrue(SensitiveDetector.isCardNumber("5555555555554444"), "Mastercard")
+        XCTAssertEqual(masked("at 17918276736181 ms"), "at 17918276736181 ms")
         XCTAssertEqual(masked("card 4111-1111-1111-1111"), "card ⟦CARD_1⟧")
         XCTAssertEqual(masked("4111111111111111"), "⟦CARD_1⟧")
         XCTAssertEqual(masked("order 4111 1111 1111 1112"), "order 4111 1111 1111 1112", "fails Luhn")

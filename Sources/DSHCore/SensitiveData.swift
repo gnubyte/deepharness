@@ -290,10 +290,12 @@ public struct SensitiveDetector: Sendable {
         return false
     }
 
-    /// 13–19 digits (separators aside) that pass the Luhn check.
+    /// 14–19 digits (separators aside) that start like a payment card (Visa, Mastercard, Amex, Discover, JCB,
+    /// Diners, UnionPay) and pass the Luhn check. The prefix rule keeps millisecond timestamps (17…) and other
+    /// long numbers in code from being taken for cards — a tenth of any digit run passes Luhn by chance.
     static func isCardNumber(_ raw: String) -> Bool {
         let digits = raw.compactMap { $0.wholeNumberValue }
-        guard (13...19).contains(digits.count) else { return false }
+        guard (14...19).contains(digits.count), hasCardPrefix(digits) else { return false }
         // A run of one digit (0000 0000 …) is no card.
         if Set(digits).count == 1 { return false }
         var sum = 0
@@ -306,6 +308,19 @@ public struct SensitiveDetector: Sendable {
             }
         }
         return sum % 10 == 0
+    }
+
+    /// The issuer prefixes of the card networks people actually carry.
+    static func hasCardPrefix(_ digits: [Int]) -> Bool {
+        func prefix(_ n: Int) -> Int { digits.prefix(n).reduce(0) { $0 * 10 + $1 } }
+        switch digits.first {
+        case 4: return true                                                    // Visa
+        case 5: return (51...55).contains(prefix(2))                           // Mastercard
+        case 2: return (2221...2720).contains(prefix(4))                       // Mastercard 2-series
+        case 3: return [34, 37, 35, 36, 38, 39].contains(prefix(2)) || (300...305).contains(prefix(3))   // Amex, JCB, Diners
+        case 6: return prefix(4) == 6011 || prefix(2) == 65 || prefix(2) == 62 || (644...649).contains(prefix(3))   // Discover, UnionPay
+        default: return false
+        }
     }
 
     /// An IBAN whose check digits are right (ISO 13616 mod-97).
