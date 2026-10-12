@@ -204,6 +204,7 @@ struct ProviderRoutesList: View {
             Text("Primary answers you. Subagents take side tasks in parallel. Backups take over if the primary stops answering. Private models may see sensitive data; the others get it masked.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            SensitiveDataSection()
         }
     }
 

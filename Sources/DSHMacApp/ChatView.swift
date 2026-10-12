@@ -443,7 +443,7 @@ private struct EntryRow: View {
     var body: some View {
         switch entry.kind {
         case .message(let body):
-            MessageRow(body: body, at: entry.at)
+            MessageRow(body: body, at: entry.at, masked: session.masked[entry.id])
         case .tool(let activity):
             ToolCard(activity: activity, session: session)
         case .todos(let items):
@@ -457,10 +457,13 @@ private struct EntryRow: View {
 private struct MessageRow: View {
     let body_: MessageBody
     let at: Date
+    /// What the shield masked before this answer's request went out.
+    let masked: ShieldReport?
 
-    init(body: MessageBody, at: Date) {
+    init(body: MessageBody, at: Date, masked: ShieldReport? = nil) {
         self.body_ = body
         self.at = at
+        self.masked = masked
     }
 
     var body: some View {
@@ -474,6 +477,9 @@ private struct MessageRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     MarkdownView(source: body_.text)
+                }
+                if let masked, let summary = masked.summary {
+                    MaskedChip(summary: summary, categories: masked.categories)
                 }
             }
             .padding(.vertical, body_.role == .user ? 8 : 0)
@@ -526,6 +532,36 @@ private struct MessageRow: View {
         case .notice: .primary
         case .error: Theme.errorTint
         default: .primary
+        }
+    }
+}
+
+/// "Masked 2 emails and 1 key before sending to Kimi Code" — under an answer from a model that isn't private.
+private struct MaskedChip: View {
+    let summary: String
+    let categories: String
+    @State private var showing = false
+
+    var body: some View {
+        Button { showing.toggle() } label: {
+            Label(summary, systemImage: "eye.slash")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Theme.surface, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Masked before sending: \(categories). The real values stayed on this Mac.")
+        .popover(isPresented: $showing, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Masked before sending").font(.callout.weight(.semibold))
+                Text(categories).font(.callout)
+                Text("The model saw placeholders such as ⟦EMAIL_1⟧ instead; DSH put the real values back in what you see here. Change what is masked in Settings ▸ AI Models ▸ Sensitive data.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(width: 300)
         }
     }
 }

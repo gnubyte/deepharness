@@ -1663,6 +1663,11 @@ public final class AppTransport {
         vm.retry = nil
         transcripts[sessionID] = result.messages
         vm.lastUsage = result.usage
+        // A mask report still waiting for an answer to sit on goes on the turn's last answer.
+        if let pending = vm.pendingMask, let answer = vm.currentAnswerID {
+            vm.masked[answer] = pending
+            vm.pendingMask = nil
+        }
         // How full the context is now: server-reported prompt tokens when
         // available, otherwise a character-based estimate of the whole
         // request (system prompt + transcript).
@@ -2087,7 +2092,29 @@ public final class AppTransport {
     func mainClient(_ profile: ProviderProfile, backups: [ProviderProfile], sessionID: String) -> any ProviderClient {
         ProviderClients.make(profile, backups: backups, events: ClientEvents(failover: { [weak self] notice in
             Task { @MainActor [weak self] in self?.noteFailover(notice, sessionID: sessionID) }
+        }, shield: { [weak self] report in
+            Task { @MainActor [weak self] in self?.noteMasked(report, sessionID: sessionID) }
         }))
+    }
+
+    /// What the shield masked for a request in this chat: a chip on the turn's answer (and, the first time a
+    /// picture goes to a model that isn't private, a word that pictures can't be checked).
+    private func noteMasked(_ report: ShieldReport, sessionID: String) {
+        guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
+        if report.images, !vm.toldAboutImages {
+            vm.toldAboutImages = true
+            let text = "Images are sent as they are — DSH can't check pictures for sensitive details."
+            vm.note(text)
+            log.recordItem(sessionID, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
+        }
+        guard !report.isEmpty else { return }
+        // Each request masks the whole conversation, so the newest report covers the earlier ones.
+        if let answer = vm.currentAnswerID {
+            vm.masked[answer] = report
+            vm.pendingMask = nil
+        } else {
+            vm.pendingMask = report
+        }
     }
 
     private func noteFailover(_ notice: FailoverNotice, sessionID: String) {

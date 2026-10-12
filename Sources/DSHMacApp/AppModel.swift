@@ -55,10 +55,21 @@ final class AppModel {
         AWSAccounts.install()
         transport = AppTransport(config: config)
         spark = SparkController(config: config, transport: transport)
+        // Requests to models that aren't private go through the sensitive-data shield: the user's settings, and
+        // every secret in the Credentials Vault.
+        let vault = transport.vault
+        let policy = ShieldPolicy(settings: config.shield, vaultValues: { vault.valuesForRedaction().map(\.value) })
+        ProviderClients.shield = policy
         mode = WorkspaceMode(rawValue: config.lastMode) ?? .chat
         showWizard = !config.wizardCompleted || !config.isConfigured
 
         let spark = spark
+        let config = config, transport = transport
+        config.onShieldChanged = {
+            policy.current = config.shield
+            // Clients are made with the engines: the next turn makes them again.
+            transport.resetRouteCache()
+        }
         transport.isServerSwitching = { spark.isSwitchingMainModel }
         transport.onSwapCommand = { arg, vm in
             Task { @MainActor in await spark.handleCommand(arg, in: vm) }

@@ -33,6 +33,7 @@ public final class AppConfig {
         static let queuePaused = "queue.paused.v1"
         static let queueResume = "queue.resumeOnLaunch.v1"
         static let subagentsUsePrimary = "subagents.usePrimary.v1"
+        static let shield = "shield.v1"
     }
 
     private let defaults: UserDefaults
@@ -58,6 +59,15 @@ public final class AppConfig {
     /// Called whenever the set of routes, the main model or the subagent
     /// settings change, so the fleet can be rebuilt. Not called while loading.
     @ObservationIgnored public var onRoutesChanged: (@MainActor () -> Void)?
+    /// What the sensitive-data shield masks before a request goes to a model that isn't private.
+    public var shield = ShieldSettings() {
+        didSet {
+            persist()
+            if !loading { onShieldChanged?() }
+        }
+    }
+    /// Called when the shield's settings change (not while loading).
+    @ObservationIgnored public var onShieldChanged: (@MainActor () -> Void)?
     /// A `PermissionPreset` raw value: workspaceWrite | plan | fullAccess.
     public var preset: String = PermissionPreset.workspaceWrite.rawValue {
         didSet { persist() }
@@ -359,6 +369,9 @@ public final class AppConfig {
         queuePaused = defaults.bool(forKey: Keys.queuePaused)
         queueResumeOnLaunch = defaults.bool(forKey: Keys.queueResume)
         subagentsUsePrimary = defaults.object(forKey: Keys.subagentsUsePrimary) as? Bool ?? true
+        if let data = defaults.data(forKey: Keys.shield), let decoded = try? JSONDecoder().decode(ShieldSettings.self, from: data) {
+            shield = decoded
+        }
     }
 
     private func persist() {
@@ -382,6 +395,7 @@ public final class AppConfig {
         defaults.set(queuePaused, forKey: Keys.queuePaused)
         defaults.set(queueResumeOnLaunch, forKey: Keys.queueResume)
         defaults.set(subagentsUsePrimary, forKey: Keys.subagentsUsePrimary)
+        if let data = try? JSONEncoder().encode(shield) { defaults.set(data, forKey: Keys.shield) }
     }
 }
 

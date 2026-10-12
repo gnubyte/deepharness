@@ -170,6 +170,23 @@ public final class SessionVM: Identifiable {
     /// The last `/goal` started in this chat and not yet completed; a bare
     /// `/goal` resumes it.
     public var lastGoal: String?
+    /// What the sensitive-data shield masked before sending, by the assistant entry it belongs to (a chip on that
+    /// turn). Counts only — never the values.
+    public var masked: [String: ShieldReport] = [:]
+    /// A report that came before the turn's answer did (a request that only called tools).
+    public var pendingMask: ShieldReport?
+    /// The chat was told that pictures can't be checked.
+    public var toldAboutImages = false
+
+    /// The assistant entry of the turn in progress: the newest one after the last user message.
+    public var currentAnswerID: String? {
+        for entry in entries.reversed() {
+            guard case .message(let body) = entry.kind else { continue }
+            if body.role == .user { return nil }
+            if body.role == .assistant { return entry.id }
+        }
+        return nil
+    }
 
     public struct GoalState: Hashable, Sendable {
         public var text: String
