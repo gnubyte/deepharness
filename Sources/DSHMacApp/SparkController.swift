@@ -133,7 +133,7 @@ final class SparkController {
     @discardableResult
     func add(_ connection: SwapperConnection, secret: String?) -> SwapperBox {
         var connection = connection
-        if let existing = boxes.first(where: { Self.sameAddress($0.connection.url, connection.url) }) {
+        if let existing = boxes.first(where: { SwapperConnection.sameAddress($0.connection.url, connection.url) }) {
             // Keep its identity (and its links) — it is the same box.
             connection.id = existing.id
             connection.linkedRoutes = Array(Set(existing.connection.linkedRoutes + connection.linkedRoutes)).sorted()
@@ -165,10 +165,12 @@ final class SparkController {
         persist()
     }
 
-    /// Remember that `route` was made for `box`.
+    /// Remember that `route` was made for `box` — and for no other box, so a route is never followed by two.
     func link(_ route: ProviderProfile, to box: SwapperBox) {
-        guard !box.connection.linkedRoutes.contains(route.routeID) else { return }
-        box.connection.linkedRoutes.append(route.routeID)
+        for other in boxes where other.id != box.id && other.connection.linkedRoutes.contains(route.routeID) {
+            other.connection.linkedRoutes.removeAll { $0 == route.routeID }
+        }
+        if !box.connection.linkedRoutes.contains(route.routeID) { box.connection.linkedRoutes.append(route.routeID) }
         persist()
     }
 
@@ -191,10 +193,6 @@ final class SparkController {
 
     private func persist() {
         SwapperConnectionStore.save(boxes.map(\.connection), defaults: defaults)
-    }
-
-    private static func sameAddress(_ a: String, _ b: String) -> Bool {
-        SparkSwapperClient.normalizedURL(a)?.absoluteString.lowercased() == SparkSwapperClient.normalizedURL(b)?.absoluteString.lowercased()
     }
 
     private func client(_ box: SwapperBox) throws -> SparkSwapperClient {

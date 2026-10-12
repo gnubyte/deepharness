@@ -144,28 +144,39 @@ final class SwapperConnectionsTests: XCTestCase {
         StubServer.reset(handler)
     }
 
-    func testALoginOnSwapper2KeepsAnAppTokenInsteadOfThePassword() async throws {
+    func testSigningInOnSwapper2ReadsTheBoxAndKeepingItMakesAnAppToken() async throws {
+        let paths = PathLog()
         stub { request in
+            paths.add(request.url?.path ?? "")
             switch request.url?.path ?? "" {
             case "/api/login": return .init(body: #"{"ok":true}"#, contentType: "application/json")
-            case "/api/tokens/create":
-                return .init(body: #"{"id":"1a2b3c4d","token":"sst_1a2b3c4d_tok","code":"SSC1:x","connect":{"name":"DGX Spark (spark-3f2a)","hostname":"spark-3f2a","platform":"nvidia-gb10","version":"2.0.0","swapper_url":"https://192.168.1.42:8999","api_base":"https://192.168.1.42:11443/v1","api_key":"vllm-local","model":"Qwen3.8-27B","context":262144,"fingerprint":"aa:bb"}}"#,
+            case "/api/connect":
+                return .init(body: #"{"name":"DGX Spark (spark-3f2a)","hostname":"spark-3f2a","platform":"nvidia-gb10","version":"2.0.0","swapper_url":"https://192.168.1.42:8999","api_base":"https://192.168.1.42:11443/v1","api_key":"vllm-local","model":"Qwen3.8-27B","context":262144,"fingerprint":"aa:bb"}"#,
                              contentType: "application/json")
+            case "/api/tokens/create":
+                return .init(status: 201, body: #"{"id":"1a2b3c4d","token":"sst_1a2b3c4d_tok","code":"SSC1:x"}"#, contentType: "application/json")
             default: return .init(status: 404, body: "{}", contentType: "application/json")
             }
         }
-        let outcome = try await SwapperConnect.login(address: "192.168.1.42", username: "pat", password: "pw", pinned: nil,
-                                                     label: SwapperConnect.tokenLabel(computerName: "Pat's MacBook"))
+        let outcome = try await SwapperConnect.login(address: "192.168.1.42", username: "pat", password: "pw", pinned: nil)
         guard case .connected(let connection, let secret, let info, _) = outcome else { return XCTFail("\(outcome)") }
-        XCTAssertEqual(secret, "sst_1a2b3c4d_tok")
-        XCTAssertEqual(connection.auth, .token)
+        XCTAssertEqual(secret, "pw", "signed in, nothing kept yet")
+        XCTAssertEqual(connection.auth, .login(username: "pat"))
         XCTAssertEqual(connection.url, "https://192.168.1.42:8999")
         XCTAssertEqual(connection.name, "DGX Spark (spark-3f2a)")
         XCTAssertEqual(connection.apiBase, "https://192.168.1.42:11443/v1")
         XCTAssertEqual(info?.apiKey, "vllm-local")
+        XCTAssertFalse(paths.all.contains("/api/tokens/create"), "no token on the box until the connection is kept")
+
+        let kept = try await SwapperConnect.keep(connection, password: secret,
+                                                 label: SwapperConnect.tokenLabel(computerName: "Pat's MacBook"))
+        XCTAssertEqual(kept.secret, "sst_1a2b3c4d_tok")
+        XCTAssertEqual(kept.connection.auth, .token)
+        XCTAssertEqual(kept.connection.id, connection.id)
+        XCTAssertEqual(paths.all.filter { $0 == "/api/tokens/create" }.count, 1)
     }
 
-    func testALoginOnAnOlderSwapperKeepsThePasswordAndAsksForTheModelAPI() async throws {
+    func testAnOlderSwapperKeepsThePasswordAndAsksForTheModelAPI() async throws {
         stub { request in
             switch request.url?.path ?? "" {
             case "/api/login": return .init(body: #"{"ok":true}"#, contentType: "application/json")
@@ -176,8 +187,7 @@ final class SwapperConnectionsTests: XCTestCase {
             default: return .init(status: 404, body: #"{"error":"not found"}"#, contentType: "application/json")
             }
         }
-        let outcome = try await SwapperConnect.login(address: "spark.local", username: "pat", password: "pw", pinned: nil,
-                                                     label: "DSH on Test")
+        let outcome = try await SwapperConnect.login(address: "spark.local", username: "pat", password: "pw", pinned: nil)
         guard case .connected(let connection, let secret, let info, let credentials) = outcome else { return XCTFail("\(outcome)") }
         XCTAssertEqual(secret, "pw")
         XCTAssertEqual(connection.auth, .login(username: "pat"))
@@ -185,10 +195,21 @@ final class SwapperConnectionsTests: XCTestCase {
         XCTAssertNil(info)
         XCTAssertEqual(credentials?.apiKey, "vllm-local")
         XCTAssertEqual(connection.name, "DGX Spark (spark.local)")
+        let kept = try await SwapperConnect.keep(connection, password: secret, label: "DSH on Test")
+        XCTAssertEqual(kept.secret, "pw", "no tokens before 2.0: the password, as before")
+        XCTAssertEqual(kept.connection.auth, .login(username: "pat"))
     }
 
     func testTheTokensLabelNamesThisMac() {
         XCTAssertEqual(SwapperConnect.tokenLabel(computerName: "Pat's MacBook"), "DSH on Pat's MacBook")
         XCTAssertEqual(SwapperConnect.tokenLabel(computerName: nil), "DSH on this Mac")
     }
+}
+
+/// The paths a stub was asked for.
+private final class PathLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String] = []
+    func add(_ path: String) { lock.withLock { paths.append(path) } }
+    var all: [String] { lock.withLock { paths } }
 }

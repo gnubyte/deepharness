@@ -301,7 +301,13 @@ struct SwapperDonePage: View {
             if let route = guide.saved {
                 GuideNote(.success, "Saved \(route.name) — \(route.model) at \(route.baseURL), with its key in your Keychain and its certificate trusted.")
             }
-            if guide.saving {
+            if let error = guide.saveError {
+                GuideNote(.error, error, title: "Couldn't finish connecting \(guide.boxName)") {
+                    Button("Try Again") { guide.saveAndSayHello() }
+                }
+            } else if guide.saving && guide.saved == nil {
+                GuideBusy("Connecting DSH to \(guide.boxName)…")
+            } else if guide.saving {
                 GuideBusy("Sending a first message…")
             } else if let hello = guide.hello {
                 GuideNote(.success, hello, title: "\(guide.boxName) answered")
@@ -332,9 +338,15 @@ final class LiveSwapperBackend: SwapperGuideBackend {
     }
 
     func login(address: String, username: String, password: String, pinned: String?) async throws -> SwapperConnect.LoginOutcome {
-        try await SwapperConnect.login(address: address, username: username, password: password, pinned: pinned,
-                                       label: SwapperConnect.tokenLabel(computerName: ComputerName.current))
+        try await SwapperConnect.login(address: address, username: username, password: password, pinned: pinned)
     }
+
+    func keep(_ connection: SwapperConnection, password: String) async throws -> (connection: SwapperConnection, secret: String) {
+        try await SwapperConnect.keep(connection, password: password,
+                                      label: SwapperConnect.tokenLabel(computerName: ComputerName.current))
+    }
+
+    func boxes() -> [SwapperConnection] { appModel.spark.boxes.map(\.connection) }
 
     func status(of connection: SwapperConnection, secret: String) async throws -> SwapperStatus {
         try await client(connection, secret).status()

@@ -157,4 +157,51 @@ final class PlanGuideModelTests: XCTestCase {
         XCTAssertEqual(guide.saved?.isPrivate, true, "an explicit choice is stored")
         XCTAssertNil(guide.saved?.interactiveOnly)
     }
+
+    // MARK: Running it again
+
+    private func addKimi(_ c: AppConfig, key: String, role: PlanRole? = nil) async throws -> ProviderProfile {
+        let guide = PlanGuideModel(backend: FakePlanBackend(), config: c)
+        guide.choose("kimi-code")
+        guide.key = key
+        guide.go(.check)
+        try await waitUntil("the check") { guide.checked }
+        if let role { guide.role = role }
+        guide.go(.done)
+        try await waitUntil("saved") { guide.saved != nil }
+        return try XCTUnwrap(guide.saved)
+    }
+
+    func testTheSamePlanAndKeyAgainKeepsTheRoutesOwnSettings() async throws {
+        let spark = ProviderProfile(kind: .openAICompat, name: "Spark", baseURL: "http://spark.local:8002/v1", model: "q")
+        let c = config([spark])
+        let first = try await addKimi(c, key: "sk-kimi-1", role: .subagent)
+        // The user tunes it in Settings.
+        let index = try XCTUnwrap(c.providers.firstIndex { $0.routeID == first.routeID })
+        c.providers[index].contextWindow = 200_000
+        c.providers[index].reasoningEffort = "max"
+        c.providers[index].subagentParallel = 5
+
+        let again = try await addKimi(c, key: "sk-kimi-1")
+        XCTAssertEqual(again.routeID, first.routeID)
+        XCTAssertEqual(c.providers.count, 2)
+        let route = try XCTUnwrap(c.providers.first { $0.routeID == first.routeID })
+        XCTAssertEqual(route.contextWindow, 200_000)
+        XCTAssertEqual(route.reasoningEffort, "max")
+        XCTAssertEqual(route.subagentParallel, 5)
+        XCTAssertTrue(route.isSubagentWorker, "the role stays")
+        XCTAssertEqual(c.mainRoute?.name, "Spark")
+    }
+
+    func testASecondKeyIsASecondRoute() async throws {
+        let c = config()
+        let first = try await addKimi(c, key: "sk-kimi-1")
+        let second = try await addKimi(c, key: "sk-kimi-2")
+        XCTAssertEqual(first.name, "Kimi Code")
+        XCTAssertEqual(second.name, "Kimi Code 2", "another subscription doesn't overwrite the first")
+        XCTAssertEqual(c.apiKey(for: first), "sk-kimi-1")
+        XCTAssertEqual(c.apiKey(for: second), "sk-kimi-2")
+        XCTAssertEqual(c.mainRoute?.routeID, first.routeID, "the first one still leads")
+    }
 }
+

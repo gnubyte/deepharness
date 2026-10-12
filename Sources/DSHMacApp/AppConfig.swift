@@ -156,6 +156,48 @@ public final class AppConfig {
         }
     }
 
+    /// Save a route a guide made without trampling one the user already has.
+    ///
+    /// When a route of the same name and model exists and `isSame` says it is this one (the same box; the same
+    /// plan with the same key), it is updated with what the guide knows — its address, certificate and key, and its
+    /// privacy when `privacyChosen` — and keeps everything else the user set on it: context window, thinking,
+    /// temperature, headers, subagents at a time, interactive-only, roles. One that isn't the same is left alone,
+    /// and the new route gets a name of its own ("Strix Halo (evo-x2) 2"). The key goes to the Keychain.
+    @discardableResult
+    public func saveGuided(_ route: ProviderProfile, key: String, privacyChosen: Bool,
+                           isSame: (ProviderProfile) -> Bool) -> (route: ProviderProfile, isNew: Bool) {
+        var route = route
+        route.apiKey = nil
+        if let index = providers.firstIndex(where: { $0.routeID == route.routeID }) {
+            if isSame(providers[index]) {
+                var merged = providers[index]
+                merged.baseURL = route.baseURL
+                merged.pinnedCertificate = route.pinnedCertificate
+                if let vision = route.vision { merged.vision = vision }
+                if route.interactiveOnly == true { merged.interactiveOnly = true }
+                if privacyChosen { merged.isPrivate = Self.privacy(route.isPrivateRoute, for: merged) }
+                providers[index] = merged
+                setAPIKey(key, for: merged)
+                return (merged, false)
+            }
+            let base = route.name
+            var n = 2
+            while providers.contains(where: { $0.routeID == ProviderProfile.routeID(name: "\(base) \(n)", model: route.model) }) {
+                n += 1
+            }
+            route.name = "\(base) \(n)"
+        }
+        providers.append(route)
+        setAPIKey(key, for: route)
+        return (route, true)
+    }
+
+    /// The stored value for a privacy choice: nil when it is what the route's address gives anyway, so the route
+    /// keeps following its address.
+    public nonisolated static func privacy(_ on: Bool, for route: ProviderProfile) -> Bool? {
+        on == RoutePrivacy.isPrivateByDefault(route) ? nil : on
+    }
+
     /// Swap one route for an edited or re-picked one *in place*: it keeps its position and, if it was the
     /// main model, stays the main model — the guide uses this to change a Bedrock route's model without
     /// disturbing the arrangement (a route serving subagents keeps serving them, because the new route

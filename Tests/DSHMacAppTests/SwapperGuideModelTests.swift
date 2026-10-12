@@ -24,6 +24,24 @@ final class FakeSwapperBackend: SwapperGuideBackend {
         return loginOutcomes.isEmpty ? .needsTrust(fingerprint: "AA") : loginOutcomes.removeFirst()
     }
 
+    /// The token keeping a signed-in box makes (nil: an older Swapper, which keeps the password).
+    var keptToken: String? = "sst_9f8e7d6c_kept"
+    var keepError: Error?
+    /// The boxes the app knows.
+    var known: [SwapperConnection] = []
+
+    func keep(_ connection: SwapperConnection, password: String) async throws -> (connection: SwapperConnection, secret: String) {
+        calls.append("keep:\(password)")
+        if let keepError { throw keepError }
+        guard let keptToken else { return (connection, password) }
+        var kept = connection
+        kept.authKind = "token"
+        kept.username = nil
+        return (kept, keptToken)
+    }
+
+    func boxes() -> [SwapperConnection] { known }
+
     func status(of connection: SwapperConnection, secret: String) async throws -> SwapperStatus {
         calls.append("status:\(secret)")
         return statuses.count > 1 ? statuses.removeFirst() : statuses.first ?? SwapperStatus()
@@ -156,7 +174,8 @@ final class SwapperGuideModelTests: XCTestCase {
         XCTAssertEqual(route.model, "Qwen3.8-27B")
         XCTAssertEqual(route.pinnedCertificate, fingerprint)
         XCTAssertNil(route.contextWindow, "the window is automatic")
-        XCTAssertEqual(route.isPrivate, true)
+        XCTAssertNil(route.isPrivate, "private by its address, so nothing to store")
+        XCTAssertTrue(route.isPrivateRoute)
         XCTAssertTrue(route.isEnabled)
         XCTAssertNil(route.apiKey, "the key isn't in the settings")
         XCTAssertEqual(c.apiKey(for: route), "vllm-local", "it is in the secure store")
@@ -362,5 +381,136 @@ final class SwapperGuideModelTests: XCTestCase {
                        "the password goes only to the certificate the user trusted")
         XCTAssertEqual(guide.apiBase, "https://spark.local:11443/v1")
         XCTAssertEqual(guide.apiKey, "k")
+    }
+
+    // MARK: Running it again
+
+    /// The code path to the end, leaving the role as it comes unless `role` says otherwise.
+    private func runCode(_ c: AppConfig, _ backend: FakeSwapperBackend, role: ModelRole? = nil) async throws -> SwapperGuideModel {
+        let guide = SwapperGuideModel(backend: backend, config: c)
+        guide.codeText = code()
+        guide.next()
+        try await waitUntil("the check") { guide.status != nil }
+        guide.next()
+        guide.next()
+        if let role { guide.role = role }
+        guide.next()
+        try await waitUntil("saved") { guide.saved != nil }
+        return guide
+    }
+
+    func testRunningItAgainForTheSameBoxKeepsTheRoutesOwnSettings() async throws {
+        var mine = ProviderProfile(kind: .openAICompat, name: "DGX Spark (spark-3f2a)", baseURL: "https://192.168.1.40:11443/v1",
+                                   model: "Qwen3.8-27B", temperature: 0.2, contextWindow: 131_072,
+                                   customHeaders: ["X-Team": "a"], reasoningEffort: "high", subagentParallel: 3, backup: true,
+                                   interactiveOnly: true)
+        mine.isPrivate = false
+        let lead = ProviderProfile(kind: .openAI, name: "OpenAI", baseURL: "https://api.openai.com/v1", model: "gpt")
+        let c = config([lead, mine])
+        c.setAPIKey("old-key", for: mine)
+        let backend = FakeSwapperBackend()
+        backend.checkResult = .success(status(active: "standard"))
+        // The box the route was made for, at the same Swapper address.
+        backend.known = [SwapperConnection(name: "DGX Spark (spark-3f2a)", url: "https://192.168.1.42:8999", auth: .token,
+                                           linkedRoutes: [mine.routeID])]
+        _ = try await runCode(c, backend)
+
+        XCTAssertEqual(c.providers.count, 2, "updated, not added")
+        let route = try XCTUnwrap(c.providers.first { $0.routeID == mine.routeID })
+        XCTAssertEqual(route.baseURL, "https://192.168.1.42:11443/v1", "the guide's address…")
+        XCTAssertEqual(route.pinnedCertificate, fingerprint, "…certificate…")
+        XCTAssertEqual(c.apiKey(for: route), "vllm-local", "…and key")
+        XCTAssertEqual(route.contextWindow, 131_072)
+        XCTAssertEqual(route.reasoningEffort, "high")
+        XCTAssertEqual(route.temperature, 0.2)
+        XCTAssertEqual(route.customHeaders, ["X-Team": "a"])
+        XCTAssertEqual(route.subagentParallel, 3)
+        XCTAssertEqual(route.interactiveOnly, true)
+        XCTAssertEqual(route.isPrivate, false, "the user's own choice, untouched")
+        XCTAssertTrue(route.isBackup, "a role the user didn't change stays")
+        XCTAssertFalse(route.isSubagentWorker)
+        XCTAssertEqual(c.mainRoute?.name, "OpenAI")
+    }
+
+    func testAnotherBoxWithTheSameNameAndModelGetsARouteOfItsOwn() async throws {
+        let first = ProviderProfile(kind: .openAICompat, name: "DGX Spark (spark-3f2a)", baseURL: "https://10.0.0.7:11443/v1",
+                                    model: "Qwen3.8-27B", contextWindow: 65_536)
+        let c = config([first])
+        c.setAPIKey("first-key", for: first)
+        let backend = FakeSwapperBackend()
+        backend.checkResult = .success(status(active: "standard"))
+        backend.known = [SwapperConnection(name: "DGX Spark (spark-3f2a)", url: "https://10.0.0.7:8999", auth: .token,
+                                           linkedRoutes: [first.routeID])]
+        let guide = try await runCode(c, backend)
+
+        let saved = try XCTUnwrap(guide.saved)
+        XCTAssertEqual(saved.name, "DGX Spark (spark-3f2a) 2")
+        XCTAssertEqual(c.providers.count, 2)
+        let untouched = try XCTUnwrap(c.providers.first { $0.routeID == first.routeID })
+        XCTAssertEqual(untouched.baseURL, "https://10.0.0.7:11443/v1")
+        XCTAssertEqual(untouched.contextWindow, 65_536)
+        XCTAssertEqual(c.apiKey(for: untouched), "first-key")
+        XCTAssertEqual(c.apiKey(for: saved), "vllm-local")
+        XCTAssertEqual(backend.registered.last?.0.linkedRoutes, [saved.routeID], "the new box is linked to its own route only")
+    }
+
+    func testAnotherAddressOrLoginStartsTheCheckOver() async throws {
+        let backend = FakeSwapperBackend()
+        let boxA = SwapperConnection(name: "DGX Spark (a)", url: "https://a.local:8999", auth: .login(username: "pat"),
+                                     pinnedFingerprint: fingerprint)
+        let signedIn = SwapperConnect.LoginOutcome.connected(
+            boxA, secret: "pw", connect: nil, credentials: SwapperCredentials(apiKey: "k", apiBase: "https://a.local:11443/v1", model: nil))
+        backend.loginOutcomes = [signedIn, signedIn]
+        backend.statuses = [status(active: "standard")]
+        let guide = SwapperGuideModel(backend: backend, config: config())
+        guide.usesLogin = true
+        guide.address = "a.local"
+        guide.username = "pat"
+        guide.password = "pw"
+        guide.next()
+        try await waitUntil("signed in") { guide.status != nil }
+        XCTAssertEqual(guide.boxName, "DGX Spark (a)")
+        guide.back()
+        guide.address = "b.local"
+        XCTAssertNil(guide.status, "box A's check doesn't carry over to box B")
+        XCTAssertNil(guide.route())
+        guide.address = "a.local"
+        guide.next()
+        try await waitUntil("signed in again") { guide.status != nil }
+        guide.password = "other"
+        XCTAssertNil(guide.status, "nor to another password")
+    }
+
+    func testTheAppTokenIsMadeOnlyWhenTheGuideSaves() async throws {
+        let backend = FakeSwapperBackend()
+        let box = SwapperConnection(name: "DGX Spark (spark.local)", url: "https://spark.local:8999", auth: .login(username: "pat"),
+                                    pinnedFingerprint: fingerprint, apiBase: "https://spark.local:11443/v1")
+        backend.loginOutcomes = [.connected(box, secret: "pw", connect: nil,
+                                            credentials: SwapperCredentials(apiKey: "k", apiBase: "https://spark.local:11443/v1", model: nil))]
+        backend.statuses = [status(active: "standard")]
+        let c = config()
+        let guide = SwapperGuideModel(backend: backend, config: c)
+        guide.usesLogin = true
+        guide.address = "spark.local"
+        guide.username = "pat"
+        guide.password = "pw"
+        guide.next()
+        try await waitUntil("signed in") { guide.status != nil }
+        guide.next()
+        guide.next()
+        XCTAssertFalse(backend.calls.contains { $0.hasPrefix("keep") }, "nothing made on the box while the guide runs")
+
+        backend.keepError = SwapperError.transport("The request timed out.")
+        guide.next()
+        try await waitUntil("the error") { guide.saveError != nil }
+        XCTAssertNil(guide.saved)
+        XCTAssertTrue(backend.registered.isEmpty)
+        backend.keepError = nil
+        guide.saveAndSayHello()
+        try await waitUntil("saved") { guide.saved != nil }
+        XCTAssertEqual(backend.calls.filter { $0.hasPrefix("keep") }, ["keep:pw", "keep:pw"])
+        let (kept, secret, _) = try XCTUnwrap(backend.registered.first)
+        XCTAssertEqual(secret, "sst_9f8e7d6c_kept", "the token, not the password")
+        XCTAssertEqual(kept.auth, .token)
     }
 }

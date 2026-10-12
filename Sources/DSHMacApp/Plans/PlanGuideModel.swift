@@ -110,8 +110,15 @@ final class PlanGuideModel {
     // MARK: The model and how it's used
 
     private(set) var selectedModel: String?
-    var role: PlanRole
-    var isPrivate = false
+    var role: PlanRole {
+        didSet { roleChosen = true }
+    }
+    var isPrivate = false {
+        didSet { privacyChosen = true }
+    }
+    /// The user picked a role / set the privacy (when the route exists already, only what they picked changes).
+    private(set) var roleChosen = false
+    private(set) var privacyChosen = false
 
     // MARK: Saving
 
@@ -137,6 +144,7 @@ final class PlanGuideModel {
         resetCheck()
         // Every plan is an online service: not private unless the user says so.
         isPrivate = RoutePrivacy.isPrivateAddress(chosen.region(regionID).baseURL)
+        privacyChosen = false
     }
 
     private func resetCheck() {
@@ -265,27 +273,26 @@ final class PlanGuideModel {
     // MARK: Saving
 
     private func saveAndSayHello() {
-        guard let model = selectedModel, var route = route(model: model) else { return }
+        guard let model = selectedModel, let route = route(model: model) else { return }
         saving = true
         let key = route.apiKey ?? ""
-        route.apiKey = nil
-        switch role {
-        case .primary:
-            config.store(route)
-            config.makeMain(route.routeID)
-        case .subagent:
-            route.subagentWorker = true
-            config.store(route)
-        case .backup:
-            route.backup = true
-            config.store(route)
-        case .justAdd:
-            config.store(route)
+        // The same plan with the same key is this route again: it keeps the user's settings. Another key (a second
+        // subscription) is another route, with a name of its own.
+        let config = self.config
+        let (saved, isNew) = config.saveGuided(route, key: key, privacyChosen: privacyChosen) { existing in
+            SwapperConnection.sameBase(existing.baseURL, route.baseURL) && config.apiKey(for: existing) == key
         }
-        if config.mainRoute == nil { config.makeMain(route.routeID) }
-        config.setAPIKey(key, for: route)
-        saved = route
-        onSaved(route)
+        if isNew || roleChosen {
+            switch role {
+            case .primary: config.makeMain(saved.routeID)
+            case .subagent: config.setSubagentWorker(saved.routeID, true)
+            case .backup: config.setBackup(saved.routeID, true)
+            case .justAdd: break
+            }
+        }
+        if config.mainRoute == nil { config.makeMain(saved.routeID) }
+        self.saved = saved
+        onSaved(saved)
         sayHello()
     }
 

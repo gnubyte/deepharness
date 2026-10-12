@@ -60,8 +60,12 @@ struct SwapperGuideRequest: Identifiable {
 protocol SwapperGuideBackend: AnyObject {
     /// Reach the Swapper a code names, with its certificate pinned, and read its status with the code's token.
     func check(_ code: SwapperConnectionCode) async throws -> SwapperStatus
-    /// Sign in with an address and login (making an app token on a Swapper 2.0).
+    /// Sign in with an address and login, and read what the box says about itself (nothing is made on it yet).
     func login(address: String, username: String, password: String, pinned: String?) async throws -> SwapperConnect.LoginOutcome
+    /// What to keep for a box signed in to with a password: an app token on a Swapper 2.0, else the password.
+    func keep(_ connection: SwapperConnection, password: String) async throws -> (connection: SwapperConnection, secret: String)
+    /// The boxes the app knows now.
+    func boxes() -> [SwapperConnection]
     /// The status of a connected box.
     func status(of connection: SwapperConnection, secret: String) async throws -> SwapperStatus
     /// Ask the box to switch models.
@@ -104,9 +108,20 @@ final class SwapperGuideModel {
     var usesLogin = false {
         didSet { if usesLogin != oldValue { resetConnection() } }
     }
-    var address = ""
-    var username = ""
-    var password = ""
+    // Another address or login is another sign-in: what was checked before doesn't carry over.
+    var address = "" {
+        didSet {
+            guard address != oldValue else { return }
+            trustedFingerprint = nil
+            resetConnection()
+        }
+    }
+    var username = "" {
+        didSet { if username != oldValue { resetConnection() } }
+    }
+    var password = "" {
+        didSet { if password != oldValue { resetConnection() } }
+    }
 
     /// The code, when the text is one.
     var code: SwapperConnectionCode? { try? SwapperConnectionCode.decode(codeText) }
@@ -148,12 +163,21 @@ final class SwapperGuideModel {
 
     // MARK: Page 4 — how DSH uses it
 
-    var role: ModelRole
-    var isPrivate = true
+    var role: ModelRole {
+        didSet { roleChosen = true }
+    }
+    var isPrivate = true {
+        didSet { privacyChosen = true }
+    }
+    /// The user picked a role / set the privacy (when the route exists already, only what they picked changes).
+    private(set) var roleChosen = false
+    private(set) var privacyChosen = false
 
     // MARK: Page 5 — save and say hello
 
     private(set) var saving = false
+    /// Keeping the connection on the box (making its app token) didn't work.
+    private(set) var saveError: String?
     private(set) var saved: ProviderProfile?
     private(set) var hello: String?
     private(set) var helloError: String?
@@ -175,12 +199,18 @@ final class SwapperGuideModel {
     }
 
     private func resetConnection() {
+        task?.cancel()
+        checking = false
         checkError = nil
         untrustedFingerprint = nil
         connection = nil
+        secret = ""
+        apiBase = nil
+        apiKey = nil
         status = nil
         selectedKey = nil
         saved = nil
+        saveError = nil
         hello = nil
         helloError = nil
     }
@@ -268,7 +298,7 @@ final class SwapperGuideModel {
 
     private func checkLogin() async throws {
         let outcome = try await backend.login(address: address, username: username.trimmingCharacters(in: .whitespaces),
-                                              password: password, pinned: untrustedFingerprintTrusted)
+                                              password: password, pinned: trustedFingerprint)
         switch outcome {
         case .needsTrust(let fingerprint):
             untrustedFingerprint = fingerprint
@@ -288,12 +318,12 @@ final class SwapperGuideModel {
     }
 
     /// The fingerprint the user chose to trust (address-and-login).
-    private var untrustedFingerprintTrusted: String?
+    private var trustedFingerprint: String?
 
     /// The user compared the fingerprint and trusts it: sign in again with it pinned.
     func trustCertificate() {
         guard let fp = untrustedFingerprint else { return }
-        untrustedFingerprintTrusted = fp
+        trustedFingerprint = fp
         untrustedFingerprint = nil
         runCheck()
     }
@@ -473,38 +503,64 @@ final class SwapperGuideModel {
     func route() -> ProviderProfile? {
         guard let connection, let apiBase else { return nil }
         let served = selectedModel?.served_id ?? status?.activeModel?.served_id ?? "model"
-        return ProviderProfile(kind: .openAICompat, name: connection.name, baseURL: apiBase,
-                               apiKey: apiKey, model: served, vision: selectedModel?.vision,
-                               pinnedCertificate: connection.pinnedFingerprint, enabled: nil,
-                               isPrivate: isPrivate)
+        var route = ProviderProfile(kind: .openAICompat, name: connection.name, baseURL: apiBase,
+                                    apiKey: apiKey, model: served, vision: selectedModel?.vision,
+                                    pinnedCertificate: connection.pinnedFingerprint, enabled: nil)
+        route.isPrivate = AppConfig.privacy(isPrivate, for: route)
+        return route
     }
 
-    private func saveAndSayHello() {
-        guard var route = route(), let connection else { return }
-        saving = true
+    /// Save: on the address-and-login path the box first gets this app's token — only now, so a guide left
+    /// halfway leaves nothing behind on the Swapper — then the route and the box are saved and it says hello.
+    func saveAndSayHello() {
+        guard let connection, route() != nil else { return }
+        saveError = nil
         hello = nil
         helloError = nil
-        let key = route.apiKey ?? ""
-        route.apiKey = nil
-        // Save first: the route exists even if the hello doesn't get through.
-        switch role {
-        case .primary:
-            config.store(route)
-            config.makeMain(route.routeID)
-        case .subagent:
-            route.subagentWorker = true
-            config.store(route)
-        case .backup:
-            route.backup = true
-            config.store(route)
+        guard case .login = connection.auth else { return finishSaving() }
+        saving = true
+        task?.cancel()
+        task = Task {
+            do {
+                let kept = try await backend.keep(connection, password: secret)
+                guard !disposed, !Task.isCancelled else { return }
+                self.connection = kept.connection
+                secret = kept.secret
+                saving = false
+                finishSaving()
+            } catch is CancellationError {
+                saving = false
+            } catch {
+                saving = false
+                saveError = Self.explain(error, address: connection.url)
+            }
         }
-        if config.mainRoute == nil { config.makeMain(route.routeID) }
-        config.setAPIKey(key, for: route)
+    }
+
+    private func finishSaving() {
+        guard let route = route(), let connection else { return }
+        // A route already made for this box keeps the user's settings; a same-named one for another box is left
+        // alone (the new route gets a name of its own).
+        let boxes = backend.boxes()
+        let (saved, isNew) = config.saveGuided(route, key: route.apiKey ?? "", privacyChosen: privacyChosen) { existing in
+            if let owner = boxes.first(where: { $0.linkedRoutes.contains(existing.routeID) }) {
+                return SwapperConnection.sameAddress(owner.url, connection.url)
+            }
+            return SwapperConnection.sameBase(existing.baseURL, route.baseURL)
+        }
+        if isNew || roleChosen {
+            switch role {
+            case .primary: config.makeMain(saved.routeID)
+            case .subagent: config.setSubagentWorker(saved.routeID, true)
+            case .backup: config.setBackup(saved.routeID, true)
+            }
+        }
+        if config.mainRoute == nil { config.makeMain(saved.routeID) }
         var linked = connection
-        if !linked.linkedRoutes.contains(route.routeID) { linked.linkedRoutes.append(route.routeID) }
-        backend.register(linked, secret: secret, route: route)
-        saved = route
-        onSaved(route)
+        if !linked.linkedRoutes.contains(saved.routeID) { linked.linkedRoutes.append(saved.routeID) }
+        backend.register(linked, secret: secret, route: saved)
+        self.saved = saved
+        onSaved(saved)
         sayHello()
     }
 

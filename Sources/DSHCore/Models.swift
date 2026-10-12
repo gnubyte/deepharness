@@ -235,7 +235,10 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
 
     /// Stable identity for a configured route: survives reordering, and two
     /// models on the same server stay distinct.
-    public var routeID: String { "\(name)|\(model)" }
+    public var routeID: String { Self.routeID(name: name, model: model) }
+
+    /// The identity of a route with this name and model.
+    public static func routeID(name: String, model: String) -> String { "\(name)|\(model)" }
 
     /// Whether this route is flagged to serve subagents (see `subagentWorker`).
     public var isSubagentWorker: Bool { subagentWorker ?? false }

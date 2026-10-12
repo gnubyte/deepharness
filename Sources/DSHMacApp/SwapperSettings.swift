@@ -267,13 +267,15 @@ struct SwapperLoginForm: View {
         failed = false
         do {
             let outcome = try await SwapperConnect.login(address: address, username: user.trimmingCharacters(in: .whitespaces),
-                                                         password: pass, pinned: untrusted,
-                                                         label: SwapperConnect.tokenLabel(computerName: ComputerName.current))
+                                                         password: pass, pinned: untrusted)
             switch outcome {
             case .needsTrust(let fingerprint):
                 untrusted = fingerprint
-            case .connected(let connection, let secret, _, _):
-                let box = model.spark.add(connection, secret: secret)
+            case .connected(let connection, let password, _, _):
+                // Connecting is keeping it: on a Swapper 2.0 that makes this app's token, kept instead of the password.
+                let kept = try await SwapperConnect.keep(connection, password: password,
+                                                         label: SwapperConnect.tokenLabel(computerName: ComputerName.current))
+                let box = model.spark.add(kept.connection, secret: kept.secret)
                 await model.spark.refresh(box)
                 model.spark.startMonitoring()
                 message = "Connected to \(box.name)."

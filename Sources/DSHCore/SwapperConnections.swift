@@ -75,6 +75,12 @@ public struct SwapperConnection: Codable, Sendable, Equatable, Identifiable {
         return host == routeHost
     }
 
+    /// Two Swapper addresses name the same box (`spark.local:8999` and `https://spark.local:8999/` alike).
+    public static func sameAddress(_ a: String, _ b: String) -> Bool {
+        guard let left = SparkSwapperClient.normalizedURL(a), let right = SparkSwapperClient.normalizedURL(b) else { return false }
+        return left.absoluteString.lowercased() == right.absoluteString.lowercased()
+    }
+
     /// Two base URLs name the same endpoint (case and trailing slashes aside).
     public static func sameBase(_ a: String, _ b: String) -> Bool {
         func key(_ s: String) -> String {
@@ -229,16 +235,16 @@ public enum SwapperConnect {
         /// The box's certificate isn't trusted yet: show the user this fingerprint, and sign in again with it
         /// pinned once they trust it. (Nothing was sent: the password never goes to a certificate nobody trusts.)
         case needsTrust(fingerprint: String)
-        /// Signed in. `secret` is a new app token on a Swapper 2.0, else the password (stored as before);
-        /// `connect` is what a 2.0 Swapper said about itself, `credentials` the model API an older one offers.
+        /// Signed in with the password (`secret`), which nothing has kept yet — see `keep`. `connect` is what a 2.0
+        /// Swapper said about itself, `credentials` the model API an older one offers.
         case connected(SwapperConnection, secret: String, connect: SwapperConnectInfo?, credentials: SwapperCredentials?)
     }
 
-    /// Connect a box with its address (a bare host or IP is fine: https and port 8999 are filled in) and the web
-    /// page's login. On a Swapper 2.0 this makes an app token labelled `label` ("DSH on Pat's MacBook") and keeps
-    /// that instead of the password; an older Swapper keeps the password, as before.
-    public static func login(address: String, username: String, password: String, pinned: String?,
-                             label: String) async throws -> LoginOutcome {
+    /// Sign in to a box with its address (a bare host or IP is fine: https and port 8999 are filled in) and the web
+    /// page's login, and read what it says about itself. Nothing is made on the box yet: the app token comes when
+    /// the connection is kept (`keep`), so a guide left halfway leaves nothing behind on the Swapper.
+    public static func login(address: String, username: String, password: String,
+                             pinned: String?) async throws -> LoginOutcome {
         guard let url = SparkSwapperClient.normalizedURL(address) else {
             throw SwapperError.transport("“\(address)” isn't an address. Use the one in your browser, like https://192.168.1.42:8999.")
         }
@@ -251,14 +257,14 @@ public enum SwapperConnect {
         }
         let host = url.host ?? address
         do {
-            let grant = try await client.createToken(label: label)
-            let info = grant.connect
+            let info = try await client.connectInfo()
             let connection = SwapperConnection(
-                name: info?.displayName ?? "\(SwapperPlatform.displayName(nil)) (\(host))", url: url.absoluteString,
-                platform: info?.platform, hostname: info?.hostname, version: info?.version, auth: .token,
-                pinnedFingerprint: CertificatePin.normalized(pinned) ?? CertificatePin.normalized(info?.fingerprint),
-                apiBase: info?.apiBase)
-            return .connected(connection, secret: grant.token, connect: info, credentials: nil)
+                name: info.displayName,
+                url: url.absoluteString, platform: info.platform, hostname: info.hostname, version: info.version,
+                auth: .login(username: username),
+                pinnedFingerprint: CertificatePin.normalized(pinned) ?? CertificatePin.normalized(info.fingerprint),
+                apiBase: info.apiBase)
+            return .connected(connection, secret: password, connect: info, credentials: nil)
         } catch SwapperError.unsupported {
             let credentials = try? await client.credentials()
             let session = try? await client.sessionInfo()
@@ -268,6 +274,25 @@ public enum SwapperConnect {
                 version: session?.version, auth: .login(username: username),
                 pinnedFingerprint: CertificatePin.normalized(pinned), apiBase: credentials?.apiBase)
             return .connected(connection, secret: password, connect: nil, credentials: credentials)
+        }
+    }
+
+    /// What to keep for a box signed in to with a password: on a Swapper 2.0 an app token labelled `label` ("DSH
+    /// on Pat's MacBook"), kept instead of the password; an older Swapper, which has no tokens, keeps the password.
+    public static func keep(_ connection: SwapperConnection, password: String,
+                            label: String) async throws -> (connection: SwapperConnection, secret: String) {
+        guard case .login(let username) = connection.auth else { return (connection, password) }
+        guard let url = URL(string: connection.url) else { throw SwapperError.notConfigured }
+        let client = SparkSwapperClient(baseURL: url, auth: .login(username: username, password: password),
+                                        pinnedFingerprint: connection.pinnedFingerprint)
+        do {
+            let grant = try await client.createToken(label: label)
+            var kept = connection
+            kept.authKind = "token"
+            kept.username = nil
+            return (kept, grant.token)
+        } catch SwapperError.unsupported {
+            return (connection, password)
         }
     }
 
