@@ -445,7 +445,11 @@ private struct EntryRow: View {
         case .message(let body):
             MessageRow(body: body, at: entry.at, masked: session.masked[entry.id])
         case .tool(let activity):
-            ToolCard(activity: activity, session: session)
+            if activity.name == UseSkillTool.name {
+                SkillCard(activity: activity)
+            } else {
+                ToolCard(activity: activity, session: session)
+            }
         case .todos(let items):
             // With the plan panel open the plan is there; the transcript keeps just a line.
             if model.config.planPanelOpen {
@@ -680,6 +684,57 @@ private struct ToolCard: View {
         if activity.preview.hasPrefix("/") { return URL(fileURLWithPath: activity.preview) }
         guard let root = session.workspaceURL else { return nil }
         return root.appendingPathComponent(activity.preview)
+    }
+}
+
+/// The model using one of the user's skills: "Using the deploy skill", expandable to the instructions it read.
+private struct SkillCard: View {
+    let activity: ToolActivity
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                guard activity.output?.isEmpty == false else { return }
+                withAnimation(.easeOut(duration: 0.12)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "graduationcap.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(activity.isOk == false ? Theme.errorTint : Color.accentColor)
+                        .frame(width: 14)
+                    (Text("Using the ") + Text(activity.preview).fontWeight(.semibold) + Text(" skill"))
+                        .font(.system(size: 12))
+                    Spacer(minLength: 4)
+                    if !activity.isFinished {
+                        ProgressView().controlSize(.small).scaleEffect(0.7)
+                    } else if activity.isOk == false, let summary = activity.summary {
+                        Text(summary).font(Theme.metaFont).foregroundStyle(Theme.errorTint).lineLimit(1)
+                    } else if activity.output?.isEmpty == false {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded, let output = activity.output, !output.isEmpty {
+                Divider().padding(.vertical, 6)
+                ScrollView {
+                    Text(output)
+                        .font(Theme.mono(11))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 220)
+            }
+        }
+        .padding(8)
+        .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: Theme.corner))
+        .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Theme.hairline))
+        .padding(.leading, Theme.gutter)
     }
 }
 
@@ -1081,18 +1136,24 @@ private struct GateCard: View {
     }
 }
 
-/// First-run content for an empty chat: what this is, and a few openers.
+/// First-run content for an empty chat: what this is, and a few openers. A chat without a project is a regular
+/// conversation: general openers (and a couple of the user's skills), with a small link to open a folder for code.
 private struct ChatStarterView: View {
     @Environment(AppModel.self) private var model
     let session: SessionVM
     let send: (String) -> Void
+    @State private var skills: [Skill] = []
 
     private var suggestions: [(String, String)] {
-        if session.cwd == nil {
-            return [
-                ("folder.badge.plus", "Open a project folder so I can read and edit its files"),
-                ("questionmark.circle", "What can you do?"),
+        if session.isPlain {
+            var openers = [
+                ("lightbulb", "Explain something simply"),
+                ("pencil.line", "Help me write or rewrite something"),
+                ("globe", "Summarise a web page"),
+                ("list.bullet.clipboard", "Plan something with me"),
             ]
+            for skill in skills.prefix(2) { openers.append(("graduationcap", "Use the \(skill.name) skill")) }
+            return openers
         }
         return [
             ("map", "Give me a tour of this codebase — the entry points and how it fits together"),
@@ -1109,7 +1170,7 @@ private struct ChatStarterView: View {
                     .font(.title2)
                     .foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.projectName ?? "No project open")
+                    Text(session.projectName ?? session.title)
                         .font(.title3.weight(.semibold))
                     Text(model.config.activeProvider.map { "Running on \($0.displayName)" }
                          ?? "No model configured")
@@ -1121,11 +1182,7 @@ private struct ChatStarterView: View {
 
             ForEach(suggestions, id: \.1) { icon, text in
                 Button {
-                    if session.cwd == nil, icon == "folder.badge.plus" {
-                        model.chooseProject()
-                    } else {
-                        send(text)
-                    }
+                    send(text)
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: icon)
@@ -1145,6 +1202,19 @@ private struct ChatStarterView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            if session.isPlain {
+                Button("Open a folder to work on code") { model.chooseProject() }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.tint)
+            }
+        }
+        .task(id: session.id) {
+            guard session.isPlain else { return }
+            let disabled = model.config.disabledSkills
+            skills = model.transport.skills(for: session)
+                .filter { !$0.shadowed && !disabled.contains($0.id) && $0.kind == .skill && $0.origin != .builtin }
         }
     }
 }

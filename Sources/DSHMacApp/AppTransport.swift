@@ -164,6 +164,37 @@ public final class AppTransport {
     /// Handles `/swap [model]`.
     @ObservationIgnored var onSwapCommand: ((String?, SessionVM) -> Void)?
 
+    // MARK: - Chats without a project
+
+    /// The folder a chat without a project works in: its own scratch folder under the app's data folder (made on
+    /// first use), or the one it was lent.
+    func scratchFolder(for vm: SessionVM, create: Bool = false) -> URL {
+        let folder = vm.workFolder.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? ChatPrompt.scratchFolder(chatID: vm.id, appSupport: skillLocations.appSupport)
+        if create { try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        return folder
+    }
+
+    /// The start of a chat's system prompt: with a project, the coding agent's prompt and the project's
+    /// instructions; without one, a regular conversation's, with the user's own instruction files (and memory) from
+    /// their home folder as before, and no project context.
+    static func basePrompt(for vm: SessionVM, workspace: URL, coding: String, model: String,
+                           projectContext: ProjectContext?, home: URL) -> String {
+        if let project = vm.workspaceURL {
+            // Project instructions + skills + plugin tools are what make this a
+            // harness rather than a chat window.
+            let context = projectContext?.root == project ? projectContext! : ProjectContext.load(root: project)
+            let environment = ProjectContext.environmentBlock(workspace: project, model: model, preset: vm.preset)
+            return coding + "\n\n" + context.promptSupplement(environment: environment, includeSkills: false)
+        }
+        var prompt = ChatPrompt.base(project: nil, scratch: workspace, codingPrompt: coding)
+        prompt += "\n\n" + ChatPrompt.environment(scratch: workspace, model: model, preset: vm.preset)
+        if let own = ChatPrompt.userInstructions(ProjectContext.instructionFiles(root: home)) {
+            prompt += "\n\n" + own
+        }
+        return prompt
+    }
+
     /// Post a notice into the chat the user is looking at.
     func broadcast(_ text: String, error: Bool = false) {
         guard let vm = selected else { banner = text; return }
@@ -246,17 +277,24 @@ public final class AppTransport {
     // MARK: - Sessions
 
     @discardableResult
-    public func newSession(cwd: String?, preset: PermissionPreset? = nil, select: Bool = true) -> SessionVM {
+    public func newSession(cwd: String?, preset: PermissionPreset? = nil, select: Bool = true,
+                           workFolder: String? = nil) -> SessionVM {
         let id = UUID().uuidString
         let resolved = preset ?? config.asPreset
         let vm = SessionVM(id: id, title: "New chat", cwd: cwd, preset: resolved)
+        if cwd == nil { vm.workFolder = workFolder }
         sessions.insert(vm, at: 0)
-        log.upsert(id: id, cwd: cwd, title: "New chat", preset: resolved.rawValue)
+        log.upsert(id: id, cwd: cwd, title: "New chat", preset: resolved.rawValue, scratch: vm.workFolder)
         if select { selectedID = id }
         return vm
     }
 
     public func deleteSession(_ id: String) {
+        // A chat without a project takes its own scratch folder with it.
+        if let vm = sessions.first(where: { $0.id == id }), vm.isPlain {
+            let own = ChatPrompt.scratchFolder(chatID: id, appSupport: skillLocations.appSupport)
+            try? FileManager.default.removeItem(at: own)
+        }
         resolveAllGates(for: id, with: false)
         runTasks[id]?.cancel()
         runTasks[id] = nil
@@ -335,9 +373,11 @@ public final class AppTransport {
     @discardableResult
     public func queueAdd(_ title: String, details: String = "", atFront: Bool = false) -> QueueTask {
         // The task runs in the project it was queued in, even if the app has
-        // moved on to another project by the time its turn comes.
+        // moved on to another project by the time its turn comes — or, with
+        // no project open, in the scratch folder of the chat without one.
         let cwd = projectContext?.root.path ?? selected?.cwd
-        let t = queue.add(title, details: details, atFront: atFront, cwd: cwd)
+        let folder = cwd == nil ? selected.map { scratchFolder(for: $0).path } : nil
+        let t = queue.add(title, details: details, atFront: atFront, cwd: cwd, workFolder: folder)
         return queue[t.id] ?? t
     }
 
@@ -556,6 +596,11 @@ public final class AppTransport {
             guard let task = queue.task(taskID), task.status == .queued else { return .finished }
             if let existing = task.sessionID.flatMap({ id in sessions.first(where: { $0.id == id }) }) {
                 vm = existing
+            } else if task.cwd == nil, let folder = task.workFolder {
+                // Queued from a chat without a project: a chat without one, working in that chat's folder.
+                vm = newSession(cwd: nil, select: false, workFolder: folder)
+                renameSession(vm.id, to: "🚀 \(task.title)")
+                queue.attachSession(taskID, vm.id)
             } else {
                 let cwd = task.cwd ?? projectContext?.root.path ?? sessions.first?.cwd
                 vm = newSession(cwd: cwd, select: false)
@@ -749,6 +794,7 @@ public final class AppTransport {
             let cwd = (row.cwd?.isEmpty ?? true) ? nil : row.cwd
             let vm = SessionVM(id: row.id, title: row.title, cwd: cwd,
                                preset: PermissionPreset(rawValue: row.preset ?? "") ?? .workspaceWrite)
+            if cwd == nil { vm.workFolder = row.scratch }
             vm.updatedAt = row.updatedAt
             vm.loaded = false
             return vm
@@ -849,20 +895,14 @@ public final class AppTransport {
 
     private func engine(for sessionID: String, vm: SessionVM, client: any LLMClient,
                         window: Int, thinking: ThinkingLevel?, skillState: SkillState) -> Engine {
-        let workspace = vm.workspaceURL ?? FileManager.default.homeDirectoryForCurrentUser
+        // A chat without a project works in its own scratch folder, which the permission preset then confines it to
+        // exactly as a project folder would.
+        let workspace = vm.workspaceURL ?? scratchFolder(for: vm, create: true)
         let policy = PermissionPolicy(preset: vm.preset, workspaceRoot: workspace)
         let model = (client as? any ProviderClient)?.profile.model ?? "model"
 
-        // Project instructions + skills + plugin tools are what make this a
-        // harness rather than a chat window.
-        let context = projectContext?.root == workspace ? projectContext : ProjectContext.load(root: workspace)
-        let environment = ProjectContext.environmentBlock(workspace: workspace, model: model, preset: vm.preset)
-        var prompt = basePrompt
-        if let context {
-            prompt += "\n\n" + context.promptSupplement(environment: environment, includeSkills: false)
-        } else {
-            prompt += "\n\n" + environment
-        }
+        var prompt = Self.basePrompt(for: vm, workspace: workspace, coding: basePrompt, model: model,
+                                     projectContext: projectContext, home: skillLocations.home)
         // Skills: always-on rules, the ones the user selected for this chat,
         // and a catalog the model can load from with `use_skill`.
         if !skillState.result.text.isEmpty { prompt += "\n\n" + skillState.result.text }
@@ -1021,8 +1061,11 @@ public final class AppTransport {
         }
         agentQueuedCount[sessionID] = count + 1
         let vm = sessions.first { $0.id == sessionID }
-        let cwd = vm?.cwd ?? projectContext?.root.path
-        let task = queue.add(title, details: details, atFront: front, cwd: cwd)
+        // From a chat without a project, the task works in that chat's own folder.
+        let plain = vm?.isPlain ?? false
+        let cwd = plain ? nil : (vm?.cwd ?? projectContext?.root.path)
+        let task = queue.add(title, details: details, atFront: front, cwd: cwd,
+                             workFolder: plain ? vm.map { scratchFolder(for: $0).path } : nil)
         queue.note(task.id, "Queued by the agent in “\(vm?.title ?? "a chat")”.")
         let position = queue.position(of: task.id) ?? 0
         var out = "Queued “\(task.title)” at #\(position) (\(queue.queuedCount) waiting)."
@@ -1825,9 +1868,10 @@ public final class AppTransport {
         skillsRevision += 1
     }
 
-    /// Every skill visible from a chat's project (shadowed ones included).
+    /// Every skill visible from a chat's project (shadowed ones included). A chat without a project has the user's
+    /// own and the built-in skills — no project's. (With no chat, the open project's.)
     public func skills(for vm: SessionVM?) -> [Skill] {
-        SkillCatalog.loadAll(project: vm?.workspaceURL ?? projectContext?.root,
+        SkillCatalog.loadAll(project: vm.map(\.workspaceURL) ?? projectContext?.root,
                              locations: skillLocations, sources: config.skillSources)
     }
 

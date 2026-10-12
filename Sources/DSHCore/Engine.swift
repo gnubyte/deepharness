@@ -834,6 +834,7 @@ public struct Engine: Sendable {
         case "web_fetch": return JSONArgs.string(call.arguments, "url") ?? call.name
         case "list_directory": return JSONArgs.string(call.arguments, "path") ?? call.name
         case "todo_write": return "update task list"
+        case "use_skill": return JSONArgs.string(call.arguments, "name") ?? call.name
         case "delegate":
             guard let tasks = JSONArgs.dictionary(call.arguments)["tasks"] as? [Any] else { return "parallel tasks" }
             return "\(tasks.count) parallel task\(tasks.count == 1 ? "" : "s")"

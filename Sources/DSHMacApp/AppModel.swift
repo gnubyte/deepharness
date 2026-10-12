@@ -206,6 +206,15 @@ final class AppModel {
         return session
     }
 
+    /// A regular conversation — no project, even while one is open.
+    @discardableResult
+    func newPlainChat() -> SessionVM {
+        mode = .chat
+        let session = transport.newSession(cwd: nil)
+        transport.ensureContextProbe()
+        return session
+    }
+
     func send(_ text: String, in session: SessionVM, attachments: [MessageAttachment] = []) {
         transport.send(text, sessionID: session.id, attachments: attachments)
     }

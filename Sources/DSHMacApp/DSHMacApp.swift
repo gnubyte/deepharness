@@ -45,6 +45,8 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Chat") { model.newChat() }
                 .keyboardShortcut("n", modifiers: .command)
+            Button("New Chat Without a Project") { model.newPlainChat() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("Open Project Folder…") { model.chooseProject() }
                 .keyboardShortcut("o", modifiers: .command)
             Divider()
@@ -179,7 +181,7 @@ struct RootView: View {
             } else {
                 EmptyStateView(icon: "sparkles",
                                title: "DSH",
-                               message: "A native coding agent. Open a project folder, then start a chat.") {
+                               message: "Chat with your AI, or open a folder to work on code.") {
                     HStack {
                         Button("Open Folder…") { model.chooseProject() }
                         Button("New Chat") { model.newChat() }

@@ -84,6 +84,8 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
     /// app has since switched to another project. Nil for tasks queued before
     /// this was recorded (they run in the current project).
     public var cwd: String?
+    /// For a task queued from a chat without a project: that chat's scratch folder, which the task works in.
+    public var workFolder: String?
     public var log: [QueueLogLine]
 
     public init(id: String = UUID().uuidString,
@@ -128,7 +130,7 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, details, status, enteredAt, startedAt, finishedAt, rounds
-        case promptTokens, completionTokens, sessionID, cwd, log
+        case promptTokens, completionTokens, sessionID, cwd, workFolder, log
     }
 
     /// Tolerant decoding: a missing field (a file from an older or newer
@@ -148,6 +150,7 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
         completionTokens = try c.decodeIfPresent(Int.self, forKey: .completionTokens) ?? 0
         sessionID = try c.decodeIfPresent(String.self, forKey: .sessionID)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        workFolder = try c.decodeIfPresent(String.self, forKey: .workFolder)
         log = (try? c.decodeIfPresent([QueueLogLine].self, forKey: .log)) ?? []
     }
 }
@@ -239,10 +242,11 @@ public extension TaskQueue {
 public extension TaskQueue {
     @discardableResult
     mutating func add(_ title: String, details: String = "", atFront: Bool = false,
-                      cwd: String? = nil) -> QueueTask {
+                      cwd: String? = nil, workFolder: String? = nil) -> QueueTask {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         var task = QueueTask(title: title, details: details.trimmingCharacters(in: .whitespacesAndNewlines),
                              cwd: (cwd?.isEmpty ?? true) ? nil : cwd)
+        if task.cwd == nil, let workFolder, !workFolder.isEmpty { task.workFolder = workFolder }
         task.appendLog(.entered, "Entered the queue at #\(atFront ? 1 : queuedCount + 1)")
         if atFront { tasks.insert(task, at: tasks.firstIndex { $0.status == .queued } ?? tasks.endIndex) }
         else { tasks.append(task) }

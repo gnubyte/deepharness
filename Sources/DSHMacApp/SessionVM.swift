@@ -239,6 +239,13 @@ public final class SessionVM: Identifiable {
         return URL(fileURLWithPath: cwd)
     }
 
+    /// A chat without a project (a regular conversation).
+    public var isPlain: Bool { workspaceURL == nil }
+
+    /// For a chat without a project: a folder it works in other than its own scratch folder (a queue task from a
+    /// chat without a project works in that chat's folder). Nil = its own.
+    public var workFolder: String?
+
     public var projectName: String? {
         workspaceURL?.lastPathComponent
     }

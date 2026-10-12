@@ -37,6 +37,9 @@ public struct LogSession: Identifiable, Hashable, Codable, Sendable {
     public var cwd: String?
     public var preset: String?
     public var updatedAt: Date
+    /// A chat without a project working in a folder other than its own scratch folder (a queue task from a chat
+    /// without a project works in that chat's folder). Nil = its own.
+    public var scratch: String?
 }
 
 private struct StoredItem: Codable {
@@ -97,12 +100,13 @@ public final class ConversationLog {
 
     private func fileURL(_ id: String) -> URL { dir.appendingPathComponent("\(id).json") }
 
-    public func upsert(id: String, cwd: String?, title: String, preset: String?) {
+    public func upsert(id: String, cwd: String?, title: String, preset: String?, scratch: String? = nil) {
         var row = rows[id] ?? LogSession(id: id, title: title, cwd: cwd, preset: preset, updatedAt: .now)
         row.title = title
         row.updatedAt = .now
         if let cwd, !cwd.isEmpty { row.cwd = cwd }
         if let preset { row.preset = preset }
+        if let scratch, !scratch.isEmpty { row.scratch = scratch }
         rows[id] = row
         persist(id)
     }
