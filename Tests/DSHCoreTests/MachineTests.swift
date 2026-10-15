@@ -249,6 +249,19 @@ final class WindowServicesTests: XCTestCase {
         XCTAssertNotNil(KeyboardTool.keyCodes["0"])
     }
 
+    func testProcessWriteControlKeysAreTheirASCIICodes() {
+        // ctrl-z was once LF (0x0A): in a terminal that is Enter, which runs
+        // the half-typed line instead of suspending the job.
+        XCTAssertEqual(ProcessWriteTool.keyCodes["ctrl-c"], "\u{03}")
+        XCTAssertEqual(ProcessWriteTool.keyCodes["ctrl-d"], "\u{04}")
+        XCTAssertEqual(ProcessWriteTool.keyCodes["ctrl-z"], "\u{1A}")
+        XCTAssertEqual(ProcessWriteTool.keyCodes["enter"], "\r")
+        XCTAssertEqual(ProcessWriteTool.keyCodes["tab"], "\t")
+        XCTAssertEqual(ProcessWriteTool.keyCodes["esc"], "\u{1B}")
+        XCTAssertFalse(ProcessWriteTool.keyCodes.contains { $0.key != "enter" && $0.key != "return" && ($0.value == "\n" || $0.value == "\r") },
+                       "only enter/return may send a line ending")
+    }
+
     func testTerminalGuardRefusalAdvice() {
         XCTAssertTrue(TerminalGuard.refusal(appName: "Ghostty").contains("process_start"))
     }

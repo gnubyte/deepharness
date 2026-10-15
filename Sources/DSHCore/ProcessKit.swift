@@ -469,9 +469,11 @@ public struct ProcessWriteTool: ToolExecutor {
     public let manager: ProcessManager
     public init(manager: ProcessManager = .shared) { self.manager = manager }
 
+    /// The bytes a terminal sends for each key. Control keys are the ASCII
+    /// control codes (ctrl-<letter> = letter & 0x1F): ^C 0x03, ^D 0x04, ^Z 0x1A.
     static let keyCodes: [String: String] = [
         "enter": "\u{0D}", "return": "\u{0D}", "ctrl-c": "\u{03}", "ctrl-d": "\u{04}",
-        "ctrl-z": "\u{0A}", "tab": "\u{09}", "esc": "\u{1B}", "escape": "\u{1B}",
+        "ctrl-z": "\u{1A}", "tab": "\u{09}", "esc": "\u{1B}", "escape": "\u{1B}",
         "up": "\u{1B}[A", "down": "\u{1B}[B", "right": "\u{1B}[C", "left": "\u{1B}[D",
         "pgup": "\u{1B}[5~", "pgdn": "\u{1B}[6~", "home": "\u{1B}[H", "end": "\u{1B}[F",
     ]
