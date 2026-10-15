@@ -18,7 +18,7 @@ let target = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "shot.
 guard let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                              kCGNullWindowID) as? [[String: Any]] else { exit(1) }
 for info in infos {
-    guard (info[kCGWindowOwnerName as String] as? String) == "DSH",
+    guard (info[kCGWindowOwnerName as String] as? String) == "Vision",
           let bounds = info[kCGWindowBounds as String] as? [String: Any],
           let width = bounds["Width"] as? Double, width > 400,
           let number = info[kCGWindowNumber as String] as? UInt32 else { continue }

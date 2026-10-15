@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo/logo.png" alt="DSH for macOS" width="120" />
+  <img src="assets/logo/logo.png" alt="Vision for macOS" width="120" />
 </p>
 
-<h1 align="center">DSH for macOS</h1>
+<h1 align="center">Vision for macOS</h1>
 
 <p align="center">
   A native SwiftUI coding agent that <em>is</em> the harness. It runs the tool loop itself and talks
@@ -12,41 +12,43 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="DSH in code mode: project tree, syntax-highlighted editor, integrated terminal, and the agent alongside" width="960" />
+  <img src="assets/screenshot.png" alt="Vision in code mode: project tree, syntax-highlighted editor, integrated terminal, and the agent alongside" width="960" />
 </p>
 
 ---
 
 ## What it is
 
-This started as a client for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
-driving an external `dsh web` process over its `/api` gateway. That is gone. The app now owns the
-agent loop end to end:
+Vision owns the agent loop end to end — there is no server process behind it:
 
 ```
 you → VisionHarnessCore.Engine → OpenAI-compatible /chat/completions → tool calls → files & shell → you
 ```
 
-The practical difference is that there is nothing to install alongside it and nothing to keep
-running. Point it at a model and start chatting — or open a folder and it works on your code.
+So there is nothing to install alongside it and nothing to keep running. Point it at a model and start
+chatting — or open a folder and it works on your code.
 
 ## Download
 
-Grab the latest build from [Releases](https://github.com/gnubyte/deepharness/releases). The `.dmg`
-contains the app — drag **DSH** into **Applications**.
+Grab the latest build from [Releases](https://github.com/phastings503cm/vision-mac/releases). The
+`Vision.dmg` contains the app — drag **Vision** into **Applications**.
+
+<!-- The README's one mention of the app's old name, so its users recognise it. Keep it to this sentence. -->
+Vision was previously called DSH: its first launch brings over your chats, settings, keys and vault, and a
+project's `.dsh` folder and `DSH.md` keep working.
 
 > Releases are ad-hoc-signed for Apple Silicon (arm64), macOS 14+. Gatekeeper will prompt on first
 > launch — right-click the app and choose **Open**, or run:
 >
 > ```bash
-> xattr -d com.apple.quarantine /Applications/DSH.app
+> xattr -d com.apple.quarantine /Applications/Vision.app
 > ```
 
 ## Build
 
 ```bash
 ./bundle.sh release
-open build/DSH.app
+open build/Vision.app
 ```
 
 Requires Swift 6 / Xcode 26 and macOS 14+.
@@ -102,18 +104,18 @@ it. The model's reasoning streams live under the "Thinking…" row.
 
 [Spark Swapper](https://github.com/gnubyte/DGX-Spark-Swapper) is the web control panel on a DGX Spark —
 and, from Swapper 2.0, on an AMD Strix Halo box — that switches which model the box serves. Open its web
-page, choose **Connect ▸ Connect DSH** and copy the connection code (`SSC1:…`). Then choose **My Spark
+page, choose **Connect ▸ Connect Vision** and copy the connection code (`SSC1:…`). Then choose **My Spark
 Swapper (DGX Spark or Strix Halo)** in the wizard, or **Add ▸ Spark Swapper (connection code)…** in
 **Settings ▸ AI Models**:
 
 1. **Paste the code.** It carries the box's name and addresses, its certificate's fingerprint, and an app
-   token made for DSH — revoke it on the Swapper's Connect tab any time.
-2. **Check it.** DSH goes on only if the box shows exactly the certificate the code names (a certificate
+   token made for Vision — revoke it on the Swapper's Connect tab any time.
+2. **Check it.** Vision goes on only if the box shows exactly the certificate the code names (a certificate
    your Mac trusts isn't enough), then reads what the box serves.
 3. **Pick the model.** The box's models with context and speed, the one serving now preselected. Switch
    to another there and then — or install one the box hasn't downloaded yet (its size and how long it
    takes are shown) and **Switch to It** when it's done.
-4. **How should DSH use it?** Primary, subagent or backup (see below) — and private, since it's your own
+4. **How should Vision use it?** Primary, subagent or backup (see below) — and private, since it's your own
    hardware.
 5. **Save and say hello.** The route is saved with the certificate pinned (the box's model server shows
    the same certificate), its key and the app token in your Keychain, and a first message goes through it.
@@ -143,12 +145,12 @@ addresses where it has both:
 It walks you through getting a key for that plan (with a button to the right page, and the plan's
 terms), takes the key — it goes to your Keychain — and catches recognisable mistakes, checks it
 (`/models`, or a one-token message where a plan doesn't list models) with errors in plain words, lets you
-pick the model, asks how DSH should use it, and says hello through it.
+pick the model, asks how Vision should use it, and says hello through it.
 
-- **GLM-5.3 always thinks.** DSH never asks it not to; the thinking menu maps to its `low` / `high` / `max`.
-- **Kimi Code checks which app is calling.** DSH tells it honestly that it is DSH (`User-Agent: DSH/<version>
-  (macOS)`) and never imitates another tool. If Kimi turns it away, DSH says so and suggests the Moonshot
-  API, which works with any app.
+- **GLM-5.3 always thinks.** Vision never asks it not to; the thinking menu maps to its `low` / `high` / `max`.
+- **Kimi Code checks which app is calling.** Vision tells it honestly that it is Vision
+  (`User-Agent: Vision/<version> (macOS)`) and never imitates another tool. If Kimi turns it away, Vision
+  says so and suggests the Moonshot API, which works with any app.
 - **The Qwen Coding Plan is for interactive use only** under Alibaba's terms, so its route is marked
   *Interactive use only*: the Task Queue and `/goal` won't run while it's the primary.
 - A ChatGPT Plus or Pro subscription doesn't include API access; the OpenAI API is billed separately.
@@ -182,7 +184,7 @@ very small models will flail.
 
 | Switch | Meaning |
 |---|---|
-| **On** | DSH may use it. Switched off, it stays in the list but is never used. |
+| **On** | Vision may use it. Switched off, it stays in the list but is never used. |
 | **Primary** | Answers you — the conductor. Exactly one. |
 | **Subagent** | Takes side tasks from the primary, in parallel: the `agent`, `delegate` and background agents. |
 | **Backup** | Takes over a turn when the primary doesn't answer. |
@@ -217,13 +219,13 @@ the primary in one click.
 
 ### Private models and the sensitive-data shield
 
-A model is **private** when it runs on hardware you control. DSH decides by its address — `localhost`, a
+A model is **private** when it runs on hardware you control. Vision decides by its address — `localhost`, a
 loopback, LAN, link-local or Tailscale (100.64/10) address, a one-word host name, or a name ending in
 `.local`, `.lan`, `.home`, `.home.arpa`, `.internal` or `.ts.net` — and everything else, Amazon Bedrock
 and every plan included, starts out *not private*. Flip the **Private** switch either way; your choice
 wins.
 
-Before a request goes to a model that isn't private, DSH masks what's sensitive in it — in the system
+Before a request goes to a model that isn't private, Vision masks what's sensitive in it — in the system
 prompt, the messages, tool results, earlier tool calls and attached text files. Each value becomes a
 placeholder such as `⟦EMAIL_1⟧` or `⟦SECRET_1⟧` (the same value always gets the same one), and once a value
 has been found it is masked wherever it appears, even without the `password:` that gave it away. The model
@@ -252,40 +254,40 @@ On the wizard's backend page choose **Amazon Bedrock with my AWS account (guided
 AI Models ▸ Add ▸ Amazon Bedrock…** — for a guide written for people who have never used the AWS CLI. All it
 needs is an AWS account you can sign in to on the website.
 
-1. **The AWS CLI.** DSH looks for it (on your `PATH` and in `/usr/local/bin`, `/opt/homebrew/bin`,
+1. **The AWS CLI.** Vision looks for it (on your `PATH` and in `/usr/local/bin`, `/opt/homebrew/bin`,
    `~/.local/bin`, `~/aws-cli`) and installs it if it's missing or too old for the browser sign-in (2.32
    or later): Amazon's official installer package, downloaded from `awscli.amazonaws.com`, its signature
    checked with `pkgutil` (a Developer ID installer certificate from Amazon's Apple team, `94KV3E626L`),
    installed for you alone under `~/aws-cli` — no administrator prompt — with `aws` linked from
    `~/.local/bin`. If that's blocked it can install for everyone (macOS asks for your password) or with
    Homebrew.
-2. **Sign in.** Pick a Region, then **Sign in with AWS**: DSH runs `aws login` into its own profile,
-   `dsh-bedrock`, so profiles you already have are left alone. Your browser opens the AWS sign-in page;
-   DSH never sees your password. Already set up with IAM Identity Center (SSO), keys or a role? Choose
-   **an AWS CLI profile I already have** — DSH runs `aws sso login` for SSO profiles.
+2. **Sign in.** Pick a Region, then **Sign in with AWS**: Vision runs `aws login` into its own profile,
+   `vision-bedrock`, so profiles you already have are left alone. Your browser opens the AWS sign-in page;
+   Vision never sees your password. Already set up with IAM Identity Center (SSO), keys or a role? Choose
+   **an AWS CLI profile I already have** — Vision runs `aws sso login` for SSO profiles.
 3. **Pick a model.** The Region's chat models (Claude, Amazon Nova, Llama, Mistral, DeepSeek, …), the best
    of each family first, using a cross-Region inference profile where the model needs one. Search by
    name, switch Region without leaving the page, and see at a glance which models are ready to use.
 4. **Enable it** — only when needed; most models are ready immediately:
-   - **Claude** needs Anthropic's one-time *use case* form per AWS account. DSH asks the same questions
+   - **Claude** needs Anthropic's one-time *use case* form per AWS account. Vision asks the same questions
      (company, website, industry, who will use it, what for) and submits it.
    - **Marketplace models** show their offer first — price per unit, licence (EULA) link, refund policy —
      and are enabled only after you tick *I accept* and press **Accept and enable**.
-   - Then DSH waits for AWS to finish (usually seconds, up to 15 minutes for a new subscription). If your
+   - Then Vision waits for AWS to finish (usually seconds, up to 15 minutes for a new subscription). If your
      AWS identity isn't allowed to do something, the page says which permission is missing and has a
      ready-made IAM policy to copy for your administrator.
 5. **Connect** — saves the route (profile, Region, model), says hello through Bedrock, and asks whether
    the model should lead (main model) or take subagent tasks.
 
 Requests are signed with SigV4 using short-lived credentials the AWS CLI exports for the profile
-(`aws configure export-credentials`), refreshed before they expire; nothing secret is stored in DSH's
+(`aws configure export-credentials`), refreshed before they expire; nothing secret is stored in Vision's
 settings. Chats use Bedrock's Converse API with streaming, tools, images, prompt caching for Claude and
 Nova, and Claude's extended thinking. When the sign-in runs out, the banner offers **Sign in to AWS…**;
 **Settings ▸ AI Models** has **Sign in** and **Change…** (another model, Region or account) for each Bedrock
 route, and the model menu has **Choose a Bedrock Model…**.
 
 Costs are billed by AWS to your account (Amazon Bedrock, and AWS Marketplace for Marketplace models).
-To remove DSH's sign-in: `aws logout --profile dsh-bedrock`.
+To remove Vision's sign-in: `aws logout --profile vision-bedrock`.
 
 ## Tools
 
@@ -356,7 +358,7 @@ A chat doesn't need a folder. With no project open — or with **File ▸ New Ch
 (⇧⌘N), or the speech-bubble button in the sidebar while a project is open — it's a regular conversation:
 the model answers directly, never asks you to open a folder, and uses tools only when they help. When
 something needs files or commands — a skill that runs a script, a document to draft — it works in the
-chat's own folder, `~/Library/Application Support/DSHMac/Chats/<chat id>`, which the permission preset
+chat's own folder, `~/Library/Application Support/Vision/Chats/<chat id>`, which the permission preset
 confines it to just as it would a project folder. Deleting the chat deletes the folder; **Reveal Chat
 Folder in Finder** is on the chat's right-click menu. Your own instruction files and skills apply (shown
 as "Using the deploy skill" when the model loads one); the open project's don't. A task such a chat puts
@@ -395,7 +397,7 @@ mirroring into `AGENTS.md`, no managed marker blocks. Any of these in the projec
 every turn, in order:
 
 `AGENTS.md` · `QWEN.md` · `CLAUDE.md` · `.claude/CLAUDE.md` · `CLAUDE.local.md` · `.cursorrules` ·
-`DSH.md` · `MEMORY.md` · `memory/YYYY-MM-DD.md`
+`VISION.md` · `MEMORY.md` · `memory/YYYY-MM-DD.md`
 
 A chat without a project reads the same files from your home folder instead (`~/AGENTS.md`,
 `~/MEMORY.md`, …), and **Memory & Skills** shows those for it.
@@ -408,17 +410,17 @@ lines, because that file costs tokens on every request — detail belongs in a s
 
 A skill is packaged instructions the agent loads when a task matches: a folder with a `SKILL.md`
 (frontmatter `name` + `description` saying *when* to use it, then Markdown) and optional bundled files.
-The format is shared by Claude Code, Cursor and the Agent Skills convention, so DSH **reads their
+The format is shared by Claude Code, Cursor and the Agent Skills convention, so Vision **reads their
 folders in place** and can **import from and export to** any of them.
 
 | Read in place | Where |
 |---|---|
-| DSH | `<project>/.dsh/skills`, `~/Library/Application Support/DSHMac/skills` |
+| Vision | `<project>/.vision/skills`, `~/Library/Application Support/Vision/skills` |
 | Agent Skills / Qwen Code | `.agents/skills`, `~/.agents/skills`, `.qwen/skills` |
 | Claude Code | `.claude/skills`, `.claude/commands/*.md` (slash commands), `.claude/rules/*.md`, and the `~/.claude` equivalents |
 | Cursor | `.cursor/skills`, `.cursor/rules/*.mdc` (`alwaysApply`, `globs`, `description`), `~/.cursor/skills`; `.cursorrules` is loaded as project instructions |
 
-Same-named skills resolve by precedence (project DSH first, then the other project folders, then
+Same-named skills resolve by precedence (project Vision first, then the other project folders, then
 yours); the loser is shown as *Overridden*. Rules with `alwaysApply` are always in the prompt;
 rules with `globs` are offered with the files they apply to; Claude commands run when you type `/name`.
 
@@ -429,7 +431,7 @@ and loads the right one itself (`use_skill`). `/skills` lists them, `/skill <nam
 `/<name> args` runs a skill or command directly (`$ARGUMENTS`, `$1`…`$9` are filled in).
 
 **Settings ▸ Skills** manages them all: switch any skill on or off, edit your own (Claude/Cursor files
-are copied into DSH before editing, so nothing of theirs is changed), move to Trash, and choose which
+are copied into Vision before editing, so nothing of theirs is changed), move to Trash, and choose which
 foreign layouts to read.
 
 - **Generate.** *New ▸ Write with AI* (or `/skill new <what it should do>` in a chat, which can distil
@@ -445,13 +447,13 @@ foreign layouts to read.
   symlinks are never followed; archives with unsafe paths are refused; size limits apply.
 - **Export.** As a zip or written into a folder, as portable skill folders, Claude Code
   (`.claude/skills`), Cursor (`.cursor/rules/*.mdc`, skills with files as `.cursor/skills`), Agent
-  Skills, or DSH's layout.
+  Skills, or Vision's layout.
 
 ## Plugins
 
 A plugin is a JSON manifest that declares extra tools backed by shell commands. No compilation, no
-process protocol — drop a file in `~/Library/Application Support/DSHMac/plugins/` or
-`<project>/.dsh/plugins/` and hit Reload in **Settings ▸ Plugins**.
+process protocol — drop a file in `~/Library/Application Support/Vision/plugins/` or
+`<project>/.vision/plugins/` and hit Reload in **Settings ▸ Plugins**.
 
 ```json
 {
@@ -558,7 +560,7 @@ VisionMacApp/              SwiftUI
 swift test
 ```
 
-1,304 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
+1,387 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
 cancellation), permission containment, the Qwen XML fallback, glob, markdown, plugin interpolation
 and quoting, prompt assembly, editor-buffer conflict resolution, 34 over the terminal emulator, and 8
 that spawn a real shell on a real pty and assert on what lands on the screen — plus the fleet (server
@@ -570,8 +572,10 @@ access checks), the Bedrock guide as a state machine over a scripted AWS, the Sp
 their guide, privacy by address, the shield's detectors and its masking and restoring (placeholders split
 across streamed pieces, values with quotes and emoji inside tool calls, a value found once masked everywhere,
 8,000 CSV rows in well under half a second), backups, sensitive tasks on
-private servers, chats without a project, and the app host against two fake model servers. Four live
-tests are skipped unless pointed at a real server.
+private servers, chats without a project, the first launch's move of the data folder, settings and
+Keychain items from the app's old name (with a crash replayed after every step), the keyboard tool's key
+codes against the system's own, and the app host against two fake model servers. Four live tests are
+skipped unless pointed at a real server.
 
 ## Status
 
@@ -599,4 +603,4 @@ Verified on macOS 14+ / Apple Silicon:
 - **Reasoning is shown live but not kept** in the transcript once the answer arrives. Servers
   without a reasoning parser leave `<think>` text inline in the answer.
 - **Search across sessions is not implemented.** Transcripts are plain JSON under
-  `~/Library/Application Support/DSHMac/conversations/`, so `grep` works in the meantime.
+  `~/Library/Application Support/Vision/conversations/`, so `grep` works in the meantime.
