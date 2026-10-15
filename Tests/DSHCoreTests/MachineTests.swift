@@ -238,10 +238,10 @@ final class WindowServicesTests: XCTestCase {
         XCTAssertTrue(r.output.contains(String(pid)) || r.output.contains("xctest"), r.output)
     }
 
-    func testKeyboardComboParsing() {
-        let c = KeyboardTool.parseCombo("cmd+shift+s")
+    func testKeyboardComboParsing() throws {
+        let c = try XCTUnwrap(KeyboardTool.parseCombo("cmd+shift+s"))
         XCTAssertTrue(c.cmd); XCTAssertTrue(c.shift); XCTAssertFalse(c.ctrl); XCTAssertEqual(c.key, "s")
-        let plain = KeyboardTool.parseCombo("return")
+        let plain = try XCTUnwrap(KeyboardTool.parseCombo("return"))
         XCTAssertEqual(plain.key, "return")
         XCTAssertNotNil(KeyboardTool.keyCodes["return"])
         XCTAssertNotNil(KeyboardTool.keyCodes["f5"])

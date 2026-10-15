@@ -523,13 +523,15 @@ public struct KeyboardTool: ToolExecutor {
         name: name,
         description: """
             Type into the frontmost app: text=literal string, and/or keys like \
-            ["cmd,s"] ["return"] ["ctrl,c"] ["esc"] ["up","down"] with modifiers \
-            cmd/ctrl/alt/shift. `app` activates that app first (the reliable pattern: \
-            keyboard(app:"Godot", keys:["F5"])). Refused into terminal emulators and \
-            DSH itself — that route would bypass the shell permission gate.
+            ["cmd+s"] ["return"] ["ctrl+c"] ["esc"] ["up","down"] ["cmd+shift+t"] \
+            ["cmd+,"] with modifiers cmd/ctrl/alt/shift joined by + (a comma works \
+            too). Keys are a–z, 0–9, punctuation, enter/tab/esc/space/delete, arrows, \
+            home/end/pgup/pgdn, f1–f20. `app` activates that app first (the reliable \
+            pattern: keyboard(app:"Godot", keys:["f5"])). Refused into terminal \
+            emulators and DSH itself — that route would bypass the shell permission gate.
             """,
         parameters: """
-        {"type":"object","properties":{"text":{"type":"string","description":"Literal text to type"},"keys":{"type":"array","items":{"type":"string"},"description":"Key combos, e.g. ['cmd,s','return']"},"app":{"type":"string","description":"Activate this app first (name)"}},"required":[]}
+        {"type":"object","properties":{"text":{"type":"string","description":"Literal text to type"},"keys":{"type":"array","items":{"type":"string"},"description":"Key combos, e.g. ['cmd+s','return']"},"app":{"type":"string","description":"Activate this app first (name)"}},"required":[]}
         """
     )
 
@@ -550,6 +552,18 @@ public struct KeyboardTool: ToolExecutor {
     }
 
     public func execute(args: JSONString, in context: ToolContext) async -> ToolResult {
+        // Resolve every combo before anything is typed: a bad one fails the
+        // whole call instead of leaving the keys before it pressed.
+        var combos: [ResolvedCombo] = []
+        if let raw = JSONArgs.dictionary(args)["keys"] as? [Any] {
+            for case let combo as String in raw {
+                switch Self.resolve(combo) {
+                case .success(let resolved): combos.append(resolved)
+                case .failure(let error): return .init(output: "Error: \(error.message)")
+                }
+            }
+        }
+
         // Terminal-guard: resolve the *destination* app and refuse TTYs and DSH.
         var targetName = "frontmost app"
         if let app = Self.string(args, "app"), !app.isEmpty {
@@ -592,26 +606,20 @@ public struct KeyboardTool: ToolExecutor {
                 try? await Task.sleep(nanoseconds: 8_000_000)
             }
         }
-        if let combos = JSONArgs.dictionary(args)["keys"] as? [Any] {
-            for case let combo as String in combos {
-                let parsed = Self.parseCombo(combo)
-                guard let code = Self.keyCodes[parsed.key.lowercased()] else {
-                    return .init(output: "Error: unknown key '\(combo)'. Known: enter, tab, esc, space, delete, up/down/left/right, home, end, pgup, pgdn, f1–f12, a–z, 0–9.")
+        for combo in combos {
+            var flags = CGEventFlags(rawValue: 0)
+            if combo.cmd { flags.insert(.maskCommand) }
+            if combo.ctrl { flags.insert(.maskControl) }
+            if combo.alt { flags.insert(.maskAlternate) }
+            if combo.shift { flags.insert(.maskShift) }
+            for down in [true, false] {
+                if let event = CGEvent(keyboardEventSource: source, virtualKey: combo.code, keyDown: down) {
+                    event.flags = flags
+                    event.post(tap: .cghidEventTap)
                 }
-                var flags = CGEventFlags(rawValue: 0)
-                if parsed.cmd { flags.insert(.maskCommand) }
-                if parsed.ctrl { flags.insert(.maskControl) }
-                if parsed.alt { flags.insert(.maskAlternate) }
-                if parsed.shift { flags.insert(.maskShift) }
-                for down in [true, false] {
-                    if let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) {
-                        event.flags = flags
-                        event.post(tap: .cghidEventTap)
-                    }
-                }
-                pressed += 1
-                try? await Task.sleep(nanoseconds: 20_000_000)
             }
+            pressed += 1
+            try? await Task.sleep(nanoseconds: 20_000_000)
         }
         guard typed > 0 || pressed > 0 else { return .init(output: "Error: give text and/or keys.") }
         return .init(output: "Typed \(typed) characters and \(pressed) key combo(s) into \(targetName). Screenshot to verify.")
@@ -619,43 +627,112 @@ public struct KeyboardTool: ToolExecutor {
 
     // MARK: key mapping
 
-    /// Virtual key codes (kVK_*), from Apple's HITools mapping.
-    static let keyCodes: [String: CGKeyCode] = {
-        var map: [String: CGKeyCode] = [
-            "enter": 36, "return": 36, "tab": 48, "esc": 53, "escape": 53,
-            "space": 49, "delete": 51, "backspace": 51,
-            "up": 126, "down": 125, "left": 123, "right": 124,
-            "home": 115, "end": 119, "pgup": 116, "pgdn": 121,
-        ]
-        let fKeys: [CGKeyCode] = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111]
-        for (index, code) in fKeys.enumerated() { map["f\(index + 1)"] = code }
-        let letterRows: [(String, [CGKeyCode])] = [
-            ("qwertyuiop", [24, 26, 28, 25, 51, 29, 31, 32, 33, 30]),
-            ("asdfghjkl", [0, 1, 2, 3, 4, 5, 6, 7, 8]),
-            ("zxcvbnm", [6, 7, 8, 9, 11, 45, 46]),
-            ("1234567890", [18, 19, 20, 21, 23, 22, 26, 28, 25, 29]),
-        ]
-        for (row, codes) in letterRows {
-            for (i, ch) in row.enumerated() { map[String(ch)] = codes[i] }
+    /// Virtual key codes: the `kVK_*` constants from Carbon's
+    /// HIToolbox/Events.h. They name physical key positions on a US ANSI
+    /// keyboard (an app reads ⌘ shortcuts through the active layout). Written
+    /// as literals so DSHCore does not link Carbon; `KeyboardKeyCodeTests`
+    /// checks every entry against the real constants.
+    static let keyCodes: [String: CGKeyCode] = [
+        // Letters: kVK_ANSI_A … kVK_ANSI_Z.
+        "a": 0x00, "s": 0x01, "d": 0x02, "f": 0x03, "h": 0x04, "g": 0x05, "z": 0x06,
+        "x": 0x07, "c": 0x08, "v": 0x09, "b": 0x0B, "q": 0x0C, "w": 0x0D, "e": 0x0E,
+        "r": 0x0F, "y": 0x10, "t": 0x11, "o": 0x1F, "u": 0x20, "i": 0x22, "p": 0x23,
+        "l": 0x25, "j": 0x26, "k": 0x28, "n": 0x2D, "m": 0x2E,
+        // Digits: kVK_ANSI_0 … kVK_ANSI_9.
+        "1": 0x12, "2": 0x13, "3": 0x14, "4": 0x15, "6": 0x16, "5": 0x17,
+        "9": 0x19, "7": 0x1A, "8": 0x1C, "0": 0x1D,
+        // Punctuation keys, by character and by name.
+        "=": 0x18, "equal": 0x18, "equals": 0x18,                // kVK_ANSI_Equal
+        "-": 0x1B, "minus": 0x1B,                                // kVK_ANSI_Minus
+        "]": 0x1E, "rightbracket": 0x1E,                         // kVK_ANSI_RightBracket
+        "[": 0x21, "leftbracket": 0x21,                          // kVK_ANSI_LeftBracket
+        "'": 0x27, "quote": 0x27,                                // kVK_ANSI_Quote
+        ";": 0x29, "semicolon": 0x29,                            // kVK_ANSI_Semicolon
+        "\\": 0x2A, "backslash": 0x2A,                           // kVK_ANSI_Backslash
+        ",": 0x2B, "comma": 0x2B,                                // kVK_ANSI_Comma
+        "/": 0x2C, "slash": 0x2C,                                // kVK_ANSI_Slash
+        ".": 0x2F, "period": 0x2F,                               // kVK_ANSI_Period
+        "`": 0x32, "grave": 0x32, "backtick": 0x32,              // kVK_ANSI_Grave
+        // Named keys.
+        "enter": 0x24, "return": 0x24,                           // kVK_Return
+        "tab": 0x30,                                             // kVK_Tab
+        "space": 0x31,                                           // kVK_Space
+        "delete": 0x33, "backspace": 0x33,                       // kVK_Delete (⌫)
+        "esc": 0x35, "escape": 0x35,                             // kVK_Escape
+        "forwarddelete": 0x75,                                   // kVK_ForwardDelete (⌦)
+        "help": 0x72,                                            // kVK_Help
+        "home": 0x73, "end": 0x77,                               // kVK_Home, kVK_End
+        "pgup": 0x74, "pageup": 0x74,                            // kVK_PageUp
+        "pgdn": 0x79, "pagedown": 0x79,                          // kVK_PageDown
+        "left": 0x7B, "right": 0x7C, "down": 0x7D, "up": 0x7E,   // kVK_*Arrow
+        // Function keys: kVK_F1 … kVK_F20.
+        "f1": 0x7A, "f2": 0x78, "f3": 0x63, "f4": 0x76, "f5": 0x60, "f6": 0x61,
+        "f7": 0x62, "f8": 0x64, "f9": 0x65, "f10": 0x6D, "f11": 0x67, "f12": 0x6F,
+        "f13": 0x69, "f14": 0x6B, "f15": 0x71, "f16": 0x6A, "f17": 0x40, "f18": 0x4F,
+        "f19": 0x50, "f20": 0x5A,
+    ]
+
+    struct Combo: Equatable { var key: String; var cmd = false, ctrl = false, alt = false, shift = false }
+
+    struct ResolvedCombo: Equatable {
+        var code: CGKeyCode
+        var cmd = false, ctrl = false, alt = false, shift = false
+    }
+
+    struct ComboError: Error, Equatable { var message: String }
+
+    /// Modifiers and key joined by "+" ("cmd+shift+s"). A comma separates as
+    /// well ("cmd,s"), because models write both. A literal "+" or "," key
+    /// follows a separator: "cmd+," and "cmd,," are both ⌘-comma. Returns nil
+    /// for an empty combo, a missing key ("cmd+") or an unknown modifier, so a
+    /// typo never presses a bare key.
+    static func parseCombo(_ combo: String) -> Combo? {
+        let separators: Set<Character> = ["+", ","]
+        let text = combo.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let last = text.last else { return nil }
+        let key: String
+        let modifiers: Substring
+        if text.count == 1 {
+            return Combo(key: text)
+        } else if separators.contains(last) {
+            // The separator character is itself the key only right after
+            // another separator ("cmd+,"); "cmd+" alone names no key.
+            var rest = text.dropLast()
+            while rest.last == " " { rest = rest.dropLast() }
+            guard let previous = rest.last, separators.contains(previous) else { return nil }
+            key = String(last)
+            modifiers = rest.dropLast()
+        } else if let split = text.lastIndex(where: { separators.contains($0) }) {
+            key = text[text.index(after: split)...].trimmingCharacters(in: .whitespaces)
+            modifiers = text[..<split]
+        } else {
+            key = text
+            modifiers = ""
         }
-        return map
-    }()
-
-    struct Combo { var key: String; var cmd = false, ctrl = false, alt = false, shift = false }
-
-    static func parseCombo(_ combo: String) -> Combo {
-        let parts = combo.lowercased().split(separator: "+", omittingEmptySubsequences: true).map(String.init)
-        var c = Combo(key: parts.last ?? combo)
-        for part in parts.dropLast() {
-            switch part {
-            case "cmd", "command": c.cmd = true
-            case "ctrl", "control": c.ctrl = true
-            case "alt", "option", "opt": c.alt = true
-            case "shift": c.shift = true
-            default: break
+        guard !key.isEmpty else { return nil }
+        var parsed = Combo(key: key)
+        for raw in modifiers.split(whereSeparator: { separators.contains($0) }) {
+            switch raw.trimmingCharacters(in: .whitespaces) {
+            case "": continue
+            case "cmd", "command", "⌘": parsed.cmd = true
+            case "ctrl", "control", "⌃": parsed.ctrl = true
+            case "alt", "option", "opt", "⌥": parsed.alt = true
+            case "shift", "⇧": parsed.shift = true
+            default: return nil
             }
         }
-        return c
+        return parsed
+    }
+
+    /// A combo string to the key code and modifiers it presses, or why not.
+    static func resolve(_ combo: String) -> Result<ResolvedCombo, ComboError> {
+        guard let parsed = parseCombo(combo) else {
+            return .failure(ComboError(message: "can't read key combo '\(combo)'. Write modifiers and one key joined by +, e.g. 'cmd+s', 'cmd+shift+t', 'cmd+,', 'return'. Modifiers: cmd, ctrl, alt (option), shift."))
+        }
+        guard let code = keyCodes[parsed.key] else {
+            return .failure(ComboError(message: "unknown key '\(parsed.key)' in '\(combo)'. Known: enter, tab, esc, space, delete, forwarddelete, up/down/left/right, home, end, pgup, pgdn, f1–f20, a–z, 0–9 and the punctuation keys - = [ ] \\ ; ' , . / `."))
+        }
+        return .success(ResolvedCombo(code: code, cmd: parsed.cmd, ctrl: parsed.ctrl, alt: parsed.alt, shift: parsed.shift))
     }
 }
 
