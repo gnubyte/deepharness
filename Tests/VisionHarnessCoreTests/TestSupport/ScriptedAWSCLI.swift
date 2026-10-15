@@ -102,7 +102,7 @@ final class ScriptedAWSCLI: AWSCLICommands, @unchecked Sendable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return .object([:]) }
         guard let value = JSONValue(parsing: trimmed) else {
-            throw AWSCLIException(AWSCLIError(kind: .other, message: "The AWS CLI answered with something DSH couldn't read.",
+            throw AWSCLIException(AWSCLIError(kind: .other, message: "The AWS CLI answered with something Vision couldn't read.",
                                               details: String(trimmed.prefix(500))))
         }
         return value
@@ -134,7 +134,7 @@ final class ScriptedAWSCLI: AWSCLICommands, @unchecked Sendable {
 
 /// The error the CLI layer turns a failed `aws` run into, for the error texts the setup tests use. Each
 /// is exactly what the Windows app's `AwsCliErrors.Classify` makes of the CLI's legacy-format line (the
-/// dsh-windows repository's tests script those lines; these are the results, checked against it), so a
+/// vision-windows repository's tests script those lines; these are the results, checked against it), so a
 /// test can say "the CLI printed an access-denied error" without depending on the CLI layer being tested.
 struct ScriptedCLIFailure: Sendable {
     private var make: @Sendable (String?) -> any Error
@@ -152,7 +152,7 @@ struct ScriptedCLIFailure: Sendable {
         "aws: [ERROR]: An error occurred (\(code)) when calling the \(operation) operation: \(message)"
     }
 
-    private static let deniedAdvice = "Ask whoever manages your AWS account to allow it — DSH can show the exact policy to send them."
+    private static let deniedAdvice = "Ask whoever manages your AWS account to allow it — Vision can show the exact policy to send them."
 
     /// AccessDeniedException naming the refused action ("… is not authorized to perform: bedrock:X because …").
     static func accessDenied(operation: String, permission: String) -> ScriptedCLIFailure {

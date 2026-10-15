@@ -155,7 +155,7 @@ struct SwapperBoxRow: View {
             Button("Remove", role: .destructive) { spark.remove(box) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("DSH forgets the box and its sign-in. Routes made for it stay in Settings ▸ AI Models. The box still lists this app's connection: revoke it on the Swapper's Connect tab if you won't use it again.")
+            Text("Vision forgets the box and its sign-in. Routes made for it stay in Settings ▸ AI Models. The box still lists this app's connection: revoke it on the Swapper's Connect tab if you won't use it again.")
         }
         .alert("Switch \(box.name) to \(pending?.title ?? "")?",
                isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
@@ -218,7 +218,7 @@ struct SwapperBoxRow: View {
     }
 }
 
-/// The address-and-login form, for a Swapper older than 2.0 (or no code to hand). On a Swapper 2.0 DSH makes an
+/// The address-and-login form, for a Swapper older than 2.0 (or no code to hand). On a Swapper 2.0 Vision makes an
 /// app token with the login and keeps that instead of the password.
 struct SwapperLoginForm: View {
     @Environment(AppModel.self) private var model
@@ -254,7 +254,7 @@ struct SwapperLoginForm: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Text("The login you created on the Swapper's web page. On Swapper 2.0 DSH keeps an app token instead of your password; on an older Swapper the password is kept in your Keychain.")
+            Text("The login you created on the Swapper's web page. On Swapper 2.0 Vision keeps an app token instead of your password; on an older Swapper the password is kept in your Keychain.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

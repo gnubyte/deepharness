@@ -96,7 +96,7 @@ struct PlanChoicePage: View {
         VStack(alignment: .leading, spacing: 12) {
             GuideIcon(systemName: "creditcard")
             GuideHeading("Which plan?")
-            GuideLead("DSH can use a coding subscription or a pay-as-you-go API from these services. Pick the one you have — or want.")
+            GuideLead("Vision can use a coding subscription or a pay-as-you-go API from these services. Pick the one you have — or want.")
             ForEach(PlanCatalog.plans) { plan in
                 GuideChoice(systemImage: icon(plan), title: plan.name, detail: plan.summary,
                             selected: guide.plan?.id == plan.id) { guide.choose(plan.id) }
@@ -135,7 +135,7 @@ struct PlanKeyPage: View {
                     .buttonStyle(.borderedProminent)
                 GuideNote(.info, plan.keyHint, title: "What the key looks like")
                 GuideNote(.warning, plan.terms, title: "The plan's terms")
-                GuideAside("The key goes to your Keychain, never into DSH's settings file.")
+                GuideAside("The key goes to your Keychain, never into Vision's settings file.")
             }
         }
     }
@@ -172,7 +172,7 @@ struct PlanCheckPage: View {
         VStack(alignment: .leading, spacing: 14) {
             GuideIcon(systemName: "checkmark.shield")
             GuideHeading("Check it")
-            GuideLead("DSH asks \(guide.region?.baseURL ?? "the plan") which models the key can use (or, where that isn't offered, sends it a one-word message).")
+            GuideLead("Vision asks \(guide.region?.baseURL ?? "the plan") which models the key can use (or, where that isn't offered, sends it a one-word message).")
             if guide.checking {
                 GuideBusy("Checking the key…")
             } else if let error = guide.checkError {
@@ -206,7 +206,7 @@ struct PlanModelPage: View {
     }
 }
 
-// MARK: - 6. How DSH uses it
+// MARK: - 6. How Vision uses it
 
 struct PlanUsePage: View {
     @Bindable var guide: PlanGuideModel
@@ -214,7 +214,7 @@ struct PlanUsePage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             GuideIcon(systemName: "person.3")
-            GuideHeading("How should DSH use it?")
+            GuideHeading("How should Vision use it?")
             ForEach(PlanRole.allCases) { role in
                 GuideChoice(systemImage: role.icon, title: role.title, detail: role.detail,
                             selected: guide.role == role) { guide.role = role }
@@ -226,7 +226,7 @@ struct PlanUsePage: View {
             Toggle(isOn: $guide.isPrivate) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(guide.isPrivate ? "Private" : "Not private — this is an online service").font(.callout.weight(.medium))
-                    Text("DSH masks sensitive details before sending (see Settings ▸ AI Models ▸ Sensitive data). Switch this on only if you're sure the service may see everything.")
+                    Text("Vision masks sensitive details before sending (see Settings ▸ AI Models ▸ Sensitive data). Switch this on only if you're sure the service may see everything.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

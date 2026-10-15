@@ -16,7 +16,7 @@ public struct AgentDefinition: Sendable, Hashable {
     public var description: String
     /// Instructions added to the standard subagent prompt.
     public var prompt: String
-    /// The only tools it may use (DSH tool names). Nil = everything the parent has except the agent tools.
+    /// The only tools it may use (Vision tool names). Nil = everything the parent has except the agent tools.
     public var tools: [String]?
     /// Tools it may not use even though `tools` would allow them (a file's `disallowedTools`).
     public var disallowedTools: [String]?
@@ -106,7 +106,7 @@ public struct AgentDefinition: Sendable, Hashable {
         let requested = doc.list("tools")
         var tools = resolveTools(requested)
         let toolsLine = hasTopLevelKey(text, "tools")
-        // A list that names only tools DSH doesn't have (Task, NotebookRead, mcp__github__…), or is left blank,
+        // A list that names only tools Vision doesn't have (Task, NotebookRead, mcp__github__…), or is left blank,
         // must not mean "everything": that would hand a restricted agent the shell and every write. It gets the
         // tools that only read. (Only a file with no `tools` line at all takes them all.)
         // (The frontmatter reader can lose a key whose block it cannot make sense of; the line itself is proof
@@ -120,7 +120,7 @@ public struct AgentDefinition: Sendable, Hashable {
         let stepsText = doc["max_steps"] ?? doc["maxSteps"] ?? doc["max-steps"]
         let steps = stepsText.flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }.flatMap { $0 > 0 ? min($0, 200) : nil }
         var server = (doc["server"] ?? doc["model"])?.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Claude Code's model shortcuts ("sonnet", "inherit") name nothing a DSH server could match.
+        // Claude Code's model shortcuts ("sonnet", "inherit") name nothing a model server Vision talks to could match.
         if let named = server, ["inherit", "sonnet", "opus", "haiku", "fast", ""].contains(named) { server = nil }
         return AgentDefinition(name: name,
                                description: description.isEmpty ? String(body.prefix(140)) : description,
@@ -186,7 +186,7 @@ public struct AgentDefinition: Sendable, Hashable {
         return colon
     }
 
-    /// Claude-style tool names (Read, Bash, WebFetch) → DSH's; unknown names are dropped. Nil when none of them mean
+    /// Claude-style tool names (Read, Bash, WebFetch) → Vision's; unknown names are dropped. Nil when none of them mean
     /// anything here (the caller decides what that means — for an allow list, only the read tools).
     static func resolveTools(_ requested: [String]) -> [String]? {
         guard !requested.isEmpty else { return nil }

@@ -95,7 +95,7 @@ final class ShieldHostTests: XCTestCase {
         }
         let notices = vm.entries.compactMap { $0.message?.role == .notice ? $0.message?.text : nil }
         XCTAssertEqual(notices.filter { $0.hasPrefix("Pictures and files") },
-                       ["Pictures and files that aren't plain text are sent as they are — DSH can't check them for sensitive details."],
+                       ["Pictures and files that aren't plain text are sent as they are — Vision can't check them for sensitive details."],
                        "once per chat, for a PDF as for a picture")
     }
 }

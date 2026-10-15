@@ -103,7 +103,7 @@ struct SwapperCodePage: View {
                 GuideField(label: "Username") {
                     TextField("", text: $guide.username).textFieldStyle(.roundedBorder)
                 }
-                GuideField(label: "Password", hint: "The login you made on the Swapper's web page. On Swapper 2.0 DSH makes its own app token with it and keeps that instead of your password.") {
+                GuideField(label: "Password", hint: "The login you made on the Swapper's web page. On Swapper 2.0 Vision makes its own app token with it and keeps that instead of your password.") {
                     SecureField("", text: $guide.password).textFieldStyle(.roundedBorder)
                 }
                 GuideLink("Use a connection code instead") { guide.usesLogin = false }
@@ -122,10 +122,10 @@ struct SwapperCodePage: View {
                 } else if let code = guide.code {
                     GuideNote(.success, "A code for \(code.name).")
                 }
-                GuideParagraph("Where do I find it? Open your Swapper's web page (https://<box>:8999), choose **Connect**, then **Connect DSH**, and copy the code.", secondary: true)
+                GuideParagraph("Where do I find it? Open your Swapper's web page (https://<box>:8999), choose **Connect**, then **Connect Vision**, and copy the code.", secondary: true)
                 GuideLink("Use an address and login instead") { guide.usesLogin = true }
             }
-            GuideAside("The code holds the box's addresses, its model API key, an app token just for DSH, and the fingerprint of its security certificate. The token and key go to your Keychain.")
+            GuideAside("The code holds the box's addresses, its model API key, an app token just for Vision, and the fingerprint of its security certificate. The token and key go to your Keychain.")
         }
     }
 }
@@ -139,7 +139,7 @@ struct SwapperCheckPage: View {
         VStack(alignment: .leading, spacing: 14) {
             GuideIcon(systemName: "checkmark.shield")
             GuideHeading("Check it")
-            GuideLead("DSH reaches the box over HTTPS, makes sure it shows the certificate the code names, and asks what it is serving.")
+            GuideLead("Vision reaches the box over HTTPS, makes sure it shows the certificate the code names, and asks what it is serving.")
             if guide.checking {
                 GuideBusy("Connecting…")
             } else if let fingerprint = guide.untrustedFingerprint {
@@ -261,7 +261,7 @@ struct SwapperModelPage: View {
     }
 }
 
-// MARK: - 4. How DSH uses it
+// MARK: - 4. How Vision uses it
 
 struct SwapperUsePage: View {
     @Bindable var guide: SwapperGuideModel
@@ -269,7 +269,7 @@ struct SwapperUsePage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             GuideIcon(systemName: "person.3")
-            GuideHeading("How should DSH use it?")
+            GuideHeading("How should Vision use it?")
             ForEach(ModelRole.allCases) { role in
                 GuideChoice(systemImage: role.icon, title: role.title, detail: role.detail,
                             selected: guide.role == role) { guide.role = role }
@@ -306,7 +306,7 @@ struct SwapperDonePage: View {
                     Button("Try Again") { guide.saveAndSayHello() }
                 }
             } else if guide.saving && guide.saved == nil {
-                GuideBusy("Connecting DSH to \(guide.boxName)…")
+                GuideBusy("Connecting Vision to \(guide.boxName)…")
             } else if guide.saving {
                 GuideBusy("Sending a first message…")
             } else if let hello = guide.hello {

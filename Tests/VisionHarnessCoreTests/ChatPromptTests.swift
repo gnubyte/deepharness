@@ -12,14 +12,14 @@ final class ChatPromptTests: XCTestCase {
 
     func testThePlainPromptSaysSoInTheSpecsWords() {
         XCTAssertEqual(ChatPrompt.plain(scratch: scratch),
-                       "You are DSH, a helpful assistant in a native macOS app. This is a regular conversation: no project folder is open and none is needed — never ask the user to open one. Answer directly and naturally; match the length of your answer to the question. Use tools only when they help: look things up with web_fetch, use one of the user's skills when it fits the request, and remember lasting preferences with memory. When something needs files or commands — a skill that runs a script, a document to draft, data to convert — work in this chat's own scratch folder, /Users/pat/Library/Application Support/Vision/Chats/ABC-123; it belongs to this chat and starts empty. Tell the user where a file you made is when it matters.")
+                       "You are Vision, a helpful assistant in a native macOS app. This is a regular conversation: no project folder is open and none is needed — never ask the user to open one. Answer directly and naturally; match the length of your answer to the question. Use tools only when they help: look things up with web_fetch, use one of the user's skills when it fits the request, and remember lasting preferences with memory. When something needs files or commands — a skill that runs a script, a document to draft, data to convert — work in this chat's own scratch folder, /Users/pat/Library/Application Support/Vision/Chats/ABC-123; it belongs to this chat and starts empty. Tell the user where a file you made is when it matters.")
     }
 
     func testTheBasePromptIsChosenByWhetherThereIsAProject() {
         let coding = "You are a capable coding agent…"
         XCTAssertEqual(ChatPrompt.base(project: URL(fileURLWithPath: "/code/app"), scratch: scratch, codingPrompt: coding), coding)
         let plain = ChatPrompt.base(project: nil, scratch: scratch, codingPrompt: coding)
-        XCTAssertTrue(plain.hasPrefix("You are DSH, a helpful assistant in a native macOS app."))
+        XCTAssertTrue(plain.hasPrefix("You are Vision, a helpful assistant in a native macOS app."))
         XCTAssertTrue(plain.hasSuffix(ChatPrompt.macMemory))
         XCTAssertFalse(plain.contains("project folder is open and needed"))
         XCTAssertFalse(plain.contains(coding))

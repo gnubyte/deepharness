@@ -562,8 +562,8 @@ final class AWSCLIInstallerTests: XCTestCase {
         let result = try await h.installer().install()
         XCTAssertEqual(result.outcome, .installed)
         XCTAssertTrue(result.message.hasPrefix("AWS CLI 2.37.5 is installed."))
-        XCTAssertTrue(result.message.contains("DSH couldn't link"), result.message)
-        XCTAssertTrue(result.message.contains("DSH uses \(h.home["aws-cli/aws"]) directly"), result.message)
+        XCTAssertTrue(result.message.contains("Vision couldn't link"), result.message)
+        XCTAssertTrue(result.message.contains("Vision uses \(h.home["aws-cli/aws"]) directly"), result.message)
     }
 
     // MARK: Exit codes, platforms, signatures

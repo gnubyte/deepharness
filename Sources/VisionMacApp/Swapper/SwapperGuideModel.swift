@@ -13,7 +13,7 @@ enum SwapperPage: Int, CaseIterable, Comparable {
         case .code: "Paste the code"
         case .check: "Check it"
         case .model: "Pick the model"
-        case .use: "How DSH uses it"
+        case .use: "How Vision uses it"
         case .done: "Say hello"
         }
     }
@@ -83,7 +83,7 @@ protocol SwapperGuideBackend: AnyObject {
 
 /// The "Connect my Spark Swapper" guide: from a connection code (or an address and login) to chatting with the
 /// model the box serves. It checks the box with the code's certificate pinned, lets you pick (and switch to) a
-/// model, asks how DSH should use it, then saves the route — address, key, certificate — and says hello.
+/// model, asks how Vision should use it, then saves the route — address, key, certificate — and says hello.
 ///
 /// The model is the state machine; `SwapperGuideBackend` is everything it does outside, so the flow is testable.
 @MainActor
@@ -161,7 +161,7 @@ final class SwapperGuideModel {
     /// Models installed during this guide: each is offered "Switch to it".
     private(set) var installed: Set<String> = []
 
-    // MARK: Page 4 — how DSH uses it
+    // MARK: Page 4 — how Vision uses it
 
     var role: ModelRole {
         didSet { roleChosen = true }

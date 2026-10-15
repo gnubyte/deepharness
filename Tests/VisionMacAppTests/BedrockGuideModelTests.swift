@@ -462,11 +462,11 @@ final class BedrockGuideModelTests: XCTestCase {
     func testAFailedCheckShowsTheErrorAndCanBeRetried() async throws {
         let backend = FakeBedrockBackend()
         let guide = try await onModelPage(backend)
-        backend.accessError = AWSCLIException(AWSCLIError(kind: .network, message: "DSH couldn't reach AWS."))
+        backend.accessError = AWSCLIException(AWSCLIError(kind: .network, message: "Vision couldn't reach AWS."))
         guide.choose(mistral)
         try await until("failed") { !guide.checking && guide.access != nil }
         XCTAssertEqual(guide.access?.state, .error)
-        XCTAssertEqual(guide.access?.message, "DSH couldn't reach AWS.")
+        XCTAssertEqual(guide.access?.message, "Vision couldn't reach AWS.")
         backend.accessError = nil
         guide.recheckSelected()
         try await until("recovered") { guide.access?.state == .ready }

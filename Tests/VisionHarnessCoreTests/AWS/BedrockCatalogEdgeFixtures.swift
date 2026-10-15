@@ -1,9 +1,10 @@
 import Foundation
 
 // GENERATED FROM THE WINDOWS APP: edge-case catalogs (odd or missing fields, profile selection, ties) and what
-// `BedrockCatalog.Build` answered for each in eight Regions (dshwindows, .NET 8, captured by a probe program).
+// `BedrockCatalog.Build` answered for each in eight Regions (vision-windows, .NET 8, captured by a probe program).
 // An expected block is one line per model in the order the catalog returned them; "*" means every Region gave the same.
-// The probe compiled the unmodified src/Dsh.Core/Aws/BedrockSetup.cs (dshwindows at bf08ade) and printed its answers;
+// The probe compiled the unmodified BedrockSetup.cs of vision-windows commit bf08ade (the file is now
+// src/Vision.Core/Aws/BedrockSetup.cs) and printed its answers;
 // nothing below was written by hand, so don't edit it by hand either (regenerate it from a fresh probe run).
 
 enum BedrockCatalogEdgeFixtures {

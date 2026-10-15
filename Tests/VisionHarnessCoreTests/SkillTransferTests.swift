@@ -189,7 +189,7 @@ final class SkillTransferTests: XCTestCase {
         try fx.write(".claude/commands/ship.md", "---\ndescription: Ship\n---\nShip it")
         let skills = SkillCatalog.load(project: fx.project, locations: fx.locations)
 
-        // Claude: lands where Claude Code looks, and DSH reads it back.
+        // Claude: lands where Claude Code looks, and Vision reads it back.
         let claudeRoot = fx.base.appendingPathComponent("out-claude")
         try SkillExporter.write(skills, format: .claude, into: claudeRoot)
         let back = SkillCatalog.load(project: claudeRoot, locations: SkillLocations(home: fx.base.appendingPathComponent("nohome"), appSupport: fx.base.appendingPathComponent("nosupport")))

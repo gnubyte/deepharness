@@ -565,7 +565,7 @@ private struct MaskedChip: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Masked before sending").font(.callout.weight(.semibold))
                 Text(categories).font(.callout)
-                Text("The model saw placeholders such as ⟦EMAIL_1⟧ instead; DSH put the real values back in what you see here. Change what is masked in Settings ▸ AI Models ▸ Sensitive data.")
+                Text("The model saw placeholders such as ⟦EMAIL_1⟧ instead; Vision put the real values back in what you see here. Change what is masked in Settings ▸ AI Models ▸ Sensitive data.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

@@ -241,7 +241,7 @@ public struct AWSCLIInstaller: Sendable {
     /// than this app, or a processor neither of those, is a problem.
     public static func platformProblemFor(isMacOS: Bool, osVersion: OperatingSystemVersion, architecture: String) -> String? {
         if !isMacOS {
-            return "DSH installs the AWS CLI on macOS only. Install it with your system's package manager, or from https://aws.amazon.com/cli/."
+            return "Vision installs the AWS CLI on macOS only. Install it with your system's package manager, or from https://aws.amazon.com/cli/."
         }
         if osVersion.majorVersion < 10 || (osVersion.majorVersion == 10 && osVersion.minorVersion < 15) {
             return "The AWS CLI installer needs macOS 10.15 or newer."
@@ -321,7 +321,7 @@ public struct AWSCLIInstaller: Sendable {
             // A private folder: what was checked must be what gets installed.
             try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         } catch {
-            return AWSCLIInstallResult(outcome: .failed, message: "DSH couldn't make a folder for the AWS CLI installer (\(error.localizedDescription)).")
+            return AWSCLIInstallResult(outcome: .failed, message: "Vision couldn't make a folder for the AWS CLI installer (\(error.localizedDescription)).")
         }
         let name = packageURL.lastPathComponent.isEmpty ? "AWSCLIV2.pkg" : packageURL.lastPathComponent
         let package = folder + "/" + name
@@ -334,7 +334,7 @@ public struct AWSCLIInstaller: Sendable {
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
             return AWSCLIInstallResult(outcome: .downloadFailed,
-                                       message: "DSH couldn't download the AWS CLI installer (\(error.localizedDescription)). Check your internet connection and try again.")
+                                       message: "Vision couldn't download the AWS CLI installer (\(error.localizedDescription)). Check your internet connection and try again.")
         }
         if !Self.hasPackageHeader(package) {
             return AWSCLIInstallResult(outcome: .downloadFailed,
@@ -348,12 +348,12 @@ public struct AWSCLIInstaller: Sendable {
         } catch {
             if error is CancellationError { throw error }
             return AWSCLIInstallResult(outcome: .signatureRejected,
-                                       message: "DSH couldn't check the installer's digital signature (\(error.localizedDescription)), so it didn't install it.")
+                                       message: "Vision couldn't check the installer's digital signature (\(error.localizedDescription)), so it didn't install it.")
         }
         let verdict = Self.isAmazonSignature(signature)
         if !verdict.accepted {
             return AWSCLIInstallResult(outcome: .signatureRejected,
-                                       message: "The downloaded installer isn't validly signed by Amazon (\(verdict.reason)), so DSH didn't run it.")
+                                       message: "The downloaded installer isn't validly signed by Amazon (\(verdict.reason)), so Vision didn't run it.")
         }
 
         try Task.checkCancellation()
@@ -362,7 +362,7 @@ public struct AWSCLIInstaller: Sendable {
         if scope == .currentUser {
             let path = folder + "/choices.xml"
             guard Self.writePrivateFile(Self.choicesXML(home: homeDirectory), to: path) else {
-                return AWSCLIInstallResult(outcome: .failed, message: "DSH couldn't write the installer's settings file in \(folder).")
+                return AWSCLIInstallResult(outcome: .failed, message: "Vision couldn't write the installer's settings file in \(folder).")
             }
             choices = path
         }
@@ -401,7 +401,7 @@ public struct AWSCLIInstaller: Sendable {
         }
         keepLog = Self.writeLog(output, to: log)
         return AWSCLIInstallResult(outcome: .failed,
-                                   message: "The installer finished, but DSH still can't use the AWS CLI: \(status.summary)",
+                                   message: "The installer finished, but Vision still can't use the AWS CLI: \(status.summary)",
                                    exitCode: output.exitCode, cli: status, logPath: keepLog ? log : nil)
     }
 
@@ -468,7 +468,7 @@ public struct AWSCLIInstaller: Sendable {
         let output = result.stderr + "\n" + result.stdout
         let lowered = output.lowercased()
         if result.timedOut {
-            return AWSCLIInstallResult(outcome: .failed, message: "The AWS CLI installer took too long, so DSH stopped it.", exitCode: code)
+            return AWSCLIInstallResult(outcome: .failed, message: "The AWS CLI installer took too long, so Vision stopped it.", exitCode: code)
         }
         if elevated && (lowered.contains("user canceled") || lowered.contains("user cancelled") || lowered.contains("(-128)")) {
             return AWSCLIInstallResult(outcome: .cancelled,
@@ -757,12 +757,12 @@ public struct AWSCLIInstaller: Sendable {
                 if existing == target { return nil }
                 try manager.removeItem(atPath: link)
             } else if manager.fileExists(atPath: link) {
-                return "DSH left \(link) alone because it isn't a link; DSH uses \(target) directly."
+                return "Vision left \(link) alone because it isn't a link; Vision uses \(target) directly."
             }
             try manager.createSymbolicLink(atPath: link, withDestinationPath: target)
             return nil
         } catch {
-            return "DSH couldn't link \(link) to \(target) (\(error.localizedDescription)); DSH uses \(target) directly."
+            return "Vision couldn't link \(link) to \(target) (\(error.localizedDescription)); Vision uses \(target) directly."
         }
     }
 

@@ -14,10 +14,10 @@ final class SwapperBox: Identifiable {
     /// A certificate the user hasn't approved yet (shown in Settings ▸ Model Servers).
     var untrustedFingerprint: String?
     fileprivate(set) var refreshing = false
-    /// The install running on the box (or the last one DSH watched).
+    /// The install running on the box (or the last one Vision watched).
     fileprivate(set) var installJob: SwapperStatus.Job?
     fileprivate(set) var installError: String?
-    /// Models installed while DSH watched: each is offered "Switch to It".
+    /// Models installed while Vision watched: each is offered "Switch to It".
     fileprivate(set) var justInstalled: Set<String> = []
 
     @ObservationIgnored fileprivate var client: SparkSwapperClient?
@@ -98,7 +98,7 @@ final class SparkController {
     }
 
     @ObservationIgnored private var pollTask: Task<Void, Never>?
-    /// How often an install is checked on, and how long a box may go without answering before DSH stops
+    /// How often an install is checked on, and how long a box may go without answering before Vision stops
     /// following it (tests shorten both).
     @ObservationIgnored var installPollInterval: TimeInterval = 2
     @ObservationIgnored var installSilenceLimit: TimeInterval = 300
@@ -349,7 +349,7 @@ final class SparkController {
                     silentSince = since
                     if Date().timeIntervalSince(since) >= self.installSilenceLimit {
                         let minutes = max(1, Int((self.installSilenceLimit / 60).rounded()))
-                        box.installError = "\(box.name) hasn't answered about the install for \(minutes) minute\(minutes == 1 ? "" : "s"), so DSH stopped following it. It may still be installing — check its web page."
+                        box.installError = "\(box.name) hasn't answered about the install for \(minutes) minute\(minutes == 1 ? "" : "s"), so Vision stopped following it. It may still be installing — check its web page."
                         box.installJob = nil
                         return
                     }

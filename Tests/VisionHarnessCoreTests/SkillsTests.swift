@@ -300,7 +300,7 @@ final class SkillPromptTests: XCTestCase {
         let ctx = ToolContext(workspace: fx.project, policy: PermissionPolicy(preset: .fullAccess, workspaceRoot: fx.project),
                               client: ScriptedClient(turns: []), registry: ToolRegistry(tools: []))
         let ok = await tool.execute(args: #"{"name":"beta","arguments":"the widget"}"#, in: ctx)
-        XCTAssertTrue(ok.output.contains("# Skill: beta (DSH skill, project)"))
+        XCTAssertTrue(ok.output.contains("# Skill: beta (Vision skill, project)"))
         XCTAssertTrue(ok.output.contains("BETA the widget"))
         XCTAssertTrue(ok.output.contains("- scripts/run.sh"))
         XCTAssertTrue(ok.output.contains("Base directory:"))
@@ -407,7 +407,7 @@ final class SkillDraftTests: XCTestCase {
     }
 
     func testManagerCreateAdoptAndReadOnlyForForeignFiles() throws {
-        // Adopt a Cursor rule: it becomes a DSH skill and keeps its globs / alwaysApply.
+        // Adopt a Cursor rule: it becomes a Vision skill and keeps its globs / alwaysApply.
         try fx.write(".cursor/rules/style.mdc", "---\ndescription: Style guide\nglobs: [\"src/**\"]\nalwaysApply: true\n---\nUse tabs.")
         try fx.write(".claude/commands/ship.md", "---\ndescription: Ship\nargument-hint: <env>\n---\nShip $ARGUMENTS")
         let all = SkillCatalog.load(project: fx.project, locations: fx.locations)
@@ -423,7 +423,7 @@ final class SkillDraftTests: XCTestCase {
         XCTAssertEqual(cmdDoc.bool("disable-model-invocation"), true, "a command stays user-only")
         XCTAssertEqual(cmdDoc["argument-hint"], "<env>")
 
-        // The adopted DSH copy now shadows the Cursor original and is editable.
+        // The adopted Vision copy now shadows the Cursor original and is editable.
         let after = SkillCatalog.loadAll(project: fx.project, locations: fx.locations).filter { $0.name == "style" }
         XCTAssertEqual(after.first { !$0.shadowed }?.origin, .vision)
         XCTAssertNoThrow(try SkillManager.write(after.first { !$0.shadowed }!, text: "---\nname: style\ndescription: Style guide v2\n---\nx"))

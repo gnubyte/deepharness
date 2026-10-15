@@ -69,7 +69,7 @@ final class PlainChatTests: XCTestCase {
         let vm = transport.newSession(cwd: nil)
         try await ask("hi", in: vm)
         let folder = ChatPrompt.scratchFolder(chatID: vm.id, appSupport: support)
-        XCTAssertTrue(lastSystemPrompt.hasPrefix("You are DSH, a helpful assistant in a native macOS app. This is a regular conversation"))
+        XCTAssertTrue(lastSystemPrompt.hasPrefix("You are Vision, a helpful assistant in a native macOS app. This is a regular conversation"))
         XCTAssertTrue(lastSystemPrompt.contains("work in this chat's own scratch folder, \(folder.path);"))
         XCTAssertFalse(lastSystemPrompt.contains("working in the user's project folder"))
         XCTAssertTrue(lastSystemPrompt.contains("--- ~/AGENTS.md (the user's own instructions — follow these) ---\nCall me Pat."),

@@ -266,7 +266,7 @@ public enum SkillImporter {
                     let count = ((try? fm.contentsOfDirectory(atPath: entry.path)) ?? []).filter { $0.hasSuffix(".md") }.count
                     if count > 0 {
                         let noun = count == 1 ? "definition" : "definitions"
-                        notes.append("\(count) Claude subagent \(noun) in \(name)/ stay where they are. DSH reads Claude agent files in place (the project's .claude/agents and ~/.claude/agents) and does not copy them into the skill store.")
+                        notes.append("\(count) Claude subagent \(noun) in \(name)/ stay where they are. Vision reads Claude agent files in place (the project's .claude/agents and ~/.claude/agents) and does not copy them into the skill store.")
                     }
                     continue
                 }
@@ -344,7 +344,7 @@ public enum SkillImporter {
     // MARK: Importing
 
     /// Import the chosen candidates. As drafts, they wait in the approval queue;
-    /// otherwise they go straight to the DSH store (the user's selection in the
+    /// otherwise they go straight to the Vision store (the user's selection in the
     /// import sheet is the approval).
     public static func perform(_ plan: ImportPlan, selecting ids: Set<String>, scope: SkillScope, projectRoot: URL?,
                                asDraft: Bool, conflict: ConflictPolicy = .rename,
@@ -464,7 +464,7 @@ public enum SkillExporter {
         try write(skills, format: format, into: staging, conflict: .rename)
         if format != .portable {
             let readme = """
-            Skills exported from DSH (\(format.label)).
+            Skills exported from Vision (\(format.label)).
 
             Unzip this into a project folder (or your home folder for user-wide skills); the tool picks them up from there.
             Each skill is plain Markdown — read SKILL.md before trusting a skill you didn't write: skills can tell an agent to run commands.

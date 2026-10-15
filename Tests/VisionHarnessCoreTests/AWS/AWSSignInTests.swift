@@ -84,7 +84,7 @@ final class AWSSignInTests: XCTestCase {
             .fail(["configure", "set"], stderr: "aws: [ERROR]: [Errno 13] Permission denied: '/Users/me/.aws/config'", exitCode: 255)
         let result = try await makeSignIn(runner, profiles(nil)).login(profile: "vision-bedrock", region: "us-east-1")
         XCTAssertTrue(result.succeeded)
-        XCTAssertEqual(result.message, "Signed in, but DSH couldn't save the Region in the profile: [Errno 13] Permission denied: '/Users/me/.aws/config'")
+        XCTAssertEqual(result.message, "Signed in, but Vision couldn't save the Region in the profile: [Errno 13] Permission denied: '/Users/me/.aws/config'")
     }
 
     func testAnswersTheOverwriteQuestion() async throws {
@@ -262,7 +262,7 @@ final class AWSSignInTests: XCTestCase {
         let runner = FakeAWSCLIRunner().on(["login"]) { _ in throw AWSCLIStartError(executable: "/x/aws", reason: "the file doesn't exist.") }
         let result = try await makeSignIn(runner, profiles(nil)).login(profile: "p", region: "us-east-1")
         XCTAssertEqual(result.outcome, .failed)
-        XCTAssertTrue(result.message.hasPrefix("DSH couldn't start the AWS CLI:"), result.message)
+        XCTAssertTrue(result.message.hasPrefix("Vision couldn't start the AWS CLI:"), result.message)
     }
 
     func testFindsTheSignInURL() {

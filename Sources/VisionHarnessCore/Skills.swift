@@ -24,7 +24,7 @@ public enum SkillOrigin: String, Codable, CaseIterable, Sendable {
 
     public var label: String {
         switch self {
-        case .vision: "DSH"
+        case .vision: "Vision"
         case .agents: "Agents"
         case .qwen: "Qwen"
         case .claude: "Claude"
@@ -59,7 +59,7 @@ public enum SkillKind: String, Codable, Sendable {
     }
 }
 
-/// Which foreign layouts to read in place. DSH's own and the built-ins are always read.
+/// Which foreign layouts to read in place. Vision's own and the built-ins are always read.
 public struct SkillSources: OptionSet, Sendable, Hashable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }

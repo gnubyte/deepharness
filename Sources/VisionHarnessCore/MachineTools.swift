@@ -8,7 +8,7 @@ import CoreGraphics
 // here. Screenshots and window enumeration go through CoreGraphics
 // (`CGWindowListCopyWindowInfo`, `screencapture -l<id>`), clicking and typing
 // through synthesized `CGEvent`s, so there is no dependency on cliclick or a
-// JavaScript bridge. Accessibility permission (granted to DSH once, in System
+// JavaScript bridge. Accessibility permission (granted to Vision once, in System
 // Settings) gates event posting; Screen Recording gates capture — both show
 // the standard macOS prompts, and failures here say which one to fix.
 //
@@ -183,7 +183,7 @@ public struct ScreenshotTool: ToolExecutor {
             try? FileManager.default.removeItem(at: file)
             let why = String(decoding: result.err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             let reason = result.status == 0 ? "capture produced no image" : "screencapture exit \(result.status): \(why.prefix(200))"
-            return .init(output: "Error: \(reason).\nIf nothing was captured: System Settings → Privacy & Security → Screen Recording — enable DSH, then relaunch it.")
+            return .init(output: "Error: \(reason).\nIf nothing was captured: System Settings → Privacy & Security → Screen Recording — enable Vision, then relaunch it.")
         }
         let note = Self.string(args, "description")
         return .init(output: "Captured \(what) (\(data.count / 1024) KB)\(note.map { " — looking for: \($0)" } ?? ""). It is shown below; describe what you see before deciding the next step.",
@@ -262,7 +262,7 @@ public struct ScreenWatchTool: ToolExecutor {
             let data = result.status == 0 ? ImagePipeline.prepare(pngAt: file, longEdge: 1280) : nil
             guard let data else {
                 try? FileManager.default.removeItem(at: file)
-                return .init(output: "Error: capture failed at frame \(index) for \"\(hit.owner)\" (closed? grant Screen Recording to DSH).")
+                return .init(output: "Error: capture failed at frame \(index) for \"\(hit.owner)\" (closed? grant Screen Recording to Vision).")
             }
             if let previous, data == previous {
                 identical += 1
@@ -402,7 +402,7 @@ public struct UITreeTool: ToolExecutor {
             case "ERROR_NO_WINDOWS":
                 return .init(output: "Error: '\(app)' is running but has no windows to inspect.")
             default:
-                return .init(output: "Error: could not read the accessibility tree of '\(app)': \(errText.prefix(200)). Grant Accessibility permission: System Settings → Privacy & Security → Accessibility → DSH.")
+                return .init(output: "Error: could not read the accessibility tree of '\(app)': \(errText.prefix(200)). Grant Accessibility permission: System Settings → Privacy & Security → Accessibility → Vision.")
             }
         }
         guard !out.isEmpty else {
@@ -463,7 +463,7 @@ public struct MouseTool: ToolExecutor {
         description: """
             Click at screen coordinates (points, top-left origin): button=left/right/ \
             middle, clicks=1 or 2 (double), or drag with to_x/to_y (press at x,y, move, \
-            release). Needs Accessibility permission for DSH. Coordinates come from \
+            release). Needs Accessibility permission for Vision. Coordinates come from \
             screenshot/list_windows geometry. Screenshot after clicking to verify.
             """,
         parameters: """
@@ -528,7 +528,7 @@ public struct KeyboardTool: ToolExecutor {
             too). Keys are a–z, 0–9, punctuation, enter/tab/esc/space/delete, arrows, \
             home/end/pgup/pgdn, f1–f20. `app` activates that app first (the reliable \
             pattern: keyboard(app:"Godot", keys:["f5"])). Refused into terminal \
-            emulators and DSH itself — that route would bypass the shell permission gate.
+            emulators and Vision itself — that route would bypass the shell permission gate.
             """,
         parameters: """
         {"type":"object","properties":{"text":{"type":"string","description":"Literal text to type"},"keys":{"type":"array","items":{"type":"string"},"description":"Key combos, e.g. ['cmd+s','return']"},"app":{"type":"string","description":"Activate this app first (name)"}},"required":[]}
@@ -574,7 +574,7 @@ public struct KeyboardTool: ToolExecutor {
             }
         }
 
-        // Terminal-guard: resolve the *destination* app and refuse TTYs and DSH.
+        // Terminal-guard: resolve the *destination* app and refuse TTYs and Vision.
         var targetName = "frontmost app"
         if let app = Self.string(args, "app"), !app.isEmpty {
             targetName = app

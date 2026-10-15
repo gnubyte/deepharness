@@ -31,7 +31,7 @@ final class BedrockConverseTests: XCTestCase {
 
     private func makeBody(_ messages: [LLMMessage], model: String = BedrockConverseTests.llama, tools: [ToolSpec] = [],
                       thinking: ThinkingLevel? = nil, maxTokens: Int? = nil, temperature: Double? = nil,
-                      replay: Bool = true, profile: ProviderProfile? = nil, system: String = "You are DSH.") -> JSONValue {
+                      replay: Bool = true, profile: ProviderProfile? = nil, system: String = "You are Vision.") -> JSONValue {
         BedrockConverse.request(
             LLMRequest(systemPrompt: system, messages: messages, tools: tools, model: model,
                        temperature: temperature, maxTokens: maxTokens, thinking: thinking),
@@ -79,7 +79,7 @@ final class BedrockConverseTests: XCTestCase {
             .system("note in the middle"),
             .user("again"),
         ])
-        XCTAssertEqual(body["system"], json(#"[{"text":"You are DSH."},{"text":"[Earlier conversation, compacted] summary"},{"text":"note in the middle"}]"#))
+        XCTAssertEqual(body["system"], json(#"[{"text":"You are Vision."},{"text":"[Earlier conversation, compacted] summary"},{"text":"note in the middle"}]"#))
         XCTAssertEqual(turns(body).count, 3)
         XCTAssertEqual(turns(body).map { $0["role"]?.string }, ["user", "assistant", "user"])
     }

@@ -97,22 +97,22 @@ struct WelcomePage: View {
         VStack(alignment: .leading, spacing: 16) {
             GuideIcon(systemName: "cloud.bolt")
             GuideHeading("Use models from Amazon Bedrock")
-            GuideLead("Amazon Bedrock runs models like Claude, Amazon Nova, Llama and Mistral in your own AWS account. You pay AWS for what you use — there's no subscription to DSH or anyone else.")
+            GuideLead("Amazon Bedrock runs models like Claude, Amazon Nova, Llama and Mistral in your own AWS account. You pay AWS for what you use — there's no subscription to Vision or anyone else.")
             GuideSubheading("What you need")
             GuideBullets(items: [
                 ("cloud", "An **AWS account** you can sign in to on the AWS website. No account yet? Create one at aws.amazon.com — it needs a payment card."),
                 ("stopwatch", "About **5 minutes**. A model sold through AWS Marketplace can take up to 15 more the first time."),
-                ("laptopcomputer", "This Mac. DSH installs the one tool it needs, the **AWS CLI**, if it isn't here yet."),
+                ("laptopcomputer", "This Mac. Vision installs the one tool it needs, the **AWS CLI**, if it isn't here yet."),
             ])
-            GuideSubheading("What DSH does for you")
+            GuideSubheading("What Vision does for you")
             GuideSteps(items: [
                 "Installs Amazon's **AWS CLI** — or updates it — if needed.",
-                "Opens your **browser to sign in** to AWS. DSH never sees your password.",
+                "Opens your **browser to sign in** to AWS. Vision never sees your password.",
                 "Shows the **models** in your Region and what each one needs before first use.",
                 "Fills in or accepts what's needed — **with you**: Anthropic's one-time form for Claude, or a model's **terms and price**.",
                 "Saves the connection and says **hello** through Bedrock.",
             ])
-            GuideAside("DSH talks to Bedrock directly from this Mac with short-lived credentials from your sign-in, which the AWS CLI refreshes by itself. Nothing is stored in DSH's settings but the name of the sign-in (an AWS CLI \"profile\") and the Region.")
+            GuideAside("Vision talks to Bedrock directly from this Mac with short-lived credentials from your sign-in, which the AWS CLI refreshes by itself. Nothing is stored in Vision's settings but the name of the sign-in (an AWS CLI \"profile\") and the Region.")
             GuideStuck("Your company manages AWS for you? You can still use this guide: sign in the way your company told you to (often \"IAM Identity Center\" — the guide handles that too). If a step says you're not allowed, it shows exactly what to ask your administrator for.")
         }
     }
@@ -127,10 +127,10 @@ struct CLIPage: View {
         VStack(alignment: .leading, spacing: 14) {
             GuideIcon(systemName: "terminal")
             GuideHeading("One tool first: the AWS CLI")
-            GuideLead("The AWS CLI is Amazon's official command-line tool. DSH uses it for two things only: signing you in, and setting up your account for Bedrock.")
+            GuideLead("The AWS CLI is Amazon's official command-line tool. Vision uses it for two things only: signing you in, and setting up your account for Bedrock.")
             content
-            GuideAside("\"CLI\" means command-line interface: a program you'd normally type commands into. You won't have to — DSH runs it for you in the background. It stays installed, and running this guide again updates it.")
-            GuideStuck("Your Mac won't allow installers? Ask your IT team to install \"AWS CLI version 2\", then press Check again. Already installed it somewhere unusual? DSH looks in the usual places and on your PATH.")
+            GuideAside("\"CLI\" means command-line interface: a program you'd normally type commands into. You won't have to — Vision runs it for you in the background. It stays installed, and running this guide again updates it.")
+            GuideStuck("Your Mac won't allow installers? Ask your IT team to install \"AWS CLI version 2\", then press Check again. Already installed it somewhere unusual? Vision looks in the usual places and on your PATH.")
             if !guide.installing && !guide.checkingCLI && guide.cliStatus?.isReady != true {
                 GuideLink("Check again") { guide.recheckCLI() }
             }
@@ -154,7 +154,7 @@ struct CLIPage: View {
                 GuideNote(.warning, guide.cliStatus?.summary ?? "")
                 installButtons("Reinstall the AWS CLI")
             default:
-                GuideNote(.info, "The AWS CLI isn't installed on this Mac yet. DSH can install it now: it downloads Amazon's official installer, checks it's signed by Amazon, and installs it just for you — no administrator needed.")
+                GuideNote(.info, "The AWS CLI isn't installed on this Mac yet. Vision can install it now: it downloads Amazon's official installer, checks it's signed by Amazon, and installs it just for you — no administrator needed.")
                 installButtons("Install the AWS CLI")
             }
             if let failed = guide.installOutcome, !failed.succeeded {
@@ -209,7 +209,7 @@ struct SignInPage: View {
         VStack(alignment: .leading, spacing: 14) {
             GuideIcon(systemName: "person.badge.key")
             GuideHeading("Sign in to AWS")
-            GuideLead("DSH asks the AWS CLI to open your browser at AWS's own sign-in page — the same one as the AWS website. Sign in there and come back; DSH never sees your password.")
+            GuideLead("Vision asks the AWS CLI to open your browser at AWS's own sign-in page — the same one as the AWS website. Sign in there and come back; Vision never sees your password.")
 
             GuideField(label: "AWS Region",
                        hint: "Where your requests run. Models differ by Region — US East (N. Virginia) and US West (Oregon) have the most. Pick one near you if you're unsure.") {
@@ -218,7 +218,7 @@ struct SignInPage: View {
 
             GuideSubheading("How do you sign in to AWS?")
             GuideChoice(systemImage: "globe", title: "With my AWS account in the browser (recommended)",
-                        detail: "Your AWS email or IAM user and password, exactly as on the AWS website. DSH keeps this sign-in under the name \"\(AWSSignIn.defaultProfile)\".",
+                        detail: "Your AWS email or IAM user and password, exactly as on the AWS website. Vision keeps this sign-in under the name \"\(AWSSignIn.defaultProfile)\".",
                         selected: !guide.useExisting) { guide.setUseExisting(false) }
             GuideChoice(systemImage: "person.2", title: "My company's sign-in, or an AWS CLI profile I already have",
                         detail: profiles.isEmpty
@@ -256,7 +256,7 @@ struct SignInPage: View {
                         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 6))
                 }
             }
-            GuideAside("The AWS CLI signs you in with \"aws login\": after you sign in in the browser, it keeps a session on this Mac and swaps it for fresh, short-lived keys whenever DSH needs them. When the session ends (like signing out of the AWS website), DSH asks you to sign in again — one click.")
+            GuideAside("The AWS CLI signs you in with \"aws login\": after you sign in in the browser, it keeps a session on this Mac and swaps it for fresh, short-lived keys whenever Vision needs them. When the session ends (like signing out of the AWS website), Vision asks you to sign in again — one click.")
             GuideStuck("The browser didn't open? Use the link above. It says you're not allowed? Your AWS administrator needs to give your user the \"\(BedrockPermissions.signInManagedPolicy)\" permission (an AWS managed policy). Using the account's root email works, but AWS recommends an everyday IAM user or IAM Identity Center.")
         }
     }

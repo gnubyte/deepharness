@@ -165,7 +165,7 @@ public final class AWSCLICredentialSource: AWSCredentialSource, @unchecked Senda
         var expiration: Date?
         if let text = object?["Expiration"]?.string, !text.isEmpty {
             guard let parsed = parseTimestamp(text) else {
-                throw AWSCLIException(AWSCLIError(kind: .other, message: "The AWS CLI returned an expiry time DSH couldn't read (\(text)).", details: text))
+                throw AWSCLIException(AWSCLIError(kind: .other, message: "The AWS CLI returned an expiry time Vision couldn't read (\(text)).", details: text))
             }
             expiration = parsed
         }

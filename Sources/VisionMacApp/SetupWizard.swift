@@ -117,7 +117,7 @@ struct SetupWizard: View {
             Image(systemName: "sparkles")
                 .font(.system(size: 40))
                 .foregroundStyle(.tint)
-            Text("Set up DSH")
+            Text("Set up Vision")
                 .font(.largeTitle.weight(.semibold))
             Text("""
             This app is the agent harness — it runs the tool loop itself and talks straight to a \

@@ -152,7 +152,7 @@ final class BedrockSetupListingTests: XCTestCase {
     func testOutputTheAppCannotReadIsAnError() async {
         let (setup, _) = Fixtures.setup { $0.on(Fixtures.listModels, "<html>not json</html>") }
         await assertSetupThrows(try await setup.listModels()) { error in
-            XCTAssertEqual((error as? AWSCLIException)?.error.message, "The AWS CLI answered with something DSH couldn't read.")
+            XCTAssertEqual((error as? AWSCLIException)?.error.message, "The AWS CLI answered with something Vision couldn't read.")
         }
     }
 
@@ -330,7 +330,7 @@ final class BedrockSetupAccessTests: XCTestCase {
         XCTAssertEqual(access.state, .needsUseCaseForm)
         XCTAssertEqual(access.useCaseSubmitted, false)
         XCTAssertTrue(access.message.contains("Anthropic"))
-        XCTAssertEqual(access.message, "Anthropic asks each AWS account once for a few details about how its models will be used. Fill in the short form and DSH sends it for you.")
+        XCTAssertEqual(access.message, "Anthropic asks each AWS account once for a few details about how its models will be used. Fill in the short form and Vision sends it for you.")
         // Checked by the base model id, never the inference profile id.
         XCTAssertTrue(cli.calls(to: "bedrock", "get-foundation-model-availability")[0].hasPair("--model-id", "anthropic.claude-sonnet-4-5-20250929-v1:0"))
         XCTAssertTrue(cli.calls(to: "bedrock", "list-foundation-model-agreement-offers").isEmpty)
@@ -393,7 +393,7 @@ final class BedrockSetupAccessTests: XCTestCase {
         XCTAssertEqual(denied.state, .notAuthorized)
         XCTAssertEqual(denied.missingPermissions, ["bedrock:GetFoundationModelAvailability"])
         XCTAssertTrue(denied.message.contains("try the model"))
-        XCTAssertEqual(denied.message, "DSH can't check access to Command R+: your AWS permissions don't allow bedrock:GetFoundationModelAvailability. Ask whoever manages your AWS account to add the policy DSH shows — or just try the model.")
+        XCTAssertEqual(denied.message, "Vision can't check access to Command R+: your AWS permissions don't allow bedrock:GetFoundationModelAvailability. Ask whoever manages your AWS account to add the policy Vision shows — or just try the model.")
         XCTAssertNil(denied.availability)
 
         let (unknownSetup, _) = Fixtures.setup {
@@ -436,7 +436,7 @@ final class BedrockSetupAccessTests: XCTestCase {
         let checked = try await availability.checkAccess(Fixtures.cohere)
         XCTAssertEqual(checked.state, .notAuthorized)
         XCTAssertEqual(checked.missingPermissions, ["bedrock:GetFoundationModelAvailability"])
-        XCTAssertEqual(checked.message, "DSH can't check access to Command R+: your AWS permissions don't allow bedrock:GetFoundationModelAvailability. Ask whoever manages your AWS account to add the policy DSH shows — or just try the model.")
+        XCTAssertEqual(checked.message, "Vision can't check access to Command R+: your AWS permissions don't allow bedrock:GetFoundationModelAvailability. Ask whoever manages your AWS account to add the policy Vision shows — or just try the model.")
 
         let (offers, _) = Fixtures.setup {
             $0.on(Fixtures.getAvailability, Fixtures.availability(agreement: "NOT_AVAILABLE")).fail(Fixtures.listOffers, .accessDeniedUnnamed)
@@ -472,7 +472,7 @@ final class BedrockSetupAccessTests: XCTestCase {
         let unlisted = try await access(Fixtures.availability(region: "NOT_AVAILABLE"), region: "il-central-1")
         XCTAssertEqual(unlisted.message, "Command R+ isn't offered in il-central-1. Pick another model or Region.")
         let unauthorized = try await access(Fixtures.availability(authorization: "NOT_AUTHORIZED"))
-        XCTAssertEqual(unauthorized.message, "Your AWS permissions don't allow using Command R+. Ask whoever manages your AWS account to allow bedrock:InvokeModel and bedrock:InvokeModelWithResponseStream — DSH can show the exact policy to send them.")
+        XCTAssertEqual(unauthorized.message, "Your AWS permissions don't allow using Command R+. Ask whoever manages your AWS account to allow bedrock:InvokeModel and bedrock:InvokeModelWithResponseStream — Vision can show the exact policy to send them.")
         XCTAssertEqual(unauthorized.missingPermissions, ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"])
         let withDetails = try await access(Fixtures.availability(agreement: "ERROR", error: "Payment instrument declined"))
         XCTAssertEqual(withDetails.message, "AWS reported a problem with access to Command R+: Payment instrument declined.")
@@ -560,7 +560,7 @@ final class BedrockSetupAccessTests: XCTestCase {
         let (setup, _) = Fixtures.setup { $0.on(Fixtures.getAvailability, "this is not json") }
         let unreadable = try await setup.checkAccess(Fixtures.cohere)
         XCTAssertEqual(unreadable.state, .error)
-        XCTAssertEqual(unreadable.message, "The AWS CLI answered with something DSH couldn't read.")
+        XCTAssertEqual(unreadable.message, "The AWS CLI answered with something Vision couldn't read.")
     }
 
     func testTheUseCaseOnFileIsTrueFalseOrUnknown() async throws {
@@ -1198,13 +1198,13 @@ final class BedrockPermissionsTests: XCTestCase {
 
     func testThePolicyIsWordForWordTheWindowsAppsPolicy() {
         // SHA-256 of the C# constants' text (LF line ends, no trailing newline), as compiled and printed by the probe.
-        // The policy's is the Windows app's after both renamed their statement ids to Vision… (vision-windows
-        // fd764a8, src/Vision.Core/Aws/BedrockSetup.cs).
+        // Both are the Windows app's after both apps were renamed Vision: the policy's statement ids (vision-windows
+        // fd764a8) and the explanation's wording (vision-windows a3650ce), src/Vision.Core/Aws/BedrockSetup.cs.
         func sha256(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
         XCTAssertEqual(BedrockPermissions.policyJSON.utf8.count, 1662)
         XCTAssertEqual(sha256(BedrockPermissions.policyJSON), "3163a2f8625ce1f20a6476f1678aa8a352ec28a614bcf8e118174d7d5ae9a0f9")
-        XCTAssertEqual(BedrockPermissions.explanation.utf8.count, 763)
-        XCTAssertEqual(sha256(BedrockPermissions.explanation), "30570ecf3bbffcaeac5adeda4422e54677281562c2db8c8900be2d293596f4ea")
+        XCTAssertEqual(BedrockPermissions.explanation.utf8.count, 769)
+        XCTAssertEqual(sha256(BedrockPermissions.explanation), "9fb1c4041df46cc592f4e2124d2a140b624f84bf5ae64ce79457f492b0e11fb5")
         XCTAssertFalse(BedrockPermissions.policyJSON.contains("\r"))
         XCTAssertTrue(BedrockPermissions.policyJSON.hasPrefix("{\n  \"Version\""))
         XCTAssertTrue(BedrockPermissions.policyJSON.hasSuffix("\n  ]\n}"))
@@ -1212,7 +1212,7 @@ final class BedrockPermissionsTests: XCTestCase {
 
     func testTheExplanationIsFitForAPerson() {
         let text = BedrockPermissions.explanation
-        XCTAssertTrue(text.hasPrefix("DSH uses Amazon Bedrock with your own AWS sign-in."))
+        XCTAssertTrue(text.hasPrefix("Vision uses Amazon Bedrock with your own AWS sign-in."))
         XCTAssertTrue(text.hasSuffix("anything else in the account."))
         XCTAssertFalse(text.contains("\n"))
         for platformWord in ["Windows", "%USERPROFILE%", "C:\\", ".exe"] { XCTAssertFalse(text.contains(platformWord), platformWord) }
@@ -1277,7 +1277,7 @@ final class ScriptedAWSCLITests: XCTestCase {
             XCTAssertEqual(e?.operation, "ListFoundationModels")
             XCTAssertEqual(e?.code, "AccessDeniedException")
             XCTAssertTrue(e?.details.hasPrefix("aws: [ERROR]: An error occurred (AccessDeniedException) when calling the ListFoundationModels operation:") == true)
-            XCTAssertEqual(e?.message, "Your AWS permissions don't allow bedrock:ListFoundationModels. Ask whoever manages your AWS account to allow it — DSH can show the exact policy to send them.")
+            XCTAssertEqual(e?.message, "Your AWS permissions don't allow bedrock:ListFoundationModels. Ask whoever manages your AWS account to allow it — Vision can show the exact policy to send them.")
         }
         await assertSetupThrows(try await cli.runJSON(["b"], profile: "vision-bedrock", region: nil)) { error in
             XCTAssertEqual((error as? AWSSignInRequiredError)?.profile, "vision-bedrock")

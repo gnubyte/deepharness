@@ -268,7 +268,7 @@ struct SkillsManagerView: View {
         var buckets: [String: [Skill]] = [:]
         for s in filtered {
             let title: String
-            if s.origin == .builtin { title = "Built in to DSH" }
+            if s.origin == .builtin { title = "Built in to Vision" }
             else if s.origin == .vision { title = s.scope == .project ? "This project — your skills" : "All projects — your skills" }
             else { title = "\(s.origin.label) — read from \(s.scope == .project ? "this project" : "your home folder")" }
             if buckets[title] == nil { order.append(title) }
@@ -454,7 +454,7 @@ struct SkillsManagerView: View {
         do {
             _ = try SkillManager.adopt(skill, scope: scope, projectRoot: model.project, locations: transport.skillLocations)
             transport.refreshDrafts()
-            message = "Copied “\(skill.name)” to your DSH skills. It now overrides the original and you can edit it."
+            message = "Copied “\(skill.name)” to your Vision skills. It now overrides the original and you can edit it."
         } catch { message = error.localizedDescription }
     }
 }

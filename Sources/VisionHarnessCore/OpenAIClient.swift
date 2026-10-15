@@ -723,7 +723,7 @@ public struct OpenAIClient: LLMClient {
 
     /// Who is calling, authorization + user-supplied custom headers on every request.
     private func applyHeaders(_ req: inout URLRequest) {
-        // DSH names itself honestly (a plan like Kimi Code checks which app is calling).
+        // Vision names itself honestly (a plan like Kimi Code checks which app is calling).
         req.setValue(AppIdentity.userAgent, forHTTPHeaderField: "User-Agent")
         if let key = profile.apiKey, !key.isEmpty {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")

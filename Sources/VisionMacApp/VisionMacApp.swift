@@ -218,7 +218,7 @@ struct RootView: View {
                 ChatView(session: session)
             } else {
                 EmptyStateView(icon: "sparkles",
-                               title: "DSH",
+                               title: "Vision",
                                message: "Chat with your AI, or open a folder to work on code.") {
                     HStack {
                         Button("Open Folder…") { model.chooseProject() }

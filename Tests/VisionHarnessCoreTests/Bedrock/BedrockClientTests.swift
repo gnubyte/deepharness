@@ -218,7 +218,7 @@ final class BedrockClientTests: XCTestCase {
     }
 
     private static func request(_ messages: [LLMMessage] = [.user("hi")]) -> LLMRequest {
-        LLMRequest(systemPrompt: "You are DSH.", messages: messages, tools: [], model: "")
+        LLMRequest(systemPrompt: "You are Vision.", messages: messages, tools: [], model: "")
     }
 
     private struct Collected {
@@ -1095,7 +1095,7 @@ final class BedrockClientTests: XCTestCase {
     private static func toolTurnRequest(_ state: String?) -> LLMRequest {
         var assistant = LLMMessage.assistant("", calls: [ToolCall(id: "tooluse_1", name: "echo", arguments: "{}")])
         assistant.providerState = state
-        return LLMRequest(systemPrompt: "You are DSH.",
+        return LLMRequest(systemPrompt: "You are Vision.",
                           messages: [.user("go"), assistant, .toolResult(id: "tooluse_1", name: "echo", output: "ok")],
                           tools: [ToolSpec(name: "echo", description: "echo", parameters: "{}")],
                           model: opus47, thinking: .high)

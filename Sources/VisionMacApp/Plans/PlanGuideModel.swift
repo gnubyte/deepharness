@@ -15,7 +15,7 @@ enum PlanPage: Int, CaseIterable, Comparable {
         case .paste: "Paste your key"
         case .check: "Check it"
         case .model: "Pick the model"
-        case .use: "How DSH uses it"
+        case .use: "How Vision uses it"
         case .done: "Done"
         }
     }
@@ -70,8 +70,8 @@ protocol PlanGuideBackend: AnyObject {
 }
 
 /// The "Connect a subscription plan" guide: pick the plan and region, get the key (steps, the key page, the
-/// plan's terms), paste it (to the Keychain), check it, pick the model, choose how DSH uses it — the route is not
-/// private, so DSH masks sensitive details before sending — then save it and say hello.
+/// plan's terms), paste it (to the Keychain), check it, pick the model, choose how Vision uses it — the route is not
+/// private, so Vision masks sensitive details before sending — then save it and say hello.
 @MainActor
 @Observable
 final class PlanGuideModel {

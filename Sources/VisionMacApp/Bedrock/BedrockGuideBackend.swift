@@ -54,7 +54,7 @@ struct UseCaseAnswers: Sendable, Equatable {
     var website = ""
     var industry = "Technology"
     var otherIndustry = ""
-    var useCases = "Coding help: an AI coding agent (DSH) that reads, writes and tests code in my projects on my own Mac."
+    var useCases = "Coding help: an AI coding agent (Vision) that reads, writes and tests code in my projects on my own Mac."
     var audience: Audience = .company
 
     /// What is missing or wrong, in a sentence — nil when it can be sent.

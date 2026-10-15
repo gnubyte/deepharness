@@ -4,7 +4,7 @@ import Foundation
 //
 // The plans the "Connect a subscription plan" guide knows: Z.ai's GLM Coding Plan and API, Kimi Code and the
 // Moonshot API, OpenAI's API, and Alibaba Cloud's Qwen Coding Plan and Model Studio API — where each lives, where
-// its key comes from, which models it offers, and what its terms ask of DSH. (Researched October 2026.)
+// its key comes from, which models it offers, and what its terms ask of Vision. (Researched October 2026.)
 
 /// One plan.
 public struct SubscriptionPlan: Sendable, Equatable, Identifiable {
@@ -136,7 +136,7 @@ public enum PlanCatalog {
             models: [.init("kimi-for-coding", note: "K2.8, up to 1M", contextWindow: 1_000_000), .init("k3"),
                      .init("k3-256k", contextWindow: 262_144), .init("kimi-for-coding-highspeed")],
             listsModels: false,
-            terms: "Kimi Code is for coding apps that call it as themselves: DSH tells Kimi it is DSH, and never imitates another tool.",
+            terms: "Kimi Code is for coding apps that call it as themselves: Vision tells Kimi it is Vision, and never imitates another tool.",
             interactiveOnly: false),
         SubscriptionPlan(
             id: "moonshot-api", provider: "Moonshot", name: "Moonshot (Kimi) — pay-as-you-go API", routeName: "Moonshot",
@@ -180,7 +180,7 @@ public enum PlanCatalog {
             models: [.init("qwen3.7-plus"), .init("qwen3.6-plus"), .init("qwen3-coder-plus"), .init("qwen3-coder-next"),
                      .init("qwen3.5-plus"), .init("kimi-k2.5"), .init("glm-5"), .init("MiniMax-M2.5")],
             listsModels: false,
-            terms: "Alibaba allows the Coding Plan only for interactive use in coding tools — not for automated scripts or unattended work. DSH won't run the task queue on it.",
+            terms: "Alibaba allows the Coding Plan only for interactive use in coding tools — not for automated scripts or unattended work. Vision won't run the task queue on it.",
             interactiveOnly: true),
         SubscriptionPlan(
             id: "qwen-api", provider: "Alibaba Cloud", name: "Qwen — Model Studio pay-as-you-go", routeName: "Qwen (Model Studio)",
@@ -277,9 +277,9 @@ public enum PlanCatalog {
         }
     }
 
-    /// Kimi Code turning DSH away because it is not one of the coding agents the plan names.
+    /// Kimi Code turning Vision away because it is not one of the coding agents the plan names.
     public static let kimiRestriction =
-        "Kimi Code answered that it is only for certain coding agents. DSH tells Kimi honestly that it is DSH and won't pretend to be another app. Use the Moonshot platform API instead — “Moonshot (Kimi) — pay-as-you-go API” in this guide — which works with any app."
+        "Kimi Code answered that it is only for certain coding agents. Vision tells Kimi honestly that it is Vision and won't pretend to be another app. Use the Moonshot platform API instead — “Moonshot (Kimi) — pay-as-you-go API” in this guide — which works with any app."
 
     /// A chat error from a route that is a Kimi Code plan, explained (nil when it's something else).
     public static func explainChatError(_ error: Error, route: ProviderProfile?) -> String? {
@@ -347,7 +347,7 @@ public enum PlanCatalog {
 /// fails, and its `reasoning_effort` words are `low`, `high` and `max`.
 public enum GLMThinking {
     /// Whether a route's model follows these rules: anything on Z.ai / BigModel, and any GLM-5 model wherever it
-    /// runs (the Qwen Coding Plan serves `glm-5`) — the same scope as DSH for Windows.
+    /// runs (the Qwen Coding Plan serves `glm-5`) — the same scope as Vision for Windows.
     public static func applies(to profile: ProviderProfile, model: String) -> Bool {
         if model.lowercased().hasPrefix("glm-5") { return true }
         guard let host = URL(string: profile.baseURL)?.host?.lowercased() else { return false }

@@ -11,8 +11,8 @@ struct ConnectPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             GuideIcon(systemName: "bolt.horizontal.circle")
-            GuideHeading("Connect DSH to Bedrock")
-            GuideLead("DSH saves the connection — \(guide.selected?.name ?? "your model") in \(BedrockRegions.name(of: guide.region)) — and sends a first message to check everything works.")
+            GuideHeading("Connect Vision to Bedrock")
+            GuideLead("Vision saves the connection — \(guide.selected?.name ?? "your model") in \(BedrockRegions.name(of: guide.region)) — and sends a first message to check everything works.")
             if guide.connecting {
                 GuideBusy("Sending a first message through Bedrock…")
             } else if guide.connected, let hello = guide.hello {
@@ -30,7 +30,7 @@ struct ConnectPage: View {
 
     private var rolePicker: some View {
         VStack(alignment: .leading, spacing: 8) {
-            GuideSubheading("How should DSH use it?")
+            GuideSubheading("How should Vision use it?")
             GuideChoice(systemImage: "crown", title: "Main model",
                         detail: "The chat talks to it, and it hands out subagent tasks. Whatever led before keeps helping as a subagent server.",
                         selected: guide.role == .main) { guide.role = .main }
@@ -57,7 +57,7 @@ struct DonePage: View {
             GuideBullets(items: [
                 ("bubble.left.and.bubble.right", "**Start chatting** — press the button below."),
                 ("arrow.triangle.swap", "**Switch models** any time: the toolbar's model menu has *Choose a Bedrock Model…*, and Settings › Models has *Change…* on each Bedrock route."),
-                ("arrow.clockwise", "**Sign-in**: when your AWS session ends, DSH says so and signs you in again with one click (the browser opens)."),
+                ("arrow.clockwise", "**Sign-in**: when your AWS session ends, Vision says so and signs you in again with one click (the browser opens)."),
                 ("info.circle", "**Costs** show up on your AWS bill, under Amazon Bedrock (and AWS Marketplace for Marketplace models). AWS Budgets can email you before you spend more than you planned."),
             ])
             apiKeys
@@ -68,7 +68,7 @@ struct DonePage: View {
     private var apiKeys: some View {
         DisclosureGroup("Need a Bedrock API key for another tool?") {
             VStack(alignment: .leading, spacing: 8) {
-                GuideParagraph("Some tools (like Claude Code with Bedrock) take a Bedrock API key instead of an AWS sign-in. DSH can make one from your sign-in. It works for 12 hours (or until your sign-in ends).")
+                GuideParagraph("Some tools (like Claude Code with Bedrock) take a Bedrock API key instead of an AWS sign-in. Vision can make one from your sign-in. It works for 12 hours (or until your sign-in ends).")
                 if guide.mintingKey {
                     GuideBusy("Creating a key…")
                 } else if let key = guide.apiKey {

@@ -392,7 +392,7 @@ public enum SkillManager {
         }
     }
 
-    /// Copy a Claude/Cursor/Agents skill, rule or command into DSH's own store so
+    /// Copy a Claude/Cursor/Agents skill, rule or command into Vision's own store so
     /// it can be edited and shared without touching the other tool's files.
     @discardableResult
     public static func adopt(_ skill: Skill, scope: SkillScope, projectRoot: URL?,
@@ -417,7 +417,7 @@ public enum SkillManager {
 
     /// Save edits (only for skills this app owns — foreign files are adopted first).
     public static func write(_ skill: Skill, text: String) throws {
-        guard skill.isOwned else { throw SkillError.unsupported("This skill belongs to \(skill.origin.label). Copy it to DSH first to edit it.") }
+        guard skill.isOwned else { throw SkillError.unsupported("This skill belongs to \(skill.origin.label). Copy it to Vision first to edit it.") }
         try text.write(to: skill.url, atomically: true, encoding: .utf8)
     }
 

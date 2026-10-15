@@ -192,11 +192,11 @@ public final class AWSSignIn: Sendable {
         let existing = loadProfiles().find(profile)
         if let existing, existing.kind == .sso {
             return AWSSignInResult(outcome: .useSSOLogin,
-                                   message: "The AWS profile \"\(profile)\" signs in through IAM Identity Center (SSO), so DSH will use the SSO sign-in for it.")
+                                   message: "The AWS profile \"\(profile)\" signs in through IAM Identity Center (SSO), so Vision will use the SSO sign-in for it.")
         }
         if let existing, !existing.canUseAWSLogin {
             return AWSSignInResult(outcome: .profileHasOtherCredentials,
-                                   message: "The AWS profile \"\(profile)\" already uses \(existing.kindDescription), which the browser sign-in won't replace. Use it as it is, or let DSH sign in with its own profile (\"\(Self.defaultProfile)\").")
+                                   message: "The AWS profile \"\(profile)\" already uses \(existing.kindDescription), which the browser sign-in won't replace. Use it as it is, or let Vision sign in with its own profile (\"\(Self.defaultProfile)\").")
         }
 
         var result = try await runSignIn(Self.loginArguments(profile: profile, region: region, remote: options.remote, redirectPort: options.redirectPort),
@@ -207,7 +207,7 @@ public final class AWSSignIn: Sendable {
         if (loadProfiles().find(profile)?.region ?? "").isEmpty {
             let set = try await cli.run(["configure", "set", "region", region, "--profile", profile], options: AWSCLIRunOptions(timeout: 60))
             if !set.succeeded {
-                result.message = "Signed in, but DSH couldn't save the Region in the profile: \(AWSCLIErrors.cleanMessage(set.stderr + set.stdout))"
+                result.message = "Signed in, but Vision couldn't save the Region in the profile: \(AWSCLIErrors.cleanMessage(set.stderr + set.stdout))"
                 return result
             }
         }
@@ -263,7 +263,7 @@ public final class AWSSignIn: Sendable {
         } catch is CancellationError where state.gaveUp && !Task.isCancelled {
             return AWSSignInResult(outcome: .cancelled, message: "Sign-in stopped: no authorization code was entered.", link: state.link)
         } catch let error as AWSCLIStartError {
-            return AWSSignInResult(outcome: .failed, message: "DSH couldn't start the AWS CLI: \(error.localizedDescription)", link: state.link)
+            return AWSSignInResult(outcome: .failed, message: "Vision couldn't start the AWS CLI: \(error.localizedDescription)", link: state.link)
         }
         // Answering "n" ends `aws login` successfully without touching the profile.
         if result.succeeded && state.keptOldSession {
@@ -363,11 +363,11 @@ public final class AWSSignIn: Sendable {
         if result.exitCode == 130 { return outcome(.cancelled, "Sign-in stopped.") }
         if has("is already configured with") {
             return outcome(.profileHasOtherCredentials,
-                           "That AWS profile already has other credentials, which the browser sign-in won't replace. Let DSH sign in with its own profile (\"\(defaultProfile)\") instead.")
+                           "That AWS profile already has other credentials, which the browser sign-in won't replace. Let Vision sign in with its own profile (\"\(defaultProfile)\") instead.")
         }
         if has("Found invalid choice") || has("Invalid choice") || has("Unknown options") {
             return outcome(.cliTooOld,
-                           "This AWS CLI can't sign in this way yet (it needs version \(AWSCLI.minimumVersion) or newer). Update the AWS CLI — DSH can do it for you.")
+                           "This AWS CLI can't sign in this way yet (it needs version \(AWSCLI.minimumVersion) or newer). Update the AWS CLI — Vision can do it for you.")
         }
         if has("Failed to retrieve an auth_code or state") || has("Failed to decode the verification code") || has("does not match expected value") {
             return outcome(.failed, "That authorization code wasn't accepted. Copy the whole code the browser shows and try again.")

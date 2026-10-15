@@ -204,9 +204,9 @@ final class ShieldTests: XCTestCase {
     }
 
     func testTheNoteIsAddedOnceToTheFirstSystemMessage() {
-        let withPrompt = Shield.mask(LLMRequest(systemPrompt: "You are DSH.", messages: [.user("hi")], tools: [], model: "m"),
+        let withPrompt = Shield.mask(LLMRequest(systemPrompt: "You are Vision.", messages: [.user("hi")], tools: [], model: "m"),
                                      detector: detector()).request
-        XCTAssertEqual(withPrompt.systemPrompt, "You are DSH.\n\n" + Shield.note)
+        XCTAssertEqual(withPrompt.systemPrompt, "You are Vision.\n\n" + Shield.note)
         let again = Shield.mask(withPrompt, detector: detector()).request
         XCTAssertEqual(again.systemPrompt, withPrompt.systemPrompt, "not twice")
         let inMessages = Shield.mask(LLMRequest(systemPrompt: "", messages: [.system("Earlier: x"), .user("hi"), .system("later")],

@@ -614,7 +614,7 @@ public final class SparkSwapperClient: @unchecked Sendable {
 
 // MARK: - Connection codes
 
-/// What the Swapper's Connect tab hands an app ("Connect DSH"): `SSC1:` followed by base64url (no padding) of
+/// What the Swapper's Connect tab hands an app ("Connect Vision"): `SSC1:` followed by base64url (no padding) of
 /// UTF-8 JSON — the box's name and platform, the Swapper's and the model API's addresses, the model API key,
 /// what it serves, the certificate fingerprint, and an app token.
 public struct SwapperConnectionCode: Sendable, Equatable {

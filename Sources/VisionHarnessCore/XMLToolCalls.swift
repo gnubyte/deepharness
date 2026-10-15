@@ -11,7 +11,7 @@ import Foundation
 //       <parameter>start_line>1</parameter>
 //     </function>
 //
-// or the Cline/DSH style:
+// or the Cline style:
 //
 //     <tool_name>read_file</tool_name>
 //     <parameter_name>file_path</parameter_name>

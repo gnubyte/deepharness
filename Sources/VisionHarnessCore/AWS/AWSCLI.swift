@@ -784,13 +784,13 @@ public enum AWSCLIStatus: Sendable, Equatable {
     public var summary: String {
         switch self {
         case .missing:
-            return "The AWS CLI isn't installed. DSH can install it for you."
+            return "The AWS CLI isn't installed. Vision can install it for you."
         case .tooOld(let version, _):
             return version.major < 2
-                ? "AWS CLI \(version) is installed, but DSH needs version 2. DSH can install it for you."
-                : "AWS CLI \(version) is installed, but signing in from the browser needs \(AWSCLI.minimumVersion) or newer. DSH can update it."
+                ? "AWS CLI \(version) is installed, but Vision needs version 2. Vision can install it for you."
+                : "AWS CLI \(version) is installed, but signing in from the browser needs \(AWSCLI.minimumVersion) or newer. Vision can update it."
         case .broken(let path, let problem):
-            return "The AWS CLI at \(path) didn't start properly (\(problem)). DSH can reinstall it."
+            return "The AWS CLI at \(path) didn't start properly (\(problem)). Vision can reinstall it."
         case .ready(let version, _):
             return "AWS CLI \(version) is ready."
         }
@@ -972,7 +972,7 @@ public final class AWSCLI: AWSCLICommands, Sendable {
         let text = AWSCLIText.trimmed(result.stdout)
         if text.isEmpty { return .object([:]) }
         guard let json = JSONValue(parsing: text) else {
-            throw AWSCLIException(AWSCLIError(kind: .other, message: "The AWS CLI answered with something DSH couldn't read.",
+            throw AWSCLIException(AWSCLIError(kind: .other, message: "The AWS CLI answered with something Vision couldn't read.",
                                               details: AWSCLIText.prefix(text, 500)))
         }
         return json.isNull ? .object([:]) : json
@@ -1021,7 +1021,7 @@ public enum AWSCLIErrors {
         }
         if has("Your session has expired") || has("reauthenticate using 'aws login'") || has("reauthenticate with 'aws login'")
             || has("Error loading login session token") || has("refreshing a login session profile") {
-            return signIn("Your AWS sign-in has expired. Sign in again — DSH opens your browser.")
+            return signIn("Your AWS sign-in has expired. Sign in again — Vision opens your browser.")
         }
         if has("Error loading SSO Token") || has("SSO session associated with this profile has expired")
             || has("Token has expired and refresh failed") || has("retrieving token from sso") || has("UnauthorizedSSOTokenError") {
@@ -1029,7 +1029,7 @@ public enum AWSCLIErrors {
         }
         if has("Unable to locate credentials") || has("no credentials found") || has("NoCredentials")
             || (has("config profile") && has("could not be found")) {
-            return signIn("DSH isn't signed in to AWS yet. Sign in to continue.")
+            return signIn("Vision isn't signed in to AWS yet. Sign in to continue.")
         }
         if codeIs("ExpiredToken", "ExpiredTokenException", "RequestExpired") || has("security token included in the request is expired") {
             return signIn("Your AWS sign-in has expired. Sign in again.")
@@ -1051,15 +1051,15 @@ public enum AWSCLIErrors {
             let what = permission ?? "this"
             let message = has("explicit deny")
                 ? "An AWS policy explicitly blocks \(what) for your sign-in (for example a policy set by your organization). Ask whoever manages your AWS account."
-                : "Your AWS permissions don't allow \(what). Ask whoever manages your AWS account to allow it — DSH can show the exact policy to send them."
+                : "Your AWS permissions don't allow \(what). Ask whoever manages your AWS account to allow it — Vision can show the exact policy to send them."
             return AWSCLIError(kind: .accessDenied, message: message, code: code, operation: operation, permission: permission, details: raw)
         }
         if has("Found invalid choice") || has("Invalid choice") || has("Unknown options") {
-            return other(.notSupported, "This version of the AWS CLI doesn't have that command. Update the AWS CLI — DSH can do it for you.")
+            return other(.notSupported, "This version of the AWS CLI doesn't have that command. Update the AWS CLI — Vision can do it for you.")
         }
         if has("Could not connect to the endpoint URL") || has("Connect timeout on endpoint URL") || has("Read timeout on endpoint URL")
             || has("SSL validation failed") || has("Failed to connect to proxy") || has("ProxyConnectionError") || has("EndpointConnectionError") {
-            return other(.network, "DSH couldn't reach AWS. Check your internet connection (and any proxy or VPN), then try again.")
+            return other(.network, "Vision couldn't reach AWS. Check your internet connection (and any proxy or VPN), then try again.")
         }
         if codeIs("ThrottlingException", "Throttling", "TooManyRequestsException", "ServiceQuotaExceededException") || has("Rate exceeded") {
             return other(.throttled, "AWS is busy right now (too many requests). Wait a moment and try again.")

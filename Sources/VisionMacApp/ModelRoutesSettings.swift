@@ -311,7 +311,7 @@ struct RouteRow: View {
                     .controlSize(.mini)
                     .labelsHidden()
                     .frame(width: RosterColumn.on)
-                    .help(provider.isEnabled ? "On — DSH may use this model" : "Off — never used; kept in the list")
+                    .help(provider.isEnabled ? "On — Vision may use this model" : "Off — never used; kept in the list")
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {

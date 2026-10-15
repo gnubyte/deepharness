@@ -12,7 +12,7 @@ public enum BedrockPermissions {
     /// The AWS managed policy that lets an identity use `aws login`.
     public static let signInManagedPolicy = "SignInLocalDevelopmentAccess"
 
-    /// Least privilege for DSH: call models (directly or through cross-Region inference profiles,
+    /// Least privilege for Vision: call models (directly or through cross-Region inference profiles,
     /// whose underlying models live in other Regions — and, for global profiles, in no Region, which
     /// the empty-matching "*" covers); list models and check access; accept Marketplace terms and the
     /// Anthropic form; Bedrock API keys; let Bedrock (and only Bedrock, aws:CalledViaLast) subscribe to
@@ -86,9 +86,9 @@ public enum BedrockPermissions {
 
     /// What to tell the person who has to add the policy.
     public static let explanation: String =
-        "DSH uses Amazon Bedrock with your own AWS sign-in. If AWS says you aren't allowed to do something, "
+        "Vision uses Amazon Bedrock with your own AWS sign-in. If AWS says you aren't allowed to do something, "
         + "send this policy to whoever manages your AWS account and ask them to attach it to you (or to the role you sign in with). "
-        + "It lets DSH: call Bedrock models, including through cross-Region inference profiles; list the models in your Region and check "
+        + "It lets Vision: call Bedrock models, including through cross-Region inference profiles; list the models in your Region and check "
         + "whether your account can use them; accept a model's terms and Anthropic's one-time use-case form when you choose to; "
         + "use a Bedrock API key; let Bedrock subscribe to AWS Marketplace models on your behalf (only through Bedrock); and sign in "
         + "from the AWS CLI with \"aws login\" (the same as the AWS managed policy SignInLocalDevelopmentAccess). "

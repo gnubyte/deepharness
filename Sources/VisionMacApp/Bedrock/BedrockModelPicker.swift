@@ -19,7 +19,7 @@ struct ModelPage: View {
             controls
             content
             if guide.selected != nil { AccessSummary(guide: guide) }
-            GuideAside("Each model is billed by AWS per use (per thousand words or so, in and out). Claude models are made by Anthropic; Amazon Nova by Amazon; Llama by Meta. Some models are only reachable through a \"cross-Region inference profile\" — AWS runs them in several nearby Regions for capacity; DSH picks the right one for you.")
+            GuideAside("Each model is billed by AWS per use (per thousand words or so, in and out). Claude models are made by Anthropic; Amazon Nova by Amazon; Llama by Meta. Some models are only reachable through a \"cross-Region inference profile\" — AWS runs them in several nearby Regions for capacity; Vision picks the right one for you.")
             GuideStuck("The model you want isn't listed? It may not be offered in this Region: pick another one above (the model list changes with the Region).")
         }
     }
@@ -51,7 +51,7 @@ struct ModelPage: View {
             PermissionsHelp()
         } else if (guide.models ?? []).filter(\.canInvoke).isEmpty {
             if guide.models != nil {
-                GuideNote(.warning, "AWS lists no chat models DSH can use in \(BedrockRegions.name(of: guide.region)). Pick another Region above — US East (N. Virginia) or US West (Oregon) have the most.")
+                GuideNote(.warning, "AWS lists no chat models Vision can use in \(BedrockRegions.name(of: guide.region)). Pick another Region above — US East (N. Virginia) or US West (Oregon) have the most.")
             }
         } else if !guide.search.trimmingCharacters(in: .whitespaces).isEmpty {
             searchResults
@@ -266,7 +266,7 @@ struct AccessPage: View {
                     GuideIcon(systemName: "checkmark.seal")
                     GuideHeading("\(model.name) is ready")
                     GuideNote(.success, "Your AWS account can use \(model.name) now.")
-                    GuideLead("Next, DSH saves the connection and sends a first message.")
+                    GuideLead("Next, Vision saves the connection and sends a first message.")
                 }
             } else {
                 switch access.state {

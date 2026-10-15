@@ -1,9 +1,10 @@
 import Foundation
 
 // GENERATED FROM THE WINDOWS APP: a realistic Bedrock catalog and the ordering/invoke ids it must produce
-// Every expected value below is what the C# implementation answered (dshwindows, BedrockSetup.cs, built and
+// Every expected value below is what the C# implementation answered (vision-windows, BedrockSetup.cs, built and
 // run on .NET 8), captured by a probe program; the tests check that the Swift port answers the same.
-// The probe compiled the unmodified src/Dsh.Core/Aws/BedrockSetup.cs (dshwindows at bf08ade) and printed its answers;
+// The probe compiled the unmodified BedrockSetup.cs of vision-windows commit bf08ade (the file is now
+// src/Vision.Core/Aws/BedrockSetup.cs) and printed its answers;
 // nothing below was written by hand, so don't edit it by hand either (regenerate it from a fresh probe run).
 
 enum BedrockCatalogFixtures {

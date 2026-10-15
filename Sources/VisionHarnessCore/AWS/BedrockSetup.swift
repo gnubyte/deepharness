@@ -102,7 +102,7 @@ public final class BedrockSetup: Sendable {
         } catch let error as AWSCLIException where error.kind == .accessDenied {
             let permission = error.error.permission ?? "bedrock:GetFoundationModelAvailability"
             return ModelAccess(state: .notAuthorized, modelID: modelID,
-                               message: "DSH can't check access to \(shown): your AWS permissions don't allow \(permission). Ask whoever manages your AWS account to add the policy DSH shows — or just try the model.",
+                               message: "Vision can't check access to \(shown): your AWS permissions don't allow \(permission). Ask whoever manages your AWS account to add the policy Vision shows — or just try the model.",
                                missingPermissions: [permission])
         } catch let error as AWSCLIException where error.kind == .notFound {
             return ModelAccess(state: .notInRegion, modelID: modelID,
@@ -119,7 +119,7 @@ public final class BedrockSetup: Sendable {
         }
         if BedrockText.equals(availability.authorization, "NOT_AUTHORIZED") {
             return ModelAccess(state: .notAuthorized, modelID: modelID,
-                               message: "Your AWS permissions don't allow using \(shown). Ask whoever manages your AWS account to allow \(BedrockPermissions.invokeActions.joined(separator: " and ")) — DSH can show the exact policy to send them.",
+                               message: "Your AWS permissions don't allow using \(shown). Ask whoever manages your AWS account to allow \(BedrockPermissions.invokeActions.joined(separator: " and ")) — Vision can show the exact policy to send them.",
                                missingPermissions: BedrockPermissions.invokeActions, availability: availability)
         }
         if BedrockText.equals(availability.agreement, "ERROR") {
@@ -133,7 +133,7 @@ public final class BedrockSetup: Sendable {
             useCase = try await useCaseOnFile()
             if useCase == false {
                 return ModelAccess(state: .needsUseCaseForm, modelID: modelID,
-                                   message: "Anthropic asks each AWS account once for a few details about how its models will be used. Fill in the short form and DSH sends it for you.",
+                                   message: "Anthropic asks each AWS account once for a few details about how its models will be used. Fill in the short form and Vision sends it for you.",
                                    useCaseSubmitted: false, availability: availability)
             }
         }

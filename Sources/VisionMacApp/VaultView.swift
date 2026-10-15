@@ -393,7 +393,7 @@ private struct VaultEditor: View {
 
     private func unlock() async -> Bool {
         if unlocked { return true }
-        unlocked = await VaultUnlock.authenticate("show a credential from the DSH vault")
+        unlocked = await VaultUnlock.authenticate("show a credential from the Vision vault")
         return unlocked
     }
 

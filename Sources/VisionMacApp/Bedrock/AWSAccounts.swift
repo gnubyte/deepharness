@@ -65,7 +65,7 @@ enum AWSAccounts {
         func credentials(forceRefresh: Bool) async throws -> AWSCredentials {
             throw AWSSignInRequiredError(
                 profile: profile,
-                message: "The AWS CLI isn't installed on this Mac any more, so DSH can't sign in to AWS. Run the Amazon Bedrock setup again (Settings › Models) — it reinstalls it.")
+                message: "The AWS CLI isn't installed on this Mac any more, so Vision can't sign in to AWS. Run the Amazon Bedrock setup again (Settings › Models) — it reinstalls it.")
         }
     }
 }

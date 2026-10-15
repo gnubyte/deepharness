@@ -2236,7 +2236,7 @@ public final class AppTransport {
     }
 
     static let uncheckedNotice =
-        "Pictures and files that aren't plain text are sent as they are — DSH can't check them for sensitive details."
+        "Pictures and files that aren't plain text are sent as they are — Vision can't check them for sensitive details."
 
     private func noteFailover(_ notice: FailoverNotice, sessionID: String) {
         guard !failoverNoticed.contains(sessionID), let vm = sessions.first(where: { $0.id == sessionID }) else { return }

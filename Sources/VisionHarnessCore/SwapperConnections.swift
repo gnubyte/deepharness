@@ -3,13 +3,13 @@ import Security
 
 // MARK: - Swapper connections
 //
-// The boxes running a Spark Swapper that DSH knows: a DGX Spark, a Strix Halo, more than one of each. A
+// The boxes running a Spark Swapper that Vision knows: a DGX Spark, a Strix Halo, more than one of each. A
 // connection holds how to reach and sign in to one; the secret (an app token, or the login's password) lives in
 // the Keychain under the connection's id, never in the settings file. Earlier builds knew a single Swapper
 // ("Settings ▸ Spark"); `SwapperConnectionStore.load` moves it into the list on first launch, password included.
 
 public struct SwapperConnection: Codable, Sendable, Equatable, Identifiable {
-    /// How DSH signs in to the box.
+    /// How Vision signs in to the box.
     public enum Auth: Sendable, Equatable {
         /// An app token from a connection code (Swapper 2.0).
         case token
