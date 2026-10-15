@@ -24,7 +24,7 @@ driving an external `dsh web` process over its `/api` gateway. That is gone. The
 agent loop end to end:
 
 ```
-you → DSHCore.Engine → OpenAI-compatible /chat/completions → tool calls → files & shell → you
+you → VisionHarnessCore.Engine → OpenAI-compatible /chat/completions → tool calls → files & shell → you
 ```
 
 The practical difference is that there is nothing to install alongside it and nothing to keep
@@ -497,7 +497,7 @@ A running agent is reachable without opening its chat: the running bar at the to
 ## Architecture
 
 ```
-DSHCore/                   the harness. No AppKit, no SwiftUI — headlessly testable.
+VisionHarnessCore/         the harness. No AppKit, no SwiftUI — headlessly testable.
   Engine.swift             the agent loop: stream → tool calls → results → repeat
   Models.swift             provider-neutral wire shapes, provider profiles
   OpenAIClient.swift       SSE streaming against any /v1/chat/completions
@@ -529,8 +529,8 @@ DSHCore/                   the harness. No AppKit, no SwiftUI — headlessly tes
   Language.swift           lexical vocabulary per language
   Markdown.swift           block parser (SwiftUI only does inline)
 
-DSHMacApp/                 SwiftUI
-  DSHMacApp.swift          @main, menus, root split view, toolbar
+VisionMacApp/              SwiftUI
+  VisionMacApp.swift       @main, menus, root split view, toolbar
   AppModel.swift           project, mode, sheets
   AppTransport.swift       engine per session, events → timeline, plugins, context
   SessionVM.swift          one ordered timeline of messages, tool calls, and todos
@@ -552,7 +552,7 @@ DSHMacApp/                 SwiftUI
   FSWatcher.swift          FSEvents over the project
 ```
 
-`DSHCore` has no UI dependency, so the whole harness is verifiable on its own:
+`VisionHarnessCore` has no UI dependency, so the whole harness is verifiable on its own:
 
 ```bash
 swift test

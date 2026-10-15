@@ -5,7 +5,7 @@ set -euo pipefail
 CONFIG="${1:-release}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP="$ROOT/build/DSH.app"
-BIN_NAME="DSHMacApp"
+BIN_NAME="Vision"
 
 echo "==> building ($CONFIG)"
 swift build -c "$CONFIG" --package-path "$ROOT" >/dev/null
@@ -16,7 +16,7 @@ BIN="$(swift build -c "$CONFIG" --package-path "$ROOT" --show-bin-path)/$BIN_NAM
 echo "==> assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/DSH"
+cp "$BIN" "$APP/Contents/MacOS/Vision"
 
 # Copy the logo assets into the bundle (app icon + in-app logo).
 cp "$ROOT/assets/logo/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
@@ -33,7 +33,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleVersion</key>         <string>16</string>
   <key>CFBundleShortVersionString</key> <string>0.14.0</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
-  <key>CFBundleExecutable</key>      <string>DSH</string>
+  <key>CFBundleExecutable</key>      <string>Vision</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>  <string>14.0</string>
   <key>NSHighResolutionCapable</key> <true/>
