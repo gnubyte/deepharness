@@ -551,6 +551,16 @@ public struct KeyboardTool: ToolExecutor {
         return (lines[0].trimmingCharacters(in: .whitespaces), pid)
     }
 
+    /// Why typing into the frontmost process is refused, or nil to go ahead.
+    /// An unidentified front app is refused too: blind keys could land in a
+    /// terminal or in this harness.
+    static func guardRefusal(front: (name: String, pid: pid_t)?, requested: String?,
+                             isBlocked: (pid_t) -> Bool = { TerminalGuard.isBlocked(pid: $0) }) -> String? {
+        guard let front else { return TerminalGuard.unknownFrontmostRefusal() }
+        guard isBlocked(front.pid) else { return nil }
+        return TerminalGuard.refusal(appName: requested ?? front.name)
+    }
+
     public func execute(args: JSONString, in context: ToolContext) async -> ToolResult {
         // Resolve every combo before anything is typed: a bad one fails the
         // whole call instead of leaving the keys before it pressed.
@@ -578,11 +588,15 @@ public struct KeyboardTool: ToolExecutor {
                 return .init(output: "Error: '\(app)' is not running or cannot be focused: \(String(decoding: activated.err, as: UTF8.self).prefix(200))")
             }
             try? await Task.sleep(nanoseconds: 350_000_000)
-            if let front = await Self.frontmostProcess(), TerminalGuard.isBlocked(pid: front.pid) {
-                return .init(output: TerminalGuard.refusal(appName: app))
+            let front = await Self.frontmostProcess()
+            if let refusal = Self.guardRefusal(front: front, requested: app) {
+                return .init(output: refusal)
             }
-        } else if let front = await Self.frontmostProcess(), TerminalGuard.isBlocked(pid: front.pid) {
-            return .init(output: TerminalGuard.refusal(appName: front.name))
+        } else {
+            let front = await Self.frontmostProcess()
+            if let refusal = Self.guardRefusal(front: front, requested: nil) {
+                return .init(output: refusal)
+            }
         }
 
         guard let source = CGEventSource(stateID: .hidSystemState) else {

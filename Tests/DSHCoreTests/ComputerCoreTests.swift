@@ -169,15 +169,95 @@ final class LockedList: @unchecked Sendable {
 }
 
 final class TerminalGuardTests: XCTestCase {
-    func testTerminalsAndDSHAreBlockedOthersAreNot() {
+    typealias Identity = TerminalGuard.Identity
+    typealias Target = TerminalGuard.Target
+
+    /// A harness identity that is not this test process, for the pure checks.
+    let harness = Identity(pid: 4242, bundleIdentifier: "com.example.harness",
+                           executablePath: "/Applications/Harness.app/Contents/MacOS/Harness")
+
+    func testTerminalsAndHarnessBundlesAreBlockedOthersAreNot() {
         XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"))
         XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/Applications/iTerm.app/Contents/MacOS/iTerm2"))
         XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/Applications/Ghostty.app/Contents/MacOS/ghostty"))
+        XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/Applications/Vision.app/Contents/MacOS/Vision"))
+        XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/Users/me/Downloads/vision.APP/Contents/MacOS/Vision"), "case-insensitive")
+        // Legacy: a copy of an old build (named before the Vision rename) is still the harness.
         XCTAssertTrue(TerminalGuard.isBlocked(executablePath: "/Applications/DSH.app/Contents/MacOS/DSH"))
         XCTAssertFalse(TerminalGuard.isBlocked(executablePath: "/Applications/Godot.app/Contents/MacOS/Godot"))
         XCTAssertFalse(TerminalGuard.isBlocked(executablePath: "/Applications/Safari.app/Contents/MacOS/Safari"))
         XCTAssertFalse(TerminalGuard.isBlocked(executablePath: "/Users/me/Terminal.txt/bin/godot"), "only whole path components match")
+    }
+
+    func testOwnProcessIsBlockedWhateverItIsCalled() {
+        // Same pid: blocked even when the bundle has an innocent name.
+        let renamed = Target(pid: harness.pid, executablePath: "/Applications/Notes Helper.app/Contents/MacOS/Helper",
+                             bundleIdentifier: "com.example.innocent")
+        XCTAssertTrue(TerminalGuard.isBlocked(renamed, ownIdentity: harness))
+    }
+
+    func testOwnBundleIdentifierIsBlockedInAnotherProcess() {
+        // A second instance, or the app renamed on disk, still carries our bundle id.
+        let copy = Target(pid: 777, executablePath: "/Users/me/Desktop/Old Copy.app/Contents/MacOS/Harness",
+                          bundleIdentifier: "COM.EXAMPLE.HARNESS")
+        XCTAssertTrue(TerminalGuard.isBlocked(copy, ownIdentity: harness))
+    }
+
+    func testShippedAndLegacyBundleIdentifiersAreBlocked() {
+        let shipped = Target(pid: 778, executablePath: "/Applications/Renamed.app/Contents/MacOS/Vision",
+                             bundleIdentifier: "com.503cm.vision.mac")
+        XCTAssertTrue(TerminalGuard.isBlocked(shipped, ownIdentity: harness))
+        // Legacy: the bundle id of builds before the Vision rename.
+        let legacy = Target(pid: 779, executablePath: "/Applications/Renamed Old.app/Contents/MacOS/DSH",
+                            bundleIdentifier: "dev.local.dsh.mac")
+        XCTAssertTrue(TerminalGuard.isBlocked(legacy, ownIdentity: harness))
+    }
+
+    func testSecondCopyOfOwnExecutableIsBlocked() {
+        // An unbundled `swift run` binary has no bundle id and no .app name.
+        let bare = Identity(pid: 4243, bundleIdentifier: nil, executablePath: "/tmp/build/debug/VisionMacApp")
+        let other = Target(pid: 780, executablePath: "/tmp/build/debug/VisionMacApp", bundleIdentifier: nil)
+        XCTAssertTrue(TerminalGuard.isBlocked(other, ownIdentity: bare))
+        let symlinked = Target(pid: 781, executablePath: "/tmp/build/debug/../debug/VisionMacApp", bundleIdentifier: nil)
+        XCTAssertTrue(TerminalGuard.isBlocked(symlinked, ownIdentity: bare), "paths are compared canonically")
+    }
+
+    func testOrdinaryAppsAreNotBlocked() {
+        let safari = Target(pid: 782, executablePath: "/Applications/Safari.app/Contents/MacOS/Safari",
+                            bundleIdentifier: "com.apple.Safari")
+        XCTAssertFalse(TerminalGuard.isBlocked(safari, ownIdentity: harness))
+        // Two unknown bundle ids are not "the same app".
+        let anonymous = Identity(pid: 4244, bundleIdentifier: nil, executablePath: nil)
+        let bareTool = Target(pid: 783, executablePath: nil, bundleIdentifier: nil)
+        XCTAssertFalse(TerminalGuard.isBlocked(bareTool, ownIdentity: anonymous))
+        let emptyID = Identity(pid: 4245, bundleIdentifier: "", executablePath: nil)
+        let emptyTarget = Target(pid: 784, executablePath: nil, bundleIdentifier: "")
+        XCTAssertFalse(TerminalGuard.isBlocked(emptyTarget, ownIdentity: emptyID))
+    }
+
+    func testLiveProcessLookups() {
         XCTAssertNotNil(TerminalGuard.executablePath(pid: getpid()), "resolves this test process")
-        XCTAssertFalse(TerminalGuard.isBlocked(pid: getpid()))
+        XCTAssertEqual(TerminalGuard.Identity.current.pid, getpid())
+        XCTAssertTrue(TerminalGuard.isBlocked(pid: getpid()), "the harness never types into its own process")
+        XCTAssertEqual(TerminalGuard.bundleIdentifier(executablePath: "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder")?.lowercased(),
+                       "com.apple.finder")
+        XCTAssertNil(TerminalGuard.bundleIdentifier(executablePath: "/usr/bin/true"), "a bare binary has no bundle")
+        let launchd = TerminalGuard.target(pid: 1)
+        XCTAssertFalse(TerminalGuard.isBlocked(launchd), "an unrelated process is not blocked")
+    }
+
+    func testKeyboardRefusesWhenTheFrontAppIsUnknownOrBlocked() {
+        let unknown = KeyboardTool.guardRefusal(front: nil, requested: nil, isBlocked: { _ in false })
+        XCTAssertNotNil(unknown, "typing blind is refused")
+        XCTAssertTrue(unknown?.contains("Automation") ?? false)
+
+        let terminal = KeyboardTool.guardRefusal(front: ("Terminal", 501), requested: nil, isBlocked: { $0 == 501 })
+        XCTAssertTrue(terminal?.contains("not typing into Terminal") ?? false, terminal ?? "nil")
+        let named = KeyboardTool.guardRefusal(front: ("iTerm2", 502), requested: "iTerm", isBlocked: { _ in true })
+        XCTAssertTrue(named?.contains("not typing into iTerm") ?? false, named ?? "nil")
+
+        XCTAssertNil(KeyboardTool.guardRefusal(front: ("Godot", 503), requested: "Godot", isBlocked: { _ in false }))
+        // The default check is the real guard: this test process is "the harness" here.
+        XCTAssertNotNil(KeyboardTool.guardRefusal(front: ("xctest", getpid()), requested: nil))
     }
 }
