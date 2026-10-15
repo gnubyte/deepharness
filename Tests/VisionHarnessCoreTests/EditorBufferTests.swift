@@ -10,7 +10,7 @@ final class EditorBufferTests: XCTestCase {
 
     override func setUp() async throws {
         root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("dsh-buf-\(UUID().uuidString)")
+            .appendingPathComponent("vision-buf-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 

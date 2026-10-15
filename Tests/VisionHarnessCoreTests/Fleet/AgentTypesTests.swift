@@ -6,7 +6,7 @@ final class AgentTypesTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        root = FleetTestDirectory("dsh-agents")
+        root = FleetTestDirectory("vision-agents")
     }
 
     override func tearDown() {

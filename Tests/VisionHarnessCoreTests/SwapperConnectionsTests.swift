@@ -15,7 +15,7 @@ final class SwapperConnectionsTests: XCTestCase {
     }
 
     private func defaults() -> UserDefaults {
-        let suite = "dsh.swapper.test.\(UUID().uuidString)"
+        let suite = "vision.swapper.test.\(UUID().uuidString)"
         suites.append(suite)
         return UserDefaults(suiteName: suite)!
     }

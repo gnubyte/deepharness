@@ -16,7 +16,7 @@ final class FleetConfigTests: XCTestCase {
     }
 
     private func defaults() -> UserDefaults {
-        let suite = "dsh.fleet.test.\(UUID().uuidString)"
+        let suite = "vision.fleet.test.\(UUID().uuidString)"
         suites.append(suite)
         return UserDefaults(suiteName: suite)!
     }

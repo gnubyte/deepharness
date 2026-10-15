@@ -11,7 +11,7 @@ final class FailoverHostTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        dir = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-failover-\(UUID().uuidString)", isDirectory: true)
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-failover-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
     }
@@ -27,7 +27,7 @@ final class FailoverHostTests: XCTestCase {
     }
 
     private func makeTransport(_ routes: [ProviderProfile]) -> AppTransport {
-        defaultsSuite = "dsh-failover-tests-\(UUID().uuidString)"
+        defaultsSuite = "vision-failover-tests-\(UUID().uuidString)"
         let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!, secrets: MemorySecretStore())
         config.providers = routes
         config.activeRoute = routes.first?.routeID

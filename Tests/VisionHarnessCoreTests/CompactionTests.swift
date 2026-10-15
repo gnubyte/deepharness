@@ -167,7 +167,7 @@ final class CompactionTests: XCTestCase {
 
     private func testRoot() -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("dsh-compact-\(UUID().uuidString)")
+            .appendingPathComponent("vision-compact-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }

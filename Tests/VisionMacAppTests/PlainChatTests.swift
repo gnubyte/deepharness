@@ -13,11 +13,11 @@ final class PlainChatTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        dir = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-plain-\(UUID().uuidString)", isDirectory: true)
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-plain-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
         FakeModelServer.reset { _, _ in .text("Hello!") }
-        defaultsSuite = "dsh-plain-tests-\(UUID().uuidString)"
+        defaultsSuite = "vision-plain-tests-\(UUID().uuidString)"
         let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!, secrets: MemorySecretStore())
         config.activate(.init(kind: .openAICompat, name: "stub", baseURL: "http://stub.test/v1", model: "stub-model"))
         config.preset = PermissionPreset.workspaceWrite.rawValue

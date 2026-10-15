@@ -12,7 +12,7 @@ final class SparkControllerTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        dir = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-spark-\(UUID().uuidString)", isDirectory: true)
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-spark-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // Nothing here reaches a real box: every Swapper request gets the fake server's 404.
         SparkSwapperClient.protocolClassesForTesting = [FakeModelServer.self]
@@ -31,7 +31,7 @@ final class SparkControllerTests: XCTestCase {
     }
 
     private func defaults() -> UserDefaults {
-        let suite = "dsh.spark.test.\(UUID().uuidString)"
+        let suite = "vision.spark.test.\(UUID().uuidString)"
         suites.append(suite)
         return UserDefaults(suiteName: suite)!
     }

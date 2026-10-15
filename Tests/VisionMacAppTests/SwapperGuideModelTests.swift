@@ -92,7 +92,7 @@ final class SwapperGuideModelTests: XCTestCase {
     }
 
     private func config(_ routes: [ProviderProfile] = [], main: Bool = true) -> AppConfig {
-        let suite = "dsh.swapperguide.test.\(UUID().uuidString)"
+        let suite = "vision.swapperguide.test.\(UUID().uuidString)"
         suites.append(suite)
         secrets = MemorySecretStore()
         let config = AppConfig(defaults: UserDefaults(suiteName: suite)!, secrets: secrets)

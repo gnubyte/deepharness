@@ -188,8 +188,8 @@ private final class InstallerHarness: @unchecked Sendable {
     let choicesFile = AWSLockedBox<Data?>(nil)
 
     init(test: XCTestCase) {
-        work = test.awsScratch("dsh-aws-install")
-        home = test.awsScratch("dsh-aws-home")
+        work = test.awsScratch("vision-aws-install")
+        home = test.awsScratch("vision-aws-home")
     }
 
     var requested: [URL] { AWSDownloadStub.requested }
@@ -527,7 +527,7 @@ final class AWSCLIInstallerTests: XCTestCase {
     // MARK: The link in ~/.local/bin
 
     func testTheUserLinkIsCreatedReplacedAndLeftAloneWhenItIsNotALink() throws {
-        let home = awsScratch("dsh-aws-home")
+        let home = awsScratch("vision-aws-home")
         var installer = AWSCLIInstaller(homeDirectory: home.path, workFolder: home["work"])
         installer.platformProblem = nil
         let link = home[".local/bin/aws"]

@@ -14,7 +14,7 @@ final class RosterConfigTests: XCTestCase {
     }
 
     private func defaults() -> UserDefaults {
-        let suite = "dsh.roster.test.\(UUID().uuidString)"
+        let suite = "vision.roster.test.\(UUID().uuidString)"
         suites.append(suite)
         return UserDefaults(suiteName: suite)!
     }

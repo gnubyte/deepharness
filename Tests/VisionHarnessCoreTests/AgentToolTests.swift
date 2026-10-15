@@ -5,7 +5,7 @@ final class AgentToolTests: XCTestCase {
 
     private func testRoot() -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("dsh-agenttool-\(UUID().uuidString)")
+            .appendingPathComponent("vision-agenttool-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
@@ -201,7 +201,7 @@ final class AgentToolGuardTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        root = FleetTestDirectory("dsh-agentguard")
+        root = FleetTestDirectory("vision-agentguard")
     }
 
     override func tearDown() {

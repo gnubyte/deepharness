@@ -12,10 +12,10 @@ final class PlanPanelTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        dir = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-plan-\(UUID().uuidString)", isDirectory: true)
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-plan-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
-        defaultsSuite = "dsh-plan-tests-\(UUID().uuidString)"
+        defaultsSuite = "vision-plan-tests-\(UUID().uuidString)"
         let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!, secrets: MemorySecretStore())
         config.activate(.init(kind: .openAICompat, name: "stub", baseURL: "http://stub.test/v1", model: "stub-model"))
         config.preset = PermissionPreset.fullAccess.rawValue

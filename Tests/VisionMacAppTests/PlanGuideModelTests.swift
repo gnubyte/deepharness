@@ -41,7 +41,7 @@ final class PlanGuideModelTests: XCTestCase {
     }
 
     private func config(_ routes: [ProviderProfile] = []) -> AppConfig {
-        let suite = "dsh.planguide.test.\(UUID().uuidString)"
+        let suite = "vision.planguide.test.\(UUID().uuidString)"
         suites.append(suite)
         secrets = MemorySecretStore()
         let config = AppConfig(defaults: UserDefaults(suiteName: suite)!, secrets: secrets)

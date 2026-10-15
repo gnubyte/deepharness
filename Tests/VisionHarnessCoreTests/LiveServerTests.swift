@@ -1,17 +1,17 @@
 import XCTest
 @testable import VisionHarnessCore
 
-/// Against a real OpenAI-compatible server. Skipped unless DSH_LIVE_BASE_URL is set:
-///   DSH_LIVE_BASE_URL=https://192.168.68.69:11443/v1 DSH_LIVE_KEY=vllm-local swift test --filter LiveServerTests
+/// Against a real OpenAI-compatible server. Skipped unless VISION_LIVE_BASE_URL is set:
+///   VISION_LIVE_BASE_URL=https://192.168.68.69:11443/v1 VISION_LIVE_KEY=vllm-local swift test --filter LiveServerTests
 final class LiveServerTests: XCTestCase {
     private var profile: ProviderProfile!
 
     override func setUpWithError() throws {
-        guard let base = ProcessInfo.processInfo.environment["DSH_LIVE_BASE_URL"] else {
-            throw XCTSkip("set DSH_LIVE_BASE_URL to run live server tests")
+        guard let base = ProcessInfo.processInfo.environment["VISION_LIVE_BASE_URL"] else {
+            throw XCTSkip("set VISION_LIVE_BASE_URL to run live server tests")
         }
         profile = ProviderProfile(kind: .openAI, name: "live", baseURL: base,
-                                  apiKey: ProcessInfo.processInfo.environment["DSH_LIVE_KEY"],
+                                  apiKey: ProcessInfo.processInfo.environment["VISION_LIVE_KEY"],
                                   model: "a-model-that-was-swapped-out")
         ReasoningEffortCache.shared.reset()
     }

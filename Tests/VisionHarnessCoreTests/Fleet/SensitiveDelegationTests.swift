@@ -8,7 +8,7 @@ final class SensitiveDelegationTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        dir = FleetTestDirectory("dsh-sensitive")
+        dir = FleetTestDirectory("vision-sensitive")
     }
 
     override func tearDown() {

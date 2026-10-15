@@ -282,7 +282,7 @@ final class EngineTests: XCTestCase {
 
     private func makeTempDirectory() throws -> URL {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("dsh-tests-\(UUID().uuidString)")
+            .appendingPathComponent("vision-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.standardizedFileURL
     }

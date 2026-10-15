@@ -1,16 +1,16 @@
 import XCTest
 @testable import VisionHarnessCore
 
-/// Against a Spark Swapper 2.0 running in demo mode on plain HTTP. Skipped unless DSH_SWAPPER_DEMO_URL is set:
+/// Against a Spark Swapper 2.0 running in demo mode on plain HTTP. Skipped unless VISION_SWAPPER_DEMO_URL is set:
 ///   SWAPPER_DEMO=1 SWAPPER_DEMO_HTTP=1 SWAPPER_BIND=127.0.0.1 SWAPPER_PORT=18999 … python3 swapper/app.py
-///   DSH_SWAPPER_DEMO_URL=http://127.0.0.1:18999 swift test --filter SwapperDemoLiveTests
-/// (DSH_SWAPPER_DEMO_INSTALL=1 also starts an install, which the demo really runs.)
+///   VISION_SWAPPER_DEMO_URL=http://127.0.0.1:18999 swift test --filter SwapperDemoLiveTests
+/// (VISION_SWAPPER_DEMO_INSTALL=1 also starts an install, which the demo really runs.)
 /// (The demo signs in as admin/admin. Its connection codes name https addresses that don't answer in demo
 /// mode, so the code is only decoded here, not used to connect.)
 final class SwapperDemoLiveTests: XCTestCase {
     func testTokensCodesStatusInstallAndSwap() async throws {
-        guard let raw = ProcessInfo.processInfo.environment["DSH_SWAPPER_DEMO_URL"], let url = URL(string: raw) else {
-            throw XCTSkip("set DSH_SWAPPER_DEMO_URL to run")
+        guard let raw = ProcessInfo.processInfo.environment["VISION_SWAPPER_DEMO_URL"], let url = URL(string: raw) else {
+            throw XCTSkip("set VISION_SWAPPER_DEMO_URL to run")
         }
         // A login makes an app token, and the code it comes with decodes. (Over the demo's plain HTTP the session
         // cookie, being Secure, isn't sent back by URLSession, so the cookie is passed by hand here.)
@@ -46,7 +46,7 @@ final class SwapperDemoLiveTests: XCTestCase {
                 XCTAssertEqual(error as? SwapperError, .notInstalled)
             }
         }
-        if ProcessInfo.processInfo.environment["DSH_SWAPPER_DEMO_INSTALL"] == "1",
+        if ProcessInfo.processInfo.environment["VISION_SWAPPER_DEMO_INSTALL"] == "1",
            let missing = status.ordered.first(where: { !$0.isInstalled && $0.install != nil }) {
             let job = try await client.installModel(missing.key)
             XCTAssertEqual(job?.installingModel, missing.key)

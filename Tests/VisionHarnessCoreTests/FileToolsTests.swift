@@ -5,7 +5,7 @@ final class FileToolsTests: XCTestCase {
 
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("dsh-filetools-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("vision-filetools-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }

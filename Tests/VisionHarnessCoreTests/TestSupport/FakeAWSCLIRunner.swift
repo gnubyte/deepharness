@@ -228,7 +228,7 @@ final class AWSScratchDirectory: @unchecked Sendable {
 
 extension XCTestCase {
     /// A scratch folder that goes away when the test ends.
-    func awsScratch(_ label: String = "dsh-aws") -> AWSScratchDirectory {
+    func awsScratch(_ label: String = "vision-aws") -> AWSScratchDirectory {
         let directory = AWSScratchDirectory(label)
         addTeardownBlock { directory.remove() }
         return directory

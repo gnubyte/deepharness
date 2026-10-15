@@ -15,7 +15,7 @@ final class ShieldTermsTests: XCTestCase {
     }
 
     private func defaults() -> UserDefaults {
-        let suite = "dsh.shieldterms.test.\(UUID().uuidString)"
+        let suite = "vision.shieldterms.test.\(UUID().uuidString)"
         suites.append(suite)
         return UserDefaults(suiteName: suite)!
     }

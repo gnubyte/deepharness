@@ -220,7 +220,7 @@ final class AWSProfilesTests: XCTestCase {
     }
 
     func testLoadsFromTheFilesTheEnvironmentNames() throws {
-        let dir = awsScratch("dsh-aws-profiles")
+        let dir = awsScratch("vision-aws-profiles")
         let config = dir.write("config", Self.config)
         let credentials = dir.write("credentials", Self.credentials)
         var env = ["AWS_CONFIG_FILE": config, "AWS_SHARED_CREDENTIALS_FILE": credentials, "HOME": dir.path]
@@ -234,7 +234,7 @@ final class AWSProfilesTests: XCTestCase {
     }
 
     func testTheDefaultFilesAreUnderHome() throws {
-        let home = awsScratch("dsh-aws-home")
+        let home = awsScratch("vision-aws-home")
         home.write(".aws/config", "[profile from-home]\nregion = eu-north-1\n")
         let profiles = AWSProfiles.load(environment: ["HOME": home.path])
         XCTAssertEqual(profiles.profiles.map(\.name), ["from-home"])
@@ -243,7 +243,7 @@ final class AWSProfilesTests: XCTestCase {
     }
 
     func testUnreadableOrOddFilesCountAsEmpty() throws {
-        let dir = awsScratch("dsh-aws-profiles")
+        let dir = awsScratch("vision-aws-profiles")
         try FileManager.default.createDirectory(atPath: dir["a-folder"], withIntermediateDirectories: true)
         let loaded = AWSProfiles.load(environment: ["AWS_CONFIG_FILE": dir["a-folder"], "AWS_SHARED_CREDENTIALS_FILE": dir["nothing"], "HOME": dir.path])
         XCTAssertTrue(loaded.profiles.isEmpty, "a folder where a file should be is not a file")

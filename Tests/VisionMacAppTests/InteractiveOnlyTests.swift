@@ -11,11 +11,11 @@ final class InteractiveOnlyTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        dir = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-interactive-\(UUID().uuidString)", isDirectory: true)
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-interactive-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
         FakeModelServer.reset { _, _ in .text("Done.\nGOAL_COMPLETE") }
-        defaultsSuite = "dsh-interactive-tests-\(UUID().uuidString)"
+        defaultsSuite = "vision-interactive-tests-\(UUID().uuidString)"
         let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!, secrets: MemorySecretStore())
         config.providers = [
             ProviderProfile(kind: .openAICompat, name: "Qwen Coding Plan", baseURL: "http://plan.test/v1", model: "stub-model",

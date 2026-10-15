@@ -1,15 +1,15 @@
 import XCTest
 @testable import VisionHarnessCore
 
-/// Against a running Spark Swapper. Skipped unless DSH_SWAPPER_URL is set:
-///   DSH_SWAPPER_URL=https://127.0.0.1:18999 DSH_SWAPPER_USER=… DSH_SWAPPER_PASS=… swift test --filter SparkSwapperLiveTests
+/// Against a running Spark Swapper. Skipped unless VISION_SWAPPER_URL is set:
+///   VISION_SWAPPER_URL=https://127.0.0.1:18999 VISION_SWAPPER_USER=… VISION_SWAPPER_PASS=… swift test --filter SparkSwapperLiveTests
 final class SparkSwapperLiveTests: XCTestCase {
     func testPinLoginStatusAndSwap() async throws {
         let env = ProcessInfo.processInfo.environment
-        guard let raw = env["DSH_SWAPPER_URL"], let url = URL(string: raw) else {
-            throw XCTSkip("set DSH_SWAPPER_URL to run")
+        guard let raw = env["VISION_SWAPPER_URL"], let url = URL(string: raw) else {
+            throw XCTSkip("set VISION_SWAPPER_URL to run")
         }
-        let user = env["DSH_SWAPPER_USER"] ?? "", pass = env["DSH_SWAPPER_PASS"] ?? ""
+        let user = env["VISION_SWAPPER_USER"] ?? "", pass = env["VISION_SWAPPER_PASS"] ?? ""
 
         // Unpinned: a self-signed cert is refused, and its fingerprint surfaces.
         let unpinned = SparkSwapperClient(baseURL: url, username: user, password: pass, pinnedFingerprint: nil)
@@ -36,7 +36,7 @@ final class SparkSwapperLiveTests: XCTestCase {
         XCTAssertEqual(status.resolve("27b"), "standard")
         print("SWAPPER: active=\(status.active ?? "-") models=\(status.ordered.map(\.key))")
 
-        if env["DSH_SWAPPER_DO_SWAP"] == "1" {
+        if env["VISION_SWAPPER_DO_SWAP"] == "1" {
             try await client.swap(to: "flash")
             var job: SwapperStatus.Job?
             for _ in 0..<20 {

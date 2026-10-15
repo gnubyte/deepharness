@@ -454,14 +454,14 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
         let aws = script(dir, #"""
             for a in "$@"; do echo "arg=[$a]"; done
             echo "pager=[${AWS_PAGER-unset}] hint=[$AWS_CLI_AGENT_TOOLKIT_HINT_DISABLED] prompt=[$AWS_CLI_AUTO_PROMPT] enc=[$AWS_CLI_OUTPUT_ENCODING] fmt=[$AWS_CLI_ERROR_FORMAT] py=[$PYTHONUTF8]"
-            echo "extra=[$DSH_EXTRA] gone=[${HOME-unset}]"
+            echo "extra=[$VISION_EXTRA] gone=[${HOME-unset}]"
             echo "café ✓" >&2
             exit 3
             """#)
         let lines = AWSLockedBox<[AWSCLILine]>([])
         let result = try await ProcessAWSCLIRunner(executable: aws).run(
             ["--form-data", #"a b "c" 'd' $HOME;x"#],
-            options: AWSCLIRunOptions(environment: ["DSH_EXTRA": "yes", "HOME": nil], onLine: { lines.append($0) }))
+            options: AWSCLIRunOptions(environment: ["VISION_EXTRA": "yes", "HOME": nil], onLine: { lines.append($0) }))
         XCTAssertEqual(result.exitCode, 3)
         XCTAssertFalse(result.succeeded)
         XCTAssertTrue(result.stdout.contains("arg=[--form-data]\narg=[a b \"c\" 'd' $HOME;x]\n"), result.stdout)
@@ -494,8 +494,8 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
 
     func testTheRunnerUsesThisProcessesEnvironmentAndAGoodPath() async throws {
         let dir = awsScratch()
-        let aws = script(dir, #"echo "path=[$PATH]"; echo "marker=[$DSH_TEST_MARKER]""#)
-        let runner = ProcessAWSCLIRunner(executable: aws, baseEnvironment: ["PATH": "/usr/bin:/bin", "DSH_TEST_MARKER": "inherited"], killGrace: 1, outputGrace: 1)
+        let aws = script(dir, #"echo "path=[$PATH]"; echo "marker=[$VISION_TEST_MARKER]""#)
+        let runner = ProcessAWSCLIRunner(executable: aws, baseEnvironment: ["PATH": "/usr/bin:/bin", "VISION_TEST_MARKER": "inherited"], killGrace: 1, outputGrace: 1)
         let result = try await runner.run(["x"], options: AWSCLIRunOptions())
         XCTAssertTrue(result.stdout.contains("marker=[inherited]"), result.stdout)
         XCTAssertTrue(result.stdout.contains("path=[/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:"), result.stdout)
@@ -831,10 +831,10 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
 
     func testAMissingOrUnrunnableProgramIsAStartError() async {
         let missing = await awsAssertThrows(AWSCLIStartError.self) {
-            _ = try await ProcessAWSCLIRunner(executable: "/nonexistent/dsh/aws").run(["--version"], options: AWSCLIRunOptions())
+            _ = try await ProcessAWSCLIRunner(executable: "/nonexistent/vision/aws").run(["--version"], options: AWSCLIRunOptions())
         }
-        XCTAssertEqual(missing?.executable, "/nonexistent/dsh/aws")
-        XCTAssertEqual(missing?.localizedDescription, "Couldn't start the AWS CLI (/nonexistent/dsh/aws): the file doesn't exist.")
+        XCTAssertEqual(missing?.executable, "/nonexistent/vision/aws")
+        XCTAssertEqual(missing?.localizedDescription, "Couldn't start the AWS CLI (/nonexistent/vision/aws): the file doesn't exist.")
         let dir = awsScratch()
         let plain = dir.write("plain", "not a program")
         let notExecutable = await awsAssertThrows(AWSCLIStartError.self) { _ = try await ProcessAWSCLIRunner(executable: plain).run([], options: AWSCLIRunOptions()) }
@@ -866,14 +866,14 @@ final class ProcessAWSCLIRunnerTests: XCTestCase {
         let dir = awsScratch()
         let aws = script(dir, #"""
             case "$*" in
-              *"sts get-caller-identity --profile dsh --region us-east-1 --output json"*) echo '{"Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/alice"}' ;;
+              *"sts get-caller-identity --profile vision --region us-east-1 --output json"*) echo '{"Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/alice"}' ;;
               *) echo "An error occurred (ValidationException) when calling the Nope operation: unexpected: $*" >&2; exit 254 ;;
             esac
             """#)
         let cli = AWSCLI.forPath(aws)
-        let identity = try await cli.runJSON(["sts", "get-caller-identity"], profile: "dsh", region: "us-east-1")
+        let identity = try await cli.runJSON(["sts", "get-caller-identity"], profile: "vision", region: "us-east-1")
         XCTAssertEqual(identity["Account"]?.string, "123456789012")
-        let failure = await awsAssertThrows(AWSCLIException.self) { _ = try await cli.runJSON(["sts", "other"], profile: "dsh", region: "us-east-1") }
+        let failure = await awsAssertThrows(AWSCLIException.self) { _ = try await cli.runJSON(["sts", "other"], profile: "vision", region: "us-east-1") }
         XCTAssertEqual(failure?.kind, .invalid)
     }
 }

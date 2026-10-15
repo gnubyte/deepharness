@@ -26,7 +26,7 @@ final class BedrockConverseTests: XCTestCase {
 
     private static func profile(_ model: String) -> ProviderProfile {
         ProviderProfile(kind: .bedrock, name: "Bedrock", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-                        model: model, awsProfile: "dsh", awsRegion: "us-east-1")
+                        model: model, awsProfile: "vision", awsRegion: "us-east-1")
     }
 
     private func makeBody(_ messages: [LLMMessage], model: String = BedrockConverseTests.llama, tools: [ToolSpec] = [],

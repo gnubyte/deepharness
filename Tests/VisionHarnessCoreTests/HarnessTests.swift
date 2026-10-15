@@ -157,7 +157,7 @@ final class ProjectContextTests: XCTestCase {
 
     override func setUpWithError() throws {
         root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("dsh-ctx-\(UUID().uuidString)")
+            .appendingPathComponent("vision-ctx-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         isolated = SkillLocations(home: root.appendingPathComponent("fake-home"),
                                   appSupport: root.appendingPathComponent("fake-support"))
@@ -265,7 +265,7 @@ final class ProjectContextTests: XCTestCase {
 // MARK: - Permissions
 
 final class PermissionTests: XCTestCase {
-    private let root = URL(fileURLWithPath: "/tmp/dsh-project").standardizedFileURL
+    private let root = URL(fileURLWithPath: "/tmp/vision-project").standardizedFileURL
 
     private func policy(_ preset: PermissionPreset) -> PermissionPolicy {
         PermissionPolicy(preset: preset, workspaceRoot: root)
@@ -273,7 +273,7 @@ final class PermissionTests: XCTestCase {
 
     func testRelativePathsResolveInsideTheWorkspace() {
         let (url, inside) = policy(.workspaceWrite).resolve("src/main.swift")
-        XCTAssertEqual(url.path, "/tmp/dsh-project/src/main.swift")
+        XCTAssertEqual(url.path, "/tmp/vision-project/src/main.swift")
         XCTAssertTrue(inside)
     }
 
@@ -284,7 +284,7 @@ final class PermissionTests: XCTestCase {
 
     /// A sibling directory sharing a name prefix is *not* inside the project.
     func testPrefixSiblingIsNotInside() {
-        let (_, inside) = policy(.workspaceWrite).resolve("/tmp/dsh-project-other/file")
+        let (_, inside) = policy(.workspaceWrite).resolve("/tmp/vision-project-other/file")
         XCTAssertFalse(inside)
     }
 

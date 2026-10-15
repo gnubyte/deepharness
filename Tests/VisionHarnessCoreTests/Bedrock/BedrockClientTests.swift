@@ -1385,7 +1385,7 @@ final class ProviderClientsTests: XCTestCase {
 final class BedrockErrorMappingTests: XCTestCase {
     private typealias AWSError = BedrockClient.BedrockError
 
-    private func client(awsProfile: String? = "dsh", apiKey: String? = nil, model: String = "the-model") -> BedrockClient {
+    private func client(awsProfile: String? = "vision", apiKey: String? = nil, model: String = "the-model") -> BedrockClient {
         BedrockClient(profile: ProviderProfile(kind: .bedrock, name: "B", baseURL: "", apiKey: apiKey, model: model,
                                                awsProfile: awsProfile, awsRegion: "eu-west-1"),
                       credentials: nil)
@@ -1440,8 +1440,8 @@ final class BedrockErrorMappingTests: XCTestCase {
             guard case .rejected(let status, let message, let body, let permanent) = mapped else { return XCTFail("\(type): \(mapped)") }
             XCTAssertEqual(status, 403, type)
             XCTAssertTrue(permanent, type)
-            XCTAssertTrue(message.contains("profile \"dsh\""), message)
-            XCTAssertTrue(message.contains("aws login --profile dsh"), message)
+            XCTAssertTrue(message.contains("profile \"vision\""), message)
+            XCTAssertTrue(message.contains("aws login --profile vision"), message)
             XCTAssertEqual(body, "\(type): nope")
         }
         // Inside a stream there is no HTTP status: it is reported as the 403 it is. (Expired credentials need

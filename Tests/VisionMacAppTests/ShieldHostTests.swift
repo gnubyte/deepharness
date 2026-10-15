@@ -12,7 +12,7 @@ final class ShieldHostTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        dir = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-shield-\(UUID().uuidString)", isDirectory: true)
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-shield-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
         ProviderClients.shield = ShieldPolicy()
@@ -30,7 +30,7 @@ final class ShieldHostTests: XCTestCase {
     }
 
     private func makeTransport(_ route: ProviderProfile) -> AppTransport {
-        defaultsSuite = "dsh-shield-tests-\(UUID().uuidString)"
+        defaultsSuite = "vision-shield-tests-\(UUID().uuidString)"
         let config = AppConfig(defaults: UserDefaults(suiteName: defaultsSuite)!, secrets: MemorySecretStore())
         config.providers = [route]
         config.activeRoute = route.routeID

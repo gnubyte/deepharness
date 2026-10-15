@@ -8,7 +8,7 @@ final class SubagentEngineTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        root = FleetTestDirectory("dsh-subagent-engine")
+        root = FleetTestDirectory("vision-subagent-engine")
     }
 
     override func tearDown() {
@@ -300,7 +300,7 @@ final class SubagentEngineTests: XCTestCase {
 
     func testAnApprovedWriteOutsideTheWorkspaceStillRunsAndADeclinedOneDoesNot() async throws {
         // (The engine's own tests of this write real files, which not every sandbox allows; the tool here only records.)
-        let outside = FleetTestDirectory("dsh-sibling")
+        let outside = FleetTestDirectory("vision-sibling")
         defer { outside.remove() }
         let arguments = "{\"file_path\":\"\(outside.url.appendingPathComponent("elsewhere.txt").path)\",\"content\":\"x\"}"
 

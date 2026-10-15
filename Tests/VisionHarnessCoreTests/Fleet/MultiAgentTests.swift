@@ -6,7 +6,7 @@ final class MultiAgentTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        root = FleetTestDirectory("dsh-multiagent")
+        root = FleetTestDirectory("vision-multiagent")
     }
 
     override func tearDown() {

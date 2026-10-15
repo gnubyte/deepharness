@@ -11,7 +11,7 @@ import XCTest
 final class FleetTestDirectory: @unchecked Sendable {
     let url: URL
 
-    init(_ name: String = "dsh-fleet") {
+    init(_ name: String = "vision-fleet") {
         let base = ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()
         url = URL(fileURLWithPath: base, isDirectory: true)
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)

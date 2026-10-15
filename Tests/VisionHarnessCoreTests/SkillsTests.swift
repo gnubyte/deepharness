@@ -11,7 +11,7 @@ final class SkillFixture {
     var locations: SkillLocations { SkillLocations(home: home, appSupport: support) }
 
     init() throws {
-        base = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("dsh-skills-\(UUID().uuidString)")
+        base = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("vision-skills-\(UUID().uuidString)")
         project = base.appendingPathComponent("project")
         home = base.appendingPathComponent("home")
         support = base.appendingPathComponent("support")

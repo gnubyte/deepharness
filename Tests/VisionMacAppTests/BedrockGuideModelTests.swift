@@ -155,7 +155,7 @@ final class BedrockGuideModelTests: XCTestCase {
                                        invoke: "mistral.mistral-large-2407-v1:0", images: false)
 
     private func config(_ routes: [ProviderProfile] = [], main: String? = nil) -> AppConfig {
-        let suite = "dsh.guide.test.\(UUID().uuidString)"
+        let suite = "vision.guide.test.\(UUID().uuidString)"
         suites.append(suite)
         let config = AppConfig(defaults: UserDefaults(suiteName: suite)!, secrets: MemorySecretStore())
         config.providers = routes

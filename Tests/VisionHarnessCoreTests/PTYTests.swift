@@ -31,14 +31,14 @@ final class PTYTests: XCTestCase {
     }
 
     func testShellRunsAndOutputReachesTheScreen() throws {
-        let screen = try runOnPTY("echo dsh-marker-42")
-        XCTAssertTrue(screen.text.contains("dsh-marker-42"),
+        let screen = try runOnPTY("echo vision-marker-42")
+        XCTAssertTrue(screen.text.contains("vision-marker-42"),
                       "expected the echoed marker on screen, got:\n\(screen.text)")
     }
 
     func testWorkingDirectoryIsTheProjectFolder() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("dsh-pty-\(UUID().uuidString)")
+            .appendingPathComponent("vision-pty-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try "hello".write(to: root.appendingPathComponent("sentinel.txt"),
