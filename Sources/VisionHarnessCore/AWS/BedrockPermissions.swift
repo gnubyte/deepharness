@@ -23,7 +23,7 @@ public enum BedrockPermissions {
           "Version": "2012-10-17",
           "Statement": [
             {
-              "Sid": "DshCallBedrockModels",
+              "Sid": "VisionCallBedrockModels",
               "Effect": "Allow",
               "Action": [
                 "bedrock:InvokeModel",
@@ -35,7 +35,7 @@ public enum BedrockPermissions {
               ]
             },
             {
-              "Sid": "DshSetUpModelAccess",
+              "Sid": "VisionSetUpModelAccess",
               "Effect": "Allow",
               "Action": [
                 "bedrock:ListFoundationModels",
@@ -51,13 +51,13 @@ public enum BedrockPermissions {
               "Resource": "*"
             },
             {
-              "Sid": "DshBedrockApiKeys",
+              "Sid": "VisionBedrockApiKeys",
               "Effect": "Allow",
               "Action": "bedrock:CallWithBearerToken",
               "Resource": "*"
             },
             {
-              "Sid": "DshMarketplaceSubscriptionsThroughBedrock",
+              "Sid": "VisionMarketplaceSubscriptionsThroughBedrock",
               "Effect": "Allow",
               "Action": [
                 "aws-marketplace:Subscribe",
@@ -72,7 +72,7 @@ public enum BedrockPermissions {
               }
             },
             {
-              "Sid": "DshSignInWithAwsLogin",
+              "Sid": "VisionSignInWithAwsLogin",
               "Effect": "Allow",
               "Action": [
                 "signin:AuthorizeOAuth2Access",

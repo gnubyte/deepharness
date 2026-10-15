@@ -29,9 +29,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
   <key>CFBundleName</key>            <string>DSH</string>
   <key>CFBundleDisplayName</key>     <string>DSH</string>
-  <key>CFBundleIdentifier</key>      <string>dev.local.dsh.mac</string>
-  <key>CFBundleVersion</key>         <string>16</string>
-  <key>CFBundleShortVersionString</key> <string>0.14.0</string>
+  <!-- The settings file is named after the identifier (AppIdentity.bundleIdentifier). The first launch brings
+       over the settings, data folder and Keychain items of the build before the rename (LaunchMigration). -->
+  <key>CFBundleIdentifier</key>      <string>com.503cm.vision.mac</string>
+  <key>CFBundleVersion</key>         <string>17</string>
+  <key>CFBundleShortVersionString</key> <string>0.15.0</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleExecutable</key>      <string>Vision</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>

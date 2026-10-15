@@ -23,21 +23,21 @@ public enum TerminalGuard {
     /// The harness's own app bundle names. A copy of an older build (named
     /// before the rename) is still this harness, with the same composer and
     /// approval buttons, so the legacy name stays blocked too.
-    static let harnessBundleNames: [String] = ["Vision.app", legacyHarnessBundleName]
+    static let harnessBundleNames: [String] = ["\(AppIdentity.name).app", legacyHarnessBundleName]
 
     /// Legacy: the app bundle name before the Vision rename. Kept so an old
     /// copy of the app that is still installed and running is never typed into.
-    static let legacyHarnessBundleName = "DSH.app"
+    static let legacyHarnessBundleName = "\(AppIdentity.Legacy.name).app"
 
     /// App bundle names whose windows must not receive synthesized typing.
     static let blocked: [String] = terminalBundleNames + harnessBundleNames
 
     /// The harness's bundle identifiers, current and legacy, blocked even
     /// when the bundle itself has been renamed on disk.
-    static let harnessBundleIdentifiers: [String] = ["com.503cm.vision.mac", legacyHarnessBundleIdentifier]
+    static let harnessBundleIdentifiers: [String] = [AppIdentity.bundleIdentifier, legacyHarnessBundleIdentifier]
 
     /// Legacy: the bundle identifier before the Vision rename (an old build).
-    static let legacyHarnessBundleIdentifier = "dev.local.dsh.mac"
+    static let legacyHarnessBundleIdentifier = AppIdentity.Legacy.bundleIdentifier
 
     /// Who this process is. Captured once: none of it changes while running.
     public struct Identity: Sendable, Equatable {

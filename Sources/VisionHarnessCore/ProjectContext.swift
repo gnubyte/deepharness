@@ -40,7 +40,8 @@ public struct ProjectContext: Sendable {
     /// `.cursorrules`, `.claude/CLAUDE.md` and `CLAUDE.local.md` are the same
     /// idea in Cursor's and Claude Code's layouts.
     public static let instructionNames = ["AGENTS.md", "QWEN.md", "CLAUDE.md", ".claude/CLAUDE.md",
-                                          "CLAUDE.local.md", ".cursorrules", "DSH.md", "MEMORY.md"]
+                                          "CLAUDE.local.md", ".cursorrules", AppIdentity.projectInstructionsFileName,
+                                          AppIdentity.Legacy.projectInstructionsFileName, "MEMORY.md"]
 
     public static var userSkillsDirectory: URL { SkillLocations.standard.userSkills }
 

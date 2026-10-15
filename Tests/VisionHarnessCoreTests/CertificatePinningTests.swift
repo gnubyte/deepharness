@@ -93,7 +93,7 @@ final class CertificatePinningTests: XCTestCase {
         for try await _ in client.stream(LLMRequest(systemPrompt: "", messages: [.user("hi")], tools: [], model: "m")) {}
         XCTAssertEqual(agents.items.count, 2)
         for agent in agents.items {
-            XCTAssertTrue(agent.hasPrefix("DSH/"), agent)
+            XCTAssertTrue(agent.hasPrefix("Vision/"), agent)
             XCTAssertTrue(agent.hasSuffix("(macOS)"), agent)
         }
     }

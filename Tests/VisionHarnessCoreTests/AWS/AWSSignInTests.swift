@@ -18,8 +18,8 @@ final class AWSSignInTests: XCTestCase {
 
     private let loggedIn = AWSCLIResult(
         exitCode: 0,
-        stdout: "\nUpdated profile dsh-bedrock to use arn:aws:iam::111122223333:user/alice credentials.\n"
-            + "Use \"--profile dsh-bedrock\" to use the new credentials, such as \"aws sts get-caller-identity --profile dsh-bedrock\"\n",
+        stdout: "\nUpdated profile vision-bedrock to use arn:aws:iam::111122223333:user/alice credentials.\n"
+            + "Use \"--profile vision-bedrock\" to use the new credentials, such as \"aws sts get-caller-identity --profile vision-bedrock\"\n",
         stderr: "")
 
     private func profiles(_ config: String?, _ credentials: String? = nil) -> @Sendable () -> AWSProfiles {
@@ -31,12 +31,12 @@ final class AWSSignInTests: XCTestCase {
     }
 
     func testBuildsTheLoginCommand() {
-        XCTAssertEqual(AWSSignIn.loginArguments(profile: "dsh-bedrock", region: "eu-central-1"), ["login", "--profile", "dsh-bedrock", "--region", "eu-central-1"])
+        XCTAssertEqual(AWSSignIn.loginArguments(profile: "vision-bedrock", region: "eu-central-1"), ["login", "--profile", "vision-bedrock", "--region", "eu-central-1"])
         XCTAssertEqual(AWSSignIn.loginArguments(profile: "p", region: "us-east-1", remote: true, redirectPort: 8400),
                        ["login", "--profile", "p", "--region", "us-east-1", "--remote", "--redirect-port", "8400"])
         XCTAssertEqual(AWSSignIn.ssoLoginArguments(profile: "corp-dev"), ["sso", "login", "--profile", "corp-dev"])
         XCTAssertEqual(AWSSignIn.ssoLoginArguments(profile: "corp-dev", remote: true), ["sso", "login", "--profile", "corp-dev", "--use-device-code", "--no-browser"])
-        XCTAssertEqual(AWSSignIn.defaultProfile, "dsh-bedrock")
+        XCTAssertEqual(AWSSignIn.defaultProfile, "vision-bedrock")
         XCTAssertEqual(AWSSignIn.defaultRegion, "us-east-1")
     }
 
@@ -50,12 +50,12 @@ final class AWSSignInTests: XCTestCase {
             let count = loads.mutate { value -> Int in defer { value += 1 }; return value }
             return count == 0
                 ? AWSProfiles.parse(config: "[default]\nregion = us-west-2\n", credentials: nil)
-                : AWSProfiles.parse(config: "[profile dsh-bedrock]\nlogin_session = arn:aws:iam::111122223333:user/alice\n", credentials: nil)
+                : AWSProfiles.parse(config: "[profile vision-bedrock]\nlogin_session = arn:aws:iam::111122223333:user/alice\n", credentials: nil)
         }
         let output = AWSLockedBox<[String]>([])
         let links = AWSLockedBox<[AWSSignInLink]>([])
 
-        let result = try await signIn.login(profile: "dsh-bedrock", region: "eu-central-1", options: AWSSignInOptions(
+        let result = try await signIn.login(profile: "vision-bedrock", region: "eu-central-1", options: AWSSignInOptions(
             onOutput: { output.append($0) }, onSignInLink: { links.append($0) }))
 
         XCTAssertTrue(result.succeeded)
@@ -65,15 +65,15 @@ final class AWSSignInTests: XCTestCase {
         XCTAssertTrue(output.value.contains("Attempting to open your default browser. If the browser does not open, open the following URL."))
         let login = try XCTUnwrap(runner.calls(to: ["login"]).first)
         XCTAssertEqual(runner.calls(to: ["login"]).count, 1)
-        XCTAssertEqual(login.args, ["login", "--profile", "dsh-bedrock", "--region", "eu-central-1"])
+        XCTAssertEqual(login.args, ["login", "--profile", "vision-bedrock", "--region", "eu-central-1"])
         XCTAssertEqual(login.options.timeout, 15 * 60)
-        XCTAssertEqual(runner.calls(to: ["configure"]).map(\.args), [["configure", "set", "region", "eu-central-1", "--profile", "dsh-bedrock"]])
+        XCTAssertEqual(runner.calls(to: ["configure"]).map(\.args), [["configure", "set", "region", "eu-central-1", "--profile", "vision-bedrock"]])
     }
 
     func testARegionAlreadyInTheProfileIsLeftAlone() async throws {
         let runner = FakeAWSCLIRunner().onInteractive(["login"], sameDeviceOutput(), final: loggedIn)
-        let signIn = makeSignIn(runner, profiles("[profile dsh-bedrock]\nlogin_session = old\nregion = eu-central-1\n"))
-        let result = try await signIn.login(profile: "dsh-bedrock", region: "eu-central-1")
+        let signIn = makeSignIn(runner, profiles("[profile vision-bedrock]\nlogin_session = old\nregion = eu-central-1\n"))
+        let result = try await signIn.login(profile: "vision-bedrock", region: "eu-central-1")
         XCTAssertTrue(result.succeeded)
         XCTAssertTrue(runner.calls(to: ["configure"]).isEmpty)
     }
@@ -82,19 +82,19 @@ final class AWSSignInTests: XCTestCase {
         let runner = FakeAWSCLIRunner()
             .onInteractive(["login"], sameDeviceOutput(), final: loggedIn)
             .fail(["configure", "set"], stderr: "aws: [ERROR]: [Errno 13] Permission denied: '/Users/me/.aws/config'", exitCode: 255)
-        let result = try await makeSignIn(runner, profiles(nil)).login(profile: "dsh-bedrock", region: "us-east-1")
+        let result = try await makeSignIn(runner, profiles(nil)).login(profile: "vision-bedrock", region: "us-east-1")
         XCTAssertTrue(result.succeeded)
         XCTAssertEqual(result.message, "Signed in, but DSH couldn't save the Region in the profile: [Errno 13] Permission denied: '/Users/me/.aws/config'")
     }
 
     func testAnswersTheOverwriteQuestion() async throws {
-        let question = "\nProfile dsh-bedrock is already configured to use session arn:aws:iam::111122223333:user/bob. Do you want to overwrite it to use arn:aws:iam::111122223333:user/alice instead? (y/n): "
+        let question = "\nProfile vision-bedrock is already configured to use session arn:aws:iam::111122223333:user/bob. Do you want to overwrite it to use arn:aws:iam::111122223333:user/alice instead? (y/n): "
         for (replace, expected, outcome) in [(true, "y", AWSSignInOutcome.signedIn), (false, "n", AWSSignInOutcome.cancelled)] {
             // Declining, the real CLI returns without printing "Updated profile …" and exits 0.
             let final = replace ? loggedIn : AWSCLIResult(exitCode: 0, stdout: "", stderr: "")
             let runner = FakeAWSCLIRunner().onInteractive(["login"], sameDeviceOutput(.prompt(question)), final: final)
-            let signIn = makeSignIn(runner, profiles("[profile dsh-bedrock]\nlogin_session = x\nregion = us-east-1\n"))
-            let result = try await signIn.login(profile: "dsh-bedrock", region: "us-east-1", options: AWSSignInOptions(replaceExistingSession: replace))
+            let signIn = makeSignIn(runner, profiles("[profile vision-bedrock]\nlogin_session = x\nregion = us-east-1\n"))
+            let result = try await signIn.login(profile: "vision-bedrock", region: "us-east-1", options: AWSSignInOptions(replaceExistingSession: replace))
             XCTAssertEqual(runner.answers.count, 1)
             XCTAssertEqual(runner.answers.first?.prompt, question)
             XCTAssertEqual(runner.answers.first?.answer, expected)
@@ -107,7 +107,7 @@ final class AWSSignInTests: XCTestCase {
         let runner = FakeAWSCLIRunner()
             .onInteractive(["login"], sameDeviceOutput(.prompt("\nConfigure AWS skills and the AWS MCP server for your AI coding agent(s)? [y/n/never]: ")), final: loggedIn)
             .on(["configure", "set"], stdout: "")
-        let result = try await makeSignIn(runner, profiles(nil)).login(profile: "dsh-bedrock", region: "us-east-1")
+        let result = try await makeSignIn(runner, profiles(nil)).login(profile: "vision-bedrock", region: "us-east-1")
         XCTAssertTrue(result.succeeded)
         XCTAssertEqual(runner.answers.map(\.answer), ["n"])
     }
@@ -115,7 +115,7 @@ final class AWSSignInTests: XCTestCase {
     func testAnUnknownQuestionIsLeftUnanswered() async throws {
         let runner = FakeAWSCLIRunner().onInteractive(["login"], sameDeviceOutput(.prompt("Proceed with the unexpected? ")), final: loggedIn)
         let signIn = makeSignIn(runner, profiles(nil))
-        let task = Task { try await signIn.login(profile: "dsh-bedrock", region: "us-east-1") }
+        let task = Task { try await signIn.login(profile: "vision-bedrock", region: "us-east-1") }
         await awsWaitUntil(10, "the question") { !runner.answers.isEmpty }
         XCTAssertNil(runner.answers.first?.answer, "no guessing at questions the app doesn't know")
         task.cancel()
@@ -134,7 +134,7 @@ final class AWSSignInTests: XCTestCase {
             ], final: loggedIn)
             .on(["configure", "set"], stdout: "")
         let asked = AWSLockedBox<AWSSignInLink?>(nil)
-        let result = try await makeSignIn(runner, profiles(nil)).login(profile: "dsh-bedrock", region: "us-east-1", options: AWSSignInOptions(
+        let result = try await makeSignIn(runner, profiles(nil)).login(profile: "vision-bedrock", region: "us-east-1", options: AWSSignInOptions(
             remote: true,
             requestAuthorizationCode: { link in
                 asked.mutate { $0 = link }
@@ -151,7 +151,7 @@ final class AWSSignInTests: XCTestCase {
         for answer in [nil, "", "   \n"] as [String?] {
             let runner = FakeAWSCLIRunner().onInteractive(["login"],
                 [.line(Self.remoteURL), .prompt("\nEnter the authorization code displayed in your browser: ")], final: loggedIn)
-            let result = try await makeSignIn(runner, profiles(nil)).login(profile: "dsh-bedrock", region: "us-east-1", options: AWSSignInOptions(
+            let result = try await makeSignIn(runner, profiles(nil)).login(profile: "vision-bedrock", region: "us-east-1", options: AWSSignInOptions(
                 remote: true, requestAuthorizationCode: { _ in answer }))
             XCTAssertEqual(result.outcome, .cancelled, "answer: \(String(describing: answer))")
             XCTAssertEqual(result.message, "Sign-in stopped: no authorization code was entered.")
@@ -163,7 +163,7 @@ final class AWSSignInTests: XCTestCase {
     func testWithoutAnAnswererACodeQuestionEndsTheSignIn() async throws {
         let runner = FakeAWSCLIRunner().onInteractive(["login"],
             [.line(Self.remoteURL), .prompt("\nEnter the authorization code displayed in your browser: ")], final: loggedIn)
-        let result = try await makeSignIn(runner, profiles(nil)).login(profile: "dsh-bedrock", region: "us-east-1", options: AWSSignInOptions(remote: true))
+        let result = try await makeSignIn(runner, profiles(nil)).login(profile: "vision-bedrock", region: "us-east-1", options: AWSSignInOptions(remote: true))
         XCTAssertEqual(result.outcome, .cancelled)
     }
 
@@ -171,7 +171,7 @@ final class AWSSignInTests: XCTestCase {
         let runner = FakeAWSCLIRunner().onInteractive(["login"], sameDeviceOutput(.hang), final: loggedIn)
         let stop = AWSCancelSwitch()
         let signIn = makeSignIn(runner, profiles(nil))
-        let login = Task { try await signIn.login(profile: "dsh-bedrock", region: "us-east-1", options: AWSSignInOptions(onSignInLink: { _ in stop.fire() })) }
+        let login = Task { try await signIn.login(profile: "vision-bedrock", region: "us-east-1", options: AWSSignInOptions(onSignInLink: { _ in stop.fire() })) }
         stop.arm { login.cancel() }
         await awsExpectCancelled(login)
         XCTAssertTrue(runner.calls(to: ["configure"]).isEmpty)
@@ -182,7 +182,7 @@ final class AWSSignInTests: XCTestCase {
         let runner = FakeAWSCLIRunner().onInteractive(["login"],
             [.line(Self.remoteURL), .prompt("\nEnter the authorization code displayed in your browser: ")], final: loggedIn)
         let thrown = await awsAssertThrows(WindowClosed.self) {
-            _ = try await makeSignIn(runner, profiles(nil)).login(profile: "dsh-bedrock", region: "us-east-1", options: AWSSignInOptions(
+            _ = try await makeSignIn(runner, profiles(nil)).login(profile: "vision-bedrock", region: "us-east-1", options: AWSSignInOptions(
                 remote: true, requestAuthorizationCode: { _ in throw WindowClosed() }))
         }
         XCTAssertNotNil(thrown)
@@ -190,15 +190,15 @@ final class AWSSignInTests: XCTestCase {
 
     func testProfilesWithOtherCredentialsAreLeftAlone() async throws {
         let cases: [(config: String, outcome: AWSSignInOutcome)] = [
-            ("[profile dsh-bedrock]\nsso_session = corp\nsso_account_id = 1\nsso_role_name = Dev\n", .useSSOLogin),
-            ("[profile dsh-bedrock]\nrole_arn = arn:aws:iam::1:role/x\nsource_profile = default\n", .profileHasOtherCredentials),
-            ("[profile dsh-bedrock]\ncredential_process = vault aws\n", .profileHasOtherCredentials),
+            ("[profile vision-bedrock]\nsso_session = corp\nsso_account_id = 1\nsso_role_name = Dev\n", .useSSOLogin),
+            ("[profile vision-bedrock]\nrole_arn = arn:aws:iam::1:role/x\nsource_profile = default\n", .profileHasOtherCredentials),
+            ("[profile vision-bedrock]\ncredential_process = vault aws\n", .profileHasOtherCredentials),
         ]
         for (config, outcome) in cases {
             let runner = FakeAWSCLIRunner()
-            let result = try await makeSignIn(runner, profiles(config)).login(profile: "dsh-bedrock", region: "us-east-1")
+            let result = try await makeSignIn(runner, profiles(config)).login(profile: "vision-bedrock", region: "us-east-1")
             XCTAssertEqual(result.outcome, outcome, config)
-            XCTAssertTrue(result.message.contains("dsh-bedrock"))
+            XCTAssertTrue(result.message.contains("vision-bedrock"))
             XCTAssertTrue(runner.calls.isEmpty, "nothing may be run for a profile aws login would refuse")
         }
     }
@@ -255,7 +255,7 @@ final class AWSSignInTests: XCTestCase {
         XCTAssertEqual(result.details, "Failed to retrieve an authorization code.")
         XCTAssertEqual(result.link?.url, URL(string: Self.sameDeviceURL))
         XCTAssertTrue(runner.calls(to: ["configure"]).isEmpty)
-        XCTAssertEqual(runner.calls[0].args, ["login", "--profile", "dsh-bedrock", "--region", "us-east-1"])
+        XCTAssertEqual(runner.calls[0].args, ["login", "--profile", "vision-bedrock", "--region", "us-east-1"])
     }
 
     func testAProgramThatCantStartIsAFailedSignIn() async throws {
@@ -306,9 +306,9 @@ final class AWSSignInTests: XCTestCase {
     }
 
     func testSSOSignInNeedsAnSSOProfile() async throws {
-        for config in ["[profile dsh-bedrock]\nlogin_session = x\n", "[profile other]\nregion = us-east-1\n"] {
+        for config in ["[profile vision-bedrock]\nlogin_session = x\n", "[profile other]\nregion = us-east-1\n"] {
             let runner = FakeAWSCLIRunner()
-            let result = try await makeSignIn(runner, profiles(config)).ssoLogin(profile: "dsh-bedrock")
+            let result = try await makeSignIn(runner, profiles(config)).ssoLogin(profile: "vision-bedrock")
             XCTAssertEqual(result.outcome, .notSSOProfile)
             XCTAssertTrue(runner.calls.isEmpty)
         }
@@ -324,12 +324,12 @@ final class AWSSignInTests: XCTestCase {
                 "Arn": "arn:aws:iam::123456789012:user/alice"
             }
             """)
-        let identity = try await makeSignIn(runner, profiles(nil)).verify(profile: "dsh-bedrock", region: "eu-central-1")
+        let identity = try await makeSignIn(runner, profiles(nil)).verify(profile: "vision-bedrock", region: "eu-central-1")
         XCTAssertEqual(identity.account, "123456789012")
         XCTAssertEqual(identity.userID, "AIDASAMPLEUSERID")
         XCTAssertEqual(identity.displayAccount, "1234-5678-9012")
         XCTAssertEqual(identity.description, "Signed in to AWS account 1234-5678-9012 as alice.")
-        XCTAssertEqual(runner.calls[0].args, ["sts", "get-caller-identity", "--profile", "dsh-bedrock", "--region", "eu-central-1", "--output", "json"])
+        XCTAssertEqual(runner.calls[0].args, ["sts", "get-caller-identity", "--profile", "vision-bedrock", "--region", "eu-central-1", "--output", "json"])
     }
 
     func testAnAnswerWithoutAnAccountIsAnError() async {
@@ -358,8 +358,8 @@ final class AWSSignInTests: XCTestCase {
         let runner = FakeAWSCLIRunner().fail(["sts"],
             stderr: "aws: [ERROR]: Unable to retrieve credentials: Error loading login session token: Unable to load a existing login session for session arn:aws:iam::1:user/a, Please reauthenticate with 'aws login'.",
             exitCode: 253)
-        let signedOut = await awsAssertThrows(AWSSignInRequiredError.self) { _ = try await makeSignIn(runner, profiles(nil)).verify(profile: "dsh-bedrock") }
-        XCTAssertEqual(signedOut?.profile, "dsh-bedrock")
+        let signedOut = await awsAssertThrows(AWSSignInRequiredError.self) { _ = try await makeSignIn(runner, profiles(nil)).verify(profile: "vision-bedrock") }
+        XCTAssertEqual(signedOut?.profile, "vision-bedrock")
     }
 }
 

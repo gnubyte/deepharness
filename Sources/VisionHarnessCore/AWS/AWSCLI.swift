@@ -230,7 +230,7 @@ final class AWSCLIGate: @unchecked Sendable {
 /// touched on one serial queue, so a late write can never hit a descriptor number that has been
 /// closed and reused.
 private final class AWSCLIStdinWriter: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "dsh.aws-cli.stdin")
+    private let queue = DispatchQueue(label: "vision.aws-cli.stdin")
     private let fd: Int32
     private var closed = false
 
@@ -539,7 +539,7 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
         let errPump = AWSCLIStreamPump(isError: true, onLine: options.onLine)
         let outClosed = AWSCLIGate()
         let errClosed = AWSCLIGate()
-        let outReader = AWSCLIPipeReader(fd: outPipe[0], label: "dsh.aws-cli.stdout", onChunk: { chunk in
+        let outReader = AWSCLIPipeReader(fd: outPipe[0], label: "vision.aws-cli.stdout", onChunk: { chunk in
             if let candidate = outPump.consume(chunk) {
                 offerSink.yield(PromptOffer(text: candidate.prompt, generation: candidate.generation))
             }
@@ -547,7 +547,7 @@ private final class AWSCLIProcessRun: @unchecked Sendable {
             outPump.flush()
             outClosed.open()
         })
-        let errReader = AWSCLIPipeReader(fd: errPipe[0], label: "dsh.aws-cli.stderr", onChunk: { chunk in
+        let errReader = AWSCLIPipeReader(fd: errPipe[0], label: "vision.aws-cli.stderr", onChunk: { chunk in
             _ = errPump.consume(chunk)
         }, onClose: {
             errPump.flush()

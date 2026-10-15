@@ -252,14 +252,14 @@ final class SwapperConnectionsTests: XCTestCase {
         XCTAssertNil(info)
         XCTAssertEqual(credentials?.apiKey, "vllm-local")
         XCTAssertEqual(connection.name, "DGX Spark (spark.local)")
-        let kept = try await SwapperConnect.keep(connection, password: secret, label: "DSH on Test")
+        let kept = try await SwapperConnect.keep(connection, password: secret, label: "Vision on Test")
         XCTAssertEqual(kept.secret, "pw", "no tokens before 2.0: the password, as before")
         XCTAssertEqual(kept.connection.auth, .login(username: "pat"))
     }
 
     func testTheTokensLabelNamesThisMac() {
-        XCTAssertEqual(SwapperConnect.tokenLabel(computerName: "Pat's MacBook"), "DSH on Pat's MacBook")
-        XCTAssertEqual(SwapperConnect.tokenLabel(computerName: nil), "DSH on this Mac")
+        XCTAssertEqual(SwapperConnect.tokenLabel(computerName: "Pat's MacBook"), "Vision on Pat's MacBook")
+        XCTAssertEqual(SwapperConnect.tokenLabel(computerName: nil), "Vision on this Mac")
     }
 }
 

@@ -104,7 +104,7 @@ final class SparkController {
     @ObservationIgnored var installSilenceLimit: TimeInterval = 300
 
     init(config: AppConfig, transport: AppTransport, defaults: UserDefaults = .standard,
-         secrets: any SecretStore = KeychainSecretStore()) {
+         secrets: any SecretStore = AppSecrets.keychain) {
         self.config = config
         self.transport = transport
         self.defaults = defaults

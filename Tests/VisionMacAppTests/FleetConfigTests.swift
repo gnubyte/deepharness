@@ -35,7 +35,7 @@ final class FleetConfigTests: XCTestCase {
 
     private func bedrock(model: String = "us.anthropic.claude-sonnet-4-5-20250929-v1:0", worker: Bool = false) -> ProviderProfile {
         ProviderProfile(kind: .bedrock, name: "Amazon Bedrock", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-                        model: model, awsProfile: "dsh-bedrock", awsRegion: "us-east-1", subagentWorker: worker ? true : nil)
+                        model: model, awsProfile: "vision-bedrock", awsRegion: "us-east-1", subagentWorker: worker ? true : nil)
     }
 
     private func names(_ routes: [ProviderProfile]) -> [String] { routes.map(\.name) }
@@ -221,7 +221,7 @@ final class FleetConfigTests: XCTestCase {
         XCTAssertEqual(names(second.workerRoutes), ["Spark 2", "Amazon Bedrock"])
         XCTAssertEqual(second.workerRoutes.last?.subagentParallel, 3)
         XCTAssertFalse(second.subagentsUsePrimary)
-        XCTAssertEqual(second.workerRoutes.last?.awsProfile, "dsh-bedrock")
+        XCTAssertEqual(second.workerRoutes.last?.awsProfile, "vision-bedrock")
     }
 
     func testRoutesSavedByAnOlderBuildStillLoad() throws {
@@ -239,11 +239,11 @@ final class FleetConfigTests: XCTestCase {
 
     func testAnExpiredAWSSignInOnTheMainBedrockRouteOffersASignIn() {
         let route = bedrock()
-        let expired = LLMError.rejected(status: 401, message: "The AWS sign-in for profile \"dsh-bedrock\" has expired.",
+        let expired = LLMError.rejected(status: 401, message: "The AWS sign-in for profile \"vision-bedrock\" has expired.",
                                         body: "sign-in expired", permanent: true)
-        XCTAssertEqual(AppTransport.expiredAWSProfile(for: expired, route: route), "dsh-bedrock")
+        XCTAssertEqual(AppTransport.expiredAWSProfile(for: expired, route: route), "vision-bedrock")
         let refused = LLMError.rejected(status: 403, message: "AWS did not accept the credentials", body: "", permanent: true)
-        XCTAssertEqual(AppTransport.expiredAWSProfile(for: refused, route: route), "dsh-bedrock")
+        XCTAssertEqual(AppTransport.expiredAWSProfile(for: refused, route: route), "vision-bedrock")
     }
 
     func testOtherFailuresDoNotOfferASignIn() {

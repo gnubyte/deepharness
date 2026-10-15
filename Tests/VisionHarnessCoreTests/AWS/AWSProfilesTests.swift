@@ -25,7 +25,7 @@ final class AWSProfilesTests: XCTestCase {
         [profile tool]
         credential_process = "/Applications/Vault Tools/vault" aws-creds --role=dev
 
-        [profile dsh-bedrock]
+        [profile vision-bedrock]
         login_session = arn:aws:iam::111122223333:user/alice
         Region = eu-central-1
         s3 =
@@ -67,13 +67,13 @@ final class AWSProfilesTests: XCTestCase {
     func testReadsProfilesAndHowEachSignsIn() throws {
         let profiles = AWSProfiles.parse(config: Self.config, credentials: Self.credentials)
         XCTAssertEqual(profiles.profiles.map(\.name),
-                       ["default", "corp-dev", "deploy", "tool", "dsh-bedrock", "keys", "my project", "ci", "fresh", "only-in-credentials"])
+                       ["default", "corp-dev", "deploy", "tool", "vision-bedrock", "keys", "my project", "ci", "fresh", "only-in-credentials"])
 
         XCTAssertEqual(profiles.find("default")?.kind, .empty)
         XCTAssertEqual(profiles.find("corp-dev")?.kind, .sso)
         XCTAssertEqual(profiles.find("deploy")?.kind, .assumeRole)
         XCTAssertEqual(profiles.find("tool")?.kind, .credentialProcess)
-        XCTAssertEqual(profiles.find("dsh-bedrock")?.kind, .loginSession)
+        XCTAssertEqual(profiles.find("vision-bedrock")?.kind, .loginSession)
         XCTAssertEqual(profiles.find("keys")?.kind, .accessKeys)
         XCTAssertEqual(profiles.find("ci")?.kind, .webIdentity)
         XCTAssertEqual(profiles.find("fresh")?.kind, .empty)
@@ -82,28 +82,28 @@ final class AWSProfilesTests: XCTestCase {
         XCTAssertNil(profiles.find("corp"), "an sso-session, not a profile")
         XCTAssertNil(profiles.find("preview"), "not a profile section")
         XCTAssertNil(profiles.find("local-bedrock"), "a services section")
-        XCTAssertNil(profiles.find("DSH-BEDROCK"), "names are case-sensitive")
+        XCTAssertNil(profiles.find("VISION-BEDROCK"), "names are case-sensitive")
     }
 
     func testReadsRegionsAndSettings() throws {
         let profiles = AWSProfiles.parse(config: Self.config, credentials: Self.credentials)
         XCTAssertEqual(profiles.find("corp-dev")?.region, "us-east-1")
-        XCTAssertEqual(profiles.find("dsh-bedrock")?.region, "eu-central-1", "keys are case-insensitive (\"Region\")")
+        XCTAssertEqual(profiles.find("vision-bedrock")?.region, "eu-central-1", "keys are case-insensitive (\"Region\")")
         XCTAssertEqual(profiles.find("keys")?.region, "us-west-2", "config and credentials merge")
         XCTAssertEqual(profiles.find("my project")?.region, "ap-northeast-1", "quoted name, \":\" separator")
         XCTAssertEqual(profiles.find("only-in-credentials")?.region, "sa-east-1")
         XCTAssertNil(profiles.find("fresh")?.region)
         XCTAssertEqual(profiles.find("tool")?.settings["credential_process"], #""/Applications/Vault Tools/vault" aws-creds --role=dev"#)
-        XCTAssertEqual(profiles.find("dsh-bedrock")?.settings["s3"], "max_concurrent_requests = 20\naddressing_style = path")
+        XCTAssertEqual(profiles.find("vision-bedrock")?.settings["s3"], "max_concurrent_requests = 20\naddressing_style = path")
         XCTAssertEqual(profiles.find("keys")?.settings["aws_access_key_id"], "AKIAIOSFODNN7EXAMPLE")
     }
 
     func testOnlyEmptyAndLoginProfilesCanUseAwsLogin() {
         let profiles = AWSProfiles.parse(config: Self.config, credentials: Self.credentials)
-        XCTAssertEqual(profiles.profiles.filter(\.canUseAWSLogin).map(\.name), ["default", "dsh-bedrock", "my project", "fresh"])
+        XCTAssertEqual(profiles.profiles.filter(\.canUseAWSLogin).map(\.name), ["default", "vision-bedrock", "my project", "fresh"])
         XCTAssertEqual(profiles.find("corp-dev")?.kindDescription, "IAM Identity Center (SSO)")
         XCTAssertEqual(profiles.find("keys")?.kindDescription, "access keys")
-        XCTAssertEqual(profiles.find("dsh-bedrock")?.kindDescription, "signed in with the browser (aws login)")
+        XCTAssertEqual(profiles.find("vision-bedrock")?.kindDescription, "signed in with the browser (aws login)")
         XCTAssertEqual(profiles.find("deploy")?.kindDescription, "an assumed role")
         XCTAssertEqual(profiles.find("tool")?.kindDescription, "a credential program (credential_process)")
         XCTAssertEqual(profiles.find("ci")?.kindDescription, "a web identity token")

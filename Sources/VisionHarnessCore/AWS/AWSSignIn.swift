@@ -73,7 +73,7 @@ public enum AWSSignInOutcome: Sendable, Equatable {
     /// The profile signs in with IAM Identity Center: use `AWSSignIn.ssoLogin`.
     case useSSOLogin
     /// The profile already uses keys, a role, a web identity or a credential program; `aws login`
-    /// won't touch it. Pick another profile name (the app's own is "dsh-bedrock").
+    /// won't touch it. Pick another profile name (the app's own is "vision-bedrock").
     case profileHasOtherCredentials
     /// The profile isn't set up for IAM Identity Center (for `AWSSignIn.ssoLogin`).
     case notSSOProfile
@@ -149,8 +149,10 @@ public struct AWSSignInOptions: Sendable {
 
 /// Signs the AWS CLI in (`aws login` or `aws sso login`) and checks who is signed in.
 public final class AWSSignIn: Sendable {
-    /// The profile the app creates for itself, so it never disturbs profiles the user already has.
-    public static let defaultProfile = "dsh-bedrock"
+    /// The profile the app creates for itself, so it never disturbs profiles the user already has. (Routes set up
+    /// before the rename name the old one, `AppIdentity.Legacy.awsProfile`, and keep it: the profile is stored on the
+    /// route.)
+    public static let defaultProfile = AppIdentity.awsProfile
 
     /// The Region `login` uses when none is given (BedrockRegions.default in the Amazon Bedrock setup).
     public static let defaultRegion = "us-east-1"

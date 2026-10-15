@@ -529,10 +529,7 @@ public struct BedrockClient: ProviderClient {
         }
     }
 
-    private static let userAgent: String = {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        return "DSH-Mac/\(version ?? "dev")"
-    }()
+    private static let userAgent = AppIdentity.bedrockUserAgent
 
     // MARK: Errors
 

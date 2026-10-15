@@ -187,7 +187,7 @@ public enum SwapperConnectionStore {
     public static let listKey = "spark.connections.v1"
     /// Keychain service for the secrets; the account is the connection's id. (The single Swapper of earlier
     /// builds kept its password here too, under the account "login".)
-    public static let keychainService = "DSHMac.sparkSwapper"
+    public static let keychainService = AppIdentity.KeychainService.sparkSwapper
 
     /// Earlier builds' single Swapper.
     enum Legacy {
@@ -354,7 +354,7 @@ public enum SwapperConnect {
         }
     }
 
-    /// What to keep for a box signed in to with a password: on a Swapper 2.0 an app token labelled `label` ("DSH
+    /// What to keep for a box signed in to with a password: on a Swapper 2.0 an app token labelled `label` ("Vision
     /// on Pat's MacBook"), kept instead of the password; an older Swapper, which has no tokens, keeps the password.
     public static func keep(_ connection: SwapperConnection, password: String,
                             label: String) async throws -> (connection: SwapperConnection, secret: String) {
@@ -373,10 +373,11 @@ public enum SwapperConnect {
         }
     }
 
-    /// "DSH on Pat's MacBook" — how the Swapper's token list names this app.
+    /// "Vision on Pat's MacBook" — how the Swapper's token list names this app. (Tokens made by an earlier build
+    /// keep the label they were made with.)
     public static func tokenLabel(computerName: String?) -> String {
         let name = computerName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return name.isEmpty ? "DSH on this Mac" : "DSH on \(name)"
+        return name.isEmpty ? "\(AppIdentity.name) on this Mac" : "\(AppIdentity.name) on \(name)"
     }
 }
 

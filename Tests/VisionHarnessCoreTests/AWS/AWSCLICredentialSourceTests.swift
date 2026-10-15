@@ -69,9 +69,9 @@ final class AWSCLICredentialSourceTests: XCTestCase {
     func testUnusableOutputIsReported() {
         for bad in ["{}", "not json", "[]", "", "null", #"{"AccessKeyId":"A"}"#, #"{"AccessKeyId":"","SecretAccessKey":"S"}"#,
                     #"{"AccessKeyId":1,"SecretAccessKey":2}"#] {
-            XCTAssertThrowsError(try AWSCLICredentialSource.parseProcessOutput(bad, profile: "dsh-bedrock"), bad) { error in
+            XCTAssertThrowsError(try AWSCLICredentialSource.parseProcessOutput(bad, profile: "vision-bedrock"), bad) { error in
                 guard let signIn = error as? AWSSignInRequiredError else { return XCTFail("\(error)") }
-                XCTAssertEqual(signIn.profile, "dsh-bedrock")
+                XCTAssertEqual(signIn.profile, "vision-bedrock")
             }
         }
         XCTAssertThrowsError(try AWSCLICredentialSource.parseProcessOutput("{}")) { XCTAssertEqual(($0 as? AWSSignInRequiredError)?.profile, "default") }
@@ -86,10 +86,10 @@ final class AWSCLICredentialSourceTests: XCTestCase {
 
     func testRunsExportCredentialsForTheProfile() async throws {
         let runner = FakeAWSCLIRunner().on(["configure", "export-credentials"], stdout: awsProcessOutput("ASIA1", expires: now.addingTimeInterval(3600)))
-        let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock", now: AWSTestClock().reader)
+        let source = AWSCLICredentialSource(runner: runner, profile: "vision-bedrock", now: AWSTestClock().reader)
         let credentials = try await source.credentials(forceRefresh: false)
         XCTAssertEqual(credentials.accessKeyID, "ASIA1")
-        XCTAssertEqual(runner.calls[0].args, ["configure", "export-credentials", "--format", "process", "--profile", "dsh-bedrock"])
+        XCTAssertEqual(runner.calls[0].args, ["configure", "export-credentials", "--format", "process", "--profile", "vision-bedrock"])
         XCTAssertEqual(runner.calls[0].options.timeout, 120)
         XCTAssertEqual(AWSCLICredentialSource(runner: runner, profile: "p", region: "eu-central-1").exportArguments,
                        ["configure", "export-credentials", "--format", "process", "--profile", "p", "--region", "eu-central-1"])
@@ -101,7 +101,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
             AWSCLIResult(exitCode: 0, stdout: awsProcessOutput("ASIA1", expires: now.addingTimeInterval(60 * 60))),
             AWSCLIResult(exitCode: 0, stdout: awsProcessOutput("ASIA2", expires: now.addingTimeInterval(120 * 60))),
         ])
-        let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock", now: clock.reader)
+        let source = AWSCLICredentialSource(runner: runner, profile: "vision-bedrock", now: clock.reader)
 
         var first = try await source.credentials()
         XCTAssertEqual(first.accessKeyID, "ASIA1")
@@ -141,7 +141,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
             AWSCLIResult(exitCode: 0, stdout: awsProcessOutput("ASIA2", expires: now.addingTimeInterval(3600))),
             AWSCLIResult(exitCode: 0, stdout: awsProcessOutput("ASIA3", expires: now.addingTimeInterval(3600))),
         ])
-        let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock", now: AWSTestClock().reader)
+        let source = AWSCLICredentialSource(runner: runner, profile: "vision-bedrock", now: AWSTestClock().reader)
         let first = try await source.credentials()
         XCTAssertEqual(first.accessKeyID, "ASIA1")
         let forced = try await source.credentials(forceRefresh: true)
@@ -170,13 +170,13 @@ final class AWSCLICredentialSourceTests: XCTestCase {
             ("aws: [ERROR]: Unable to retrieve credentials: Your session has expired. Please reauthenticate using 'aws login'.", 253),
             ("aws: [ERROR]: Error loading SSO Token: Token for corp does not exist", 255),
             ("aws: [ERROR]: The SSO session associated with this profile has expired or is otherwise invalid. To refresh this SSO session run aws sso login with the corresponding profile.", 255),
-            ("aws: [ERROR]: Unable to retrieve credentials: The config profile (dsh-bedrock) could not be found", 253),
+            ("aws: [ERROR]: Unable to retrieve credentials: The config profile (vision-bedrock) could not be found", 253),
         ]
         for (stderr, exitCode) in cases {
             let runner = FakeAWSCLIRunner().fail(["configure", "export-credentials"], stderr: stderr, exitCode: exitCode)
-            let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock")
+            let source = AWSCLICredentialSource(runner: runner, profile: "vision-bedrock")
             let signIn = await awsAssertThrows(AWSSignInRequiredError.self) { _ = try await source.credentials(forceRefresh: false) }
-            XCTAssertEqual(signIn?.profile, "dsh-bedrock", stderr)
+            XCTAssertEqual(signIn?.profile, "vision-bedrock", stderr)
             XCTAssertFalse(signIn?.message.contains("aws: [ERROR]") ?? true, stderr)
         }
     }
@@ -186,7 +186,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
             AWSCLIResult(exitCode: 255, stdout: "", stderr: "\naws: [ERROR]: Could not connect to the endpoint URL: \"https://us-east-1.signin.aws.amazon.com/v1/token\"\n"),
             AWSCLIResult(exitCode: 0, stdout: awsProcessOutput("ASIA1", expires: now.addingTimeInterval(3600))),
         ])
-        let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock", now: AWSTestClock().reader)
+        let source = AWSCLICredentialSource(runner: runner, profile: "vision-bedrock", now: AWSTestClock().reader)
         let failure = await awsAssertThrows(AWSCLIException.self) { _ = try await source.credentials() }
         XCTAssertEqual(failure?.kind, .network)
         let recovered = try await source.credentials()
@@ -195,9 +195,9 @@ final class AWSCLICredentialSourceTests: XCTestCase {
 
     func testAnExportThatPrintsNothingUsableIsASignInProblem() async {
         let runner = FakeAWSCLIRunner().on(["configure", "export-credentials"], stdout: "no credentials here")
-        let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock")
+        let source = AWSCLICredentialSource(runner: runner, profile: "vision-bedrock")
         let signIn = await awsAssertThrows(AWSSignInRequiredError.self) { _ = try await source.credentials() }
-        XCTAssertEqual(signIn?.profile, "dsh-bedrock")
+        XCTAssertEqual(signIn?.profile, "vision-bedrock")
     }
 
     func testAProgramThatCantStartFailsTheCallAndThenTriesAgain() async throws {
@@ -220,7 +220,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
             await release.wait()
             return AWSCLIResult(exitCode: 0, stdout: awsProcessOutput("ASIA1", expires: now.addingTimeInterval(3600)))
         }
-        let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock", now: AWSTestClock().reader)
+        let source = AWSCLICredentialSource(runner: runner, profile: "vision-bedrock", now: AWSTestClock().reader)
         let callers = (0..<8).map { index in Task { try await source.credentials(forceRefresh: index % 2 == 0) } }
         // One who gives up before it has even started waiting, and one who gives up while waiting.
         let early = Task { try await source.credentials() }
@@ -251,7 +251,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
             await release.wait()
             return AWSCLIResult(exitCode: 0, stdout: awsProcessOutput("ASIA1", expires: now.addingTimeInterval(3600)))
         }
-        let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock", now: AWSTestClock().reader)
+        let source = AWSCLICredentialSource(runner: runner, profile: "vision-bedrock", now: AWSTestClock().reader)
         let starter = Task { try await source.credentials() }
         await awsWaitUntil(5, "the export to start") { runner.calls.count == 1 }
         let staying = Task { try await source.credentials() }
@@ -270,7 +270,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
             await release.wait()
             return AWSCLIResult(exitCode: 253, stdout: "", stderr: "aws: [ERROR]: Your session has expired. Please reauthenticate using 'aws login'.")
         }
-        let source = AWSCLICredentialSource(runner: runner, profile: "dsh-bedrock")
+        let source = AWSCLICredentialSource(runner: runner, profile: "vision-bedrock")
         let callers = (0..<3).map { _ in Task { try await source.credentials() } }
         await awsWaitUntil(5, "the export to start") { runner.calls.count == 1 }
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -281,7 +281,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
                 XCTFail("expected a sign-in request, got \(outcome)")
                 continue
             }
-            XCTAssertEqual(signIn.profile, "dsh-bedrock")
+            XCTAssertEqual(signIn.profile, "vision-bedrock")
         }
         XCTAssertEqual(runner.calls.count, 1)
     }
@@ -295,7 +295,7 @@ final class AWSCLICredentialSourceTests: XCTestCase {
     func testItIsTheBedrockClientsCredentialSource() async throws {
         let source: any AWSCredentialSource = AWSCLICredentialSource(
             runner: FakeAWSCLIRunner().on(["configure", "export-credentials"], stdout: awsProcessOutput("ASIA1", expires: now.addingTimeInterval(3600))),
-            profile: "dsh-bedrock", now: AWSTestClock().reader)
+            profile: "vision-bedrock", now: AWSTestClock().reader)
         let credentials = try await source.credentials(forceRefresh: false)
         XCTAssertFalse(credentials.description.contains("wJalr"), "the secret must never be printed")
         XCTAssertEqual(credentials.expiration, now.addingTimeInterval(3600))
@@ -306,12 +306,12 @@ final class AWSCLICredentialSourceTests: XCTestCase {
         let aws = dir.write("aws", """
             #!/bin/sh
             case "$*" in
-              "configure export-credentials --format process --profile dsh-bedrock --region eu-central-1")
+              "configure export-credentials --format process --profile vision-bedrock --region eu-central-1")
                 echo '{"Version": 1, "AccessKeyId": "ASIAREAL", "SecretAccessKey": "real-secret", "SessionToken": "real-token", "Expiration": "2099-01-01T00:00:00+00:00"}' ;;
               *) echo "unexpected: $*" >&2; exit 254 ;;
             esac
             """, executable: true)
-        let source = AWSCLICredentialSource(cli: AWSCLI.forPath(aws), profile: "dsh-bedrock", region: "eu-central-1")
+        let source = AWSCLICredentialSource(cli: AWSCLI.forPath(aws), profile: "vision-bedrock", region: "eu-central-1")
         let credentials = try await source.credentials()
         XCTAssertEqual(credentials.accessKeyID, "ASIAREAL")
         XCTAssertEqual(credentials.sessionToken, "real-token")

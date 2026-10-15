@@ -348,7 +348,7 @@ final class BedrockGuideModel {
         skippedAccess = false
     }
 
-    /// Choose the browser sign-in (the app's own `dsh-bedrock` profile) or a profile that already exists.
+    /// Choose the browser sign-in (the app's own `vision-bedrock` profile) or a profile that already exists.
     func setUseExisting(_ on: Bool) {
         guard on != useExisting else { return }
         if on {

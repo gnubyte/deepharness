@@ -102,6 +102,8 @@ public struct VaultEntry: Codable, Identifiable, Hashable, Sendable {
 public protocol SecretBlobStore: Sendable {
     func load() throws -> Data?
     func save(_ data: Data) throws
+    /// Remove the stored values (none stored is not an error).
+    func delete() throws
 }
 
 public enum VaultError: LocalizedError, Equatable {
@@ -127,7 +129,7 @@ public struct KeychainBlobStore: SecretBlobStore {
     public let service: String
     public let account: String
 
-    public init(service: String = "DSHMac.vault", account: String = "secrets") {
+    public init(service: String = AppIdentity.KeychainService.vault, account: String = "secrets") {
         self.service = service
         self.account = account
     }
@@ -156,9 +158,14 @@ public struct KeychainBlobStore: SecretBlobStore {
         var add = query
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        add[kSecAttrLabel as String] = "DSH credential vault"
+        add[kSecAttrLabel as String] = "\(AppIdentity.name) credential vault"
         let status = SecItemAdd(add as CFDictionary, nil)
         guard status == errSecSuccess else { throw VaultError.keychain(status) }
+    }
+
+    public func delete() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw VaultError.keychain(status) }
     }
 }
 
@@ -169,6 +176,7 @@ public final class MemoryBlobStore: SecretBlobStore, @unchecked Sendable {
     public init() {}
     public func load() throws -> Data? { lock.withLock { data } }
     public func save(_ data: Data) throws { lock.withLock { self.data = data } }
+    public func delete() throws { lock.withLock { data = nil } }
 }
 
 /// What the engine learns when it looks a credential up.
@@ -188,7 +196,7 @@ public final class CredentialVault: @unchecked Sendable {
     /// Bumped on every change (the UI and the system prompt follow it).
     public private(set) var revision = 0
 
-    public init(directory: URL, store: any SecretBlobStore = KeychainBlobStore()) {
+    public init(directory: URL, store: any SecretBlobStore = LegacyFallbackBlobStore.app) {
         self.metadataURL = directory.appendingPathComponent("vault.json")
         self.store = store
         if let data = try? Data(contentsOf: metadataURL),

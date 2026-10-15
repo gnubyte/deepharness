@@ -218,8 +218,8 @@ final class AWSCLITests: XCTestCase {
     // MARK: Arguments and JSON
 
     func testProfileRegionAndJsonAreAppended() {
-        XCTAssertEqual(AWSCLI.arguments(["bedrock", "list-foundation-models"], profile: "dsh-bedrock", region: "eu-central-1"),
-                       ["bedrock", "list-foundation-models", "--profile", "dsh-bedrock", "--region", "eu-central-1", "--output", "json"])
+        XCTAssertEqual(AWSCLI.arguments(["bedrock", "list-foundation-models"], profile: "vision-bedrock", region: "eu-central-1"),
+                       ["bedrock", "list-foundation-models", "--profile", "vision-bedrock", "--region", "eu-central-1", "--output", "json"])
         XCTAssertEqual(AWSCLI.arguments(["sts", "get-caller-identity"], profile: nil, region: "", json: false), ["sts", "get-caller-identity"])
     }
 
@@ -239,9 +239,9 @@ final class AWSCLITests: XCTestCase {
         XCTAssertTrue(bad?.localizedDescription.contains("couldn't read") == true)
         XCTAssertEqual(bad?.error.details, "not json")
         let signIn = await awsAssertThrows(AWSSignInRequiredError.self) {
-            _ = try await cli.runJSON(["bedrock", "list-foundation-models"], profile: "dsh-bedrock", region: "us-east-1")
+            _ = try await cli.runJSON(["bedrock", "list-foundation-models"], profile: "vision-bedrock", region: "us-east-1")
         }
-        XCTAssertEqual(signIn?.profile, "dsh-bedrock")
+        XCTAssertEqual(signIn?.profile, "vision-bedrock")
         XCTAssertTrue(signIn?.message.contains("expired") == true)
         XCTAssertEqual(runner.calls[0].options.timeout, 120)
         XCTAssertEqual(runner.calls[0].args, ["sts", "get-caller-identity", "--profile", "p", "--region", "us-east-1", "--output", "json"])
@@ -303,11 +303,11 @@ final class AWSCLITests: XCTestCase {
             let classified = AWSCLIErrors.classify(AWSCLIResult(exitCode: 255, stdout: "", stderr: "\naws: [ERROR]: " + error + "\n"), service: "bedrock")
             XCTAssertEqual(classified.kind, .signInRequired, error)
             XCTAssertTrue(classified.message.contains(mentions), "\(classified.message) should mention \(mentions)")
-            guard let signIn = AWSCLIErrors.toError(classified, profile: "dsh-bedrock") as? AWSSignInRequiredError else {
+            guard let signIn = AWSCLIErrors.toError(classified, profile: "vision-bedrock") as? AWSSignInRequiredError else {
                 XCTFail("a sign-in problem must become AWSSignInRequiredError: \(error)")
                 continue
             }
-            XCTAssertEqual(signIn.profile, "dsh-bedrock")
+            XCTAssertEqual(signIn.profile, "vision-bedrock")
             XCTAssertEqual(signIn.message, classified.message)
         }
         // No profile named means the CLI's default one.

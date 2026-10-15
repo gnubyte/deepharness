@@ -13,7 +13,7 @@ import Foundation
 /// AWS credentials for one CLI profile, fetched with `aws configure export-credentials` and cached
 /// until shortly before they expire.
 public final class AWSCLICredentialSource: AWSCredentialSource, @unchecked Sendable {
-    /// The AWS CLI profile (e.g. "dsh-bedrock").
+    /// The AWS CLI profile (e.g. "vision-bedrock").
     public let profile: String
 
     /// Passed as --region; nil lets the profile's own Region apply. The CLI refreshes an `aws login`

@@ -53,14 +53,14 @@ enum BedrockSetupFixtures {
     static let useCaseNotFound = ScriptedCLIFailure.notFound(operation: "GetUseCaseForModelAccess", message: "Use case form not found.")
     static let acme = UseCaseFormTests.acme
 
-    /// A setup on profile "dsh-bedrock" in us-east-1, over a scripted CLI.
+    /// A setup on profile "vision-bedrock" in us-east-1, over a scripted CLI.
     static func setup(_ script: (ScriptedAWSCLI) -> Void = { _ in }, clock: BedrockWaitClock? = nil, region: String = "us-east-1") -> (setup: BedrockSetup, cli: ScriptedAWSCLI) {
         let cli = ScriptedAWSCLI()
         script(cli)
         if let clock {
-            return (BedrockSetup(cli: cli, profile: "dsh-bedrock", region: region, now: clock.nowClosure, sleep: clock.sleepClosure), cli)
+            return (BedrockSetup(cli: cli, profile: "vision-bedrock", region: region, now: clock.nowClosure, sleep: clock.sleepClosure), cli)
         }
-        return (BedrockSetup(cli: cli, profile: "dsh-bedrock", region: region), cli)
+        return (BedrockSetup(cli: cli, profile: "vision-bedrock", region: region), cli)
     }
 }
 
@@ -100,13 +100,13 @@ final class BedrockSetupListingTests: XCTestCase {
         XCTAssertEqual(models.first { $0.modelID.contains("sonnet-4-5") }?.invokeID, "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
         XCTAssertEqual(models.first { $0.modelID.contains("haiku-4-5") }?.invokeID, "global.anthropic.claude-haiku-4-5-20251001-v1:0")
         XCTAssertEqual(cli.calls[0].command, ["bedrock", "list-foundation-models", "--by-output-modality", "TEXT"])
-        XCTAssertEqual(cli.calls[0].profile, "dsh-bedrock")
+        XCTAssertEqual(cli.calls[0].profile, "vision-bedrock")
         XCTAssertEqual(cli.calls[0].region, "us-east-1")
         XCTAssertEqual(cli.calls[0].kind, .json)
         let profileCalls = cli.calls(to: "bedrock", "list-inference-profiles")
         XCTAssertEqual(profileCalls.count, 2)
         XCTAssertEqual(profileCalls[0].command, ["bedrock", "list-inference-profiles", "--type-equals", "SYSTEM_DEFINED"])
-        XCTAssertEqual(profileCalls[0].profile, "dsh-bedrock")
+        XCTAssertEqual(profileCalls[0].profile, "vision-bedrock")
         XCTAssertEqual(profileCalls[0].region, "us-east-1")
         XCTAssertTrue(profileCalls[1].hasPair("--starting-token", "eyJuZXh0IjogMn0="))
         XCTAssertEqual(cli.calls.count, 3, "nothing else was asked")
@@ -145,7 +145,7 @@ final class BedrockSetupListingTests: XCTestCase {
     func testASignInThatRanOutIsNotHiddenAsAnEmptyList() async {
         let (setup, _) = Fixtures.setup { $0.fail(Fixtures.listModels, .ssoExpired) }
         await assertSetupThrows(try await setup.listModels()) { error in
-            XCTAssertEqual((error as? AWSSignInRequiredError)?.profile, "dsh-bedrock")
+            XCTAssertEqual((error as? AWSSignInRequiredError)?.profile, "vision-bedrock")
         }
     }
 
@@ -421,7 +421,7 @@ final class BedrockSetupAccessTests: XCTestCase {
 
         let (signedOut, _) = Fixtures.setup { $0.fail(Fixtures.getAvailability, .ssoExpired) }
         await assertSetupThrows(try await signedOut.checkAccess(Fixtures.cohere)) { error in
-            XCTAssertEqual((error as? AWSSignInRequiredError)?.profile, "dsh-bedrock")
+            XCTAssertEqual((error as? AWSSignInRequiredError)?.profile, "vision-bedrock")
         }
     }
 
@@ -546,7 +546,7 @@ final class BedrockSetupAccessTests: XCTestCase {
         }
         _ = try await setup.checkAccess(Fixtures.sonnet)
         XCTAssertEqual(cli.calls.map { $0.command[1] }, ["get-foundation-model-availability", "get-use-case-for-model-access", "list-foundation-model-agreement-offers"])
-        XCTAssertTrue(cli.calls.allSatisfy { $0.profile == "dsh-bedrock" && $0.region == "us-east-1" && $0.timeout == nil })
+        XCTAssertTrue(cli.calls.allSatisfy { $0.profile == "vision-bedrock" && $0.region == "us-east-1" && $0.timeout == nil })
     }
 
     func testOddAnswersFromAwsReadAsMissingFields() async throws {
@@ -705,7 +705,7 @@ final class BedrockSetupFormAndAgreementTests: XCTestCase {
         let put = try XCTUnwrap(puts.first)
         XCTAssertEqual(put.command, ["bedrock", "put-use-case-for-model-access", "--form-data", Fixtures.acme.toBase64(), "--cli-binary-format", "base64"])
         XCTAssertEqual(put.kind, .checked)
-        XCTAssertEqual(put.profile, "dsh-bedrock")
+        XCTAssertEqual(put.profile, "vision-bedrock")
         XCTAssertEqual(put.region, "us-east-1")
         XCTAssertEqual(String(decoding: Data(base64Encoded: put.command[3])!, as: UTF8.self), Fixtures.acme.toJSON())
         XCTAssertEqual(BedrockSetup.submitUseCaseCommand(Fixtures.acme), put.command)
@@ -767,7 +767,7 @@ final class BedrockSetupFormAndAgreementTests: XCTestCase {
         XCTAssertEqual(cli.calls[0].command, ["bedrock", "create-foundation-model-agreement", "--model-id", "cohere.command-r-plus-v1:0",
                                               "--offer-token", "eyJvZmZlcklkIjoib2ZmZXItM2syIn0="])
         XCTAssertEqual(cli.calls[0].kind, .checked)
-        XCTAssertEqual(cli.calls[0].profile, "dsh-bedrock")
+        XCTAssertEqual(cli.calls[0].profile, "vision-bedrock")
         XCTAssertEqual(cli.calls[0].region, "us-east-1")
     }
 
@@ -974,7 +974,7 @@ final class BedrockSetupWaitTests: XCTestCase {
         let cli = ScriptedAWSCLI()
         cli.checksCancellation = false
         cli.on(Fixtures.getAvailability, Fixtures.availability(agreement: "PENDING"))
-        let setup = BedrockSetup(cli: cli, profile: "dsh-bedrock", region: "us-east-1", now: { Date(timeIntervalSince1970: 1_800_000_000) }, sleep: { _ in })
+        let setup = BedrockSetup(cli: cli, profile: "vision-bedrock", region: "us-east-1", now: { Date(timeIntervalSince1970: 1_800_000_000) }, sleep: { _ in })
         let log = BedrockProgressLog<ModelAccess>()
         let outcome = await Task { () -> String in
             log.onReport = { _ in withUnsafeCurrentTask { $0?.cancel() } }
@@ -1198,9 +1198,11 @@ final class BedrockPermissionsTests: XCTestCase {
 
     func testThePolicyIsWordForWordTheWindowsAppsPolicy() {
         // SHA-256 of the C# constants' text (LF line ends, no trailing newline), as compiled and printed by the probe.
+        // The policy's is the Windows app's after both renamed their statement ids to Vision… (vision-windows
+        // fd764a8, src/Vision.Core/Aws/BedrockSetup.cs).
         func sha256(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
-        XCTAssertEqual(BedrockPermissions.policyJSON.utf8.count, 1647)
-        XCTAssertEqual(sha256(BedrockPermissions.policyJSON), "c30eb14791a66459de29267d8e7208f5dc34773509b57ccbbf96d8c2c8c55cd5")
+        XCTAssertEqual(BedrockPermissions.policyJSON.utf8.count, 1662)
+        XCTAssertEqual(sha256(BedrockPermissions.policyJSON), "3163a2f8625ce1f20a6476f1678aa8a352ec28a614bcf8e118174d7d5ae9a0f9")
         XCTAssertEqual(BedrockPermissions.explanation.utf8.count, 763)
         XCTAssertEqual(sha256(BedrockPermissions.explanation), "30570ecf3bbffcaeac5adeda4422e54677281562c2db8c8900be2d293596f4ea")
         XCTAssertFalse(BedrockPermissions.policyJSON.contains("\r"))
@@ -1277,8 +1279,8 @@ final class ScriptedAWSCLITests: XCTestCase {
             XCTAssertTrue(e?.details.hasPrefix("aws: [ERROR]: An error occurred (AccessDeniedException) when calling the ListFoundationModels operation:") == true)
             XCTAssertEqual(e?.message, "Your AWS permissions don't allow bedrock:ListFoundationModels. Ask whoever manages your AWS account to allow it — DSH can show the exact policy to send them.")
         }
-        await assertSetupThrows(try await cli.runJSON(["b"], profile: "dsh-bedrock", region: nil)) { error in
-            XCTAssertEqual((error as? AWSSignInRequiredError)?.profile, "dsh-bedrock")
+        await assertSetupThrows(try await cli.runJSON(["b"], profile: "vision-bedrock", region: nil)) { error in
+            XCTAssertEqual((error as? AWSSignInRequiredError)?.profile, "vision-bedrock")
         }
         await assertSetupThrows(try await cli.runJSON(["b"], profile: nil, region: nil)) { error in
             XCTAssertEqual((error as? AWSSignInRequiredError)?.profile, "default")

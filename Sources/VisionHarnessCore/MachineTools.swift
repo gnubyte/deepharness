@@ -95,7 +95,7 @@ enum ImagePipeline {
 
 private func tempPNG(_ tag: String) -> URL {
     FileManager.default.temporaryDirectory
-        .appendingPathComponent("dsh-\(tag)-\(UUID().uuidString.prefix(8)).png")
+        .appendingPathComponent("vision-\(tag)-\(UUID().uuidString.prefix(8)).png")
 }
 
 /// Run a short helper binary (screencapture/osascript) capturing stdout.

@@ -10,7 +10,7 @@ import VisionHarnessCore
 /// descriptor per directory.
 final class FSWatcher: @unchecked Sendable {
     private var stream: FSEventStreamRef?
-    private let queue = DispatchQueue(label: "dsh.fswatcher", qos: .utility)
+    private let queue = DispatchQueue(label: "vision.fswatcher", qos: .utility)
     private let handler: @Sendable ([URL]) -> Void
     private let root: URL
 

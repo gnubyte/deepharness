@@ -194,7 +194,7 @@ public enum SkillImporter {
             if parts.contains(".cursor") { return .cursor }
             if parts.contains(".agents") { return .agents }
             if parts.contains(".qwen") { return .qwen }
-            if parts.contains(".dsh") { return .vision }
+            if parts.contains(AppIdentity.projectFolderName) || parts.contains(AppIdentity.Legacy.projectFolderName) { return .vision }
             return .vision
         }
 
@@ -389,7 +389,7 @@ public enum ExportFormat: String, CaseIterable, Sendable, Identifiable {
         case .claude: "Claude Code (.claude/skills)"
         case .cursor: "Cursor (.cursor/rules, .mdc)"
         case .agents: "Agent Skills (.agents/skills)"
-        case .vision: "DSH (.dsh/skills)"
+        case .vision: "Vision (.vision/skills)"
         }
     }
 
@@ -439,7 +439,7 @@ public enum SkillExporter {
                 case .claude: sub = ".claude/skills/\(slug)"
                 case .cursor: sub = ".cursor/skills/\(slug)"
                 case .agents: sub = ".agents/skills/\(slug)"
-                case .vision: sub = ".dsh/skills/\(slug)"
+                case .vision: sub = "\(AppIdentity.projectFolderName)/skills/\(slug)"
                 }
                 let staged = SkillFiles.stagingDirectory()
                 do {

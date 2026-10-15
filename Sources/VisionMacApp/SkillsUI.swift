@@ -1073,7 +1073,7 @@ struct ExportSkillsSheet: View {
     private func saveZip() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.zip]
-        panel.nameFieldStringValue = "dsh-skills.zip"
+        panel.nameFieldStringValue = "vision-skills.zip"
         panel.prompt = "Export"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {

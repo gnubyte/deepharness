@@ -207,7 +207,7 @@ final class ProjectContextTests: XCTestCase {
     }
 
     func testProjectSkillsWinOverUserSkillsOnNameClash() throws {
-        for (path, rankLabel) in [(".dsh/skills/x", "high"), (".agents/skills/x", "low")] {
+        for (path, rankLabel) in [(".vision/skills/x", "high"), (".agents/skills/x", "low")] {
             let dir = root.appendingPathComponent(path)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try "---\nname: x\ndescription: \(rankLabel)\n---\n"

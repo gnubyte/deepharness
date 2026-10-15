@@ -754,7 +754,7 @@ final class AWSCLIInstallerTests: XCTestCase {
 
     func testTheDefaultWorkFolderIsInThePrivateTemporaryFolder() {
         let temporary = ProcessInfo.processInfo.environment["TMPDIR"].flatMap { $0.isEmpty ? nil : $0 } ?? NSTemporaryDirectory()
-        XCTAssertEqual(AWSCLIInstaller.defaultWorkFolder(), URL(fileURLWithPath: temporary).appendingPathComponent("dsh-aws-cli").path)
+        XCTAssertEqual(AWSCLIInstaller.defaultWorkFolder(), URL(fileURLWithPath: temporary).appendingPathComponent("vision-aws-cli").path)
         XCTAssertEqual(AWSCLIInstaller().workFolder, AWSCLIInstaller.defaultWorkFolder())
         XCTAssertEqual(AWSCLIInstaller().homeDirectory, NSHomeDirectory())
     }
@@ -861,9 +861,9 @@ final class AWSCLIInstallerTests: XCTestCase {
             #!/bin/sh
             [ "$1" = "-e" ] || exit 64
             printf '%s' "$2" > '\(dir.path)/script.txt'
-            printf 'installer: Package name is AWS Command Line Interface\\ninstaller: The install was successful.\\nDSH_EXIT_STATUS=0\\n'
+            printf 'installer: Package name is AWS Command Line Interface\\ninstaller: The install was successful.\\nVISION_EXIT_STATUS=0\\n'
             """, executable: true)
-        let fails = dir.write("osascript-fails", "#!/bin/sh\nprintf 'installer: The install failed. (boom)\\nDSH_EXIT_STATUS=1\\n'\n", executable: true)
+        let fails = dir.write("osascript-fails", "#!/bin/sh\nprintf 'installer: The install failed. (boom)\\nVISION_EXIT_STATUS=1\\n'\n", executable: true)
         let declined = dir.write("osascript-declined", "#!/bin/sh\necho '0:143: execution error: User canceled. (-128)' >&2\nexit 1\n", executable: true)
         let silent = dir.write("osascript-silent", "#!/bin/sh\necho 'something else'\n", executable: true)
         let launch = AWSCLIInstallerLaunch(arguments: ["-pkg", "/tmp/it's here/AWSCLIV2.pkg", "-target", "/"], packagePath: "/tmp/it's here/AWSCLIV2.pkg", elevated: true)
@@ -954,7 +954,7 @@ final class AWSCLIInstallerTests: XCTestCase {
         }
         let shell = unescapeAppleScript(literal)
         XCTAssertTrue(shell.hasPrefix("{ "), shell)
-        XCTAssertTrue(shell.contains("2>&1; echo \"DSH_EXIT_STATUS=$?\"; }"), shell)
+        XCTAssertTrue(shell.contains("2>&1; echo \"VISION_EXIT_STATUS=$?\"; }"), shell)
 
         // Run what `do shell script` would run (it uses /bin/sh -c): the arguments arrive intact, the
         // exit status is echoed after the output.
@@ -975,17 +975,17 @@ final class AWSCLIInstallerTests: XCTestCase {
     }
 
     func testTheElevatedOutputIsSplitIntoOutputAndExitStatus() {
-        let split = AWSCLIInstaller.parseElevatedOutput("line one\nline two\nDSH_EXIT_STATUS=0\n")
+        let split = AWSCLIInstaller.parseElevatedOutput("line one\nline two\nVISION_EXIT_STATUS=0\n")
         XCTAssertEqual(split?.output, "line one\nline two")
         XCTAssertEqual(split?.exitCode, 0)
-        XCTAssertEqual(AWSCLIInstaller.parseElevatedOutput("DSH_EXIT_STATUS=127")?.exitCode, 127)
-        XCTAssertEqual(AWSCLIInstaller.parseElevatedOutput("DSH_EXIT_STATUS=127")?.output, "")
-        XCTAssertEqual(AWSCLIInstaller.parseElevatedOutput("a\r\nDSH_EXIT_STATUS=2\r\n")?.exitCode, 2)
+        XCTAssertEqual(AWSCLIInstaller.parseElevatedOutput("VISION_EXIT_STATUS=127")?.exitCode, 127)
+        XCTAssertEqual(AWSCLIInstaller.parseElevatedOutput("VISION_EXIT_STATUS=127")?.output, "")
+        XCTAssertEqual(AWSCLIInstaller.parseElevatedOutput("a\r\nVISION_EXIT_STATUS=2\r\n")?.exitCode, 2)
         // The last marker counts; text that merely mentions it doesn't.
-        XCTAssertEqual(AWSCLIInstaller.parseElevatedOutput("DSH_EXIT_STATUS=0\nmore\nDSH_EXIT_STATUS=3")?.exitCode, 3)
+        XCTAssertEqual(AWSCLIInstaller.parseElevatedOutput("VISION_EXIT_STATUS=0\nmore\nVISION_EXIT_STATUS=3")?.exitCode, 3)
         XCTAssertNil(AWSCLIInstaller.parseElevatedOutput("no marker"))
-        XCTAssertNil(AWSCLIInstaller.parseElevatedOutput("DSH_EXIT_STATUS=abc"))
-        XCTAssertNil(AWSCLIInstaller.parseElevatedOutput("said DSH_EXIT_STATUS=0"))
+        XCTAssertNil(AWSCLIInstaller.parseElevatedOutput("VISION_EXIT_STATUS=abc"))
+        XCTAssertNil(AWSCLIInstaller.parseElevatedOutput("said VISION_EXIT_STATUS=0"))
     }
 
     // MARK: Homebrew

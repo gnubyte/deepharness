@@ -48,7 +48,7 @@ final class FileToolsTests: XCTestCase {
         XCTAssertFalse(text.contains("open"), text)
         XCTAssertEqual(text.components(separatedBy: "taken").count - 1, edits)
         let leftovers = try files(in: root)
-        XCTAssertFalse(leftovers.contains { $0.lastPathComponent.hasSuffix(".dsh-tmp") })
+        XCTAssertFalse(leftovers.contains { $0.lastPathComponent.hasSuffix(".vision-tmp") })
     }
 
     func testEditMatchesACrlfFileInLfFormAndWritesCrlfBack() async throws {
@@ -117,13 +117,28 @@ final class FileToolsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("a.txt")
         try Data("old".utf8).write(to: path)
-        try Data("half a write".utf8).write(to: URL(fileURLWithPath: path.path + ".dsh-tmp"))
+        try Data("half a write".utf8).write(to: URL(fileURLWithPath: path.path + ".vision-tmp"))
 
         try FileText.write(to: path, text: "new text", format: .default)
 
         XCTAssertEqual(try String(contentsOf: path, encoding: .utf8), "new text")
         let leftovers = try files(in: root)
-        XCTAssertFalse(leftovers.contains { $0.lastPathComponent.hasSuffix(".dsh-tmp") })
+        XCTAssertFalse(leftovers.contains { $0.lastPathComponent.hasSuffix(".vision-tmp") })
+    }
+
+    /// Legacy: a build from before the rename named its temp file `*.dsh-tmp`; one it left goes with the next write.
+    func testATempFileLeftByABuildFromBeforeTheRenameGoesWithTheNextWrite() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("a.txt")
+        try Data("old".utf8).write(to: path)
+        try Data("half a write".utf8).write(to: URL(fileURLWithPath: path.path + FileText.legacyTempSuffix))
+        XCTAssertEqual(FileText.legacyTempSuffix, ".dsh-tmp")
+
+        try FileText.write(to: path, text: "new text", format: .default)
+
+        XCTAssertEqual(try String(contentsOf: path, encoding: .utf8), "new text")
+        XCTAssertEqual(try files(in: root).map(\.lastPathComponent), ["a.txt"])
     }
 
     func testAWriteThatCannotBeFinishedLeavesNoTempFileBehind() throws {
@@ -134,7 +149,7 @@ final class FileToolsTests: XCTestCase {
 
         XCTAssertThrowsError(try FileText.write(to: folder, text: "text", format: .default))
         let leftovers = try files(in: root)
-        XCTAssertFalse(leftovers.contains { $0.lastPathComponent.hasSuffix(".dsh-tmp") })
+        XCTAssertFalse(leftovers.contains { $0.lastPathComponent.hasSuffix(".vision-tmp") })
         var isDir: ObjCBool = false
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir) && isDir.boolValue)
     }

@@ -236,7 +236,7 @@ final class SparkSwapperTests: XCTestCase {
         XCTAssertEqual(credentials.apiBase, "https://spark:11443/v1")
         // A Swapper older than 2.0 has no app tokens.
         do {
-            _ = try await client.createToken(label: "DSH on Test Mac")
+            _ = try await client.createToken(label: "Vision on Test Mac")
             XCTFail("an older Swapper has no tokens")
         } catch {
             XCTAssertEqual(error as? SwapperError, .unsupported("version 2.0"))
@@ -254,7 +254,7 @@ final class SparkSwapperTests: XCTestCase {
         }
         let client = SparkSwapperClient(baseURL: URL(string: "https://10.0.0.9:8999")!, username: "pat", password: "pw",
                                         pinnedFingerprint: nil)
-        let grant = try await client.createToken(label: "DSH on Test Mac")
+        let grant = try await client.createToken(label: "Vision on Test Mac")
         XCTAssertEqual(grant.token, "sst_1a2b3c4d_xyz")
         XCTAssertEqual(grant.connect?.displayName, "Strix Halo (evo-x2)")
         XCTAssertEqual(grant.connect?.context, 131072)

@@ -213,15 +213,12 @@ public enum PluginLoader {
     /// Plugins ship per-project and per-user; the project's win on a name clash.
     public static func directories(project: URL?) -> [URL] {
         var dirs: [URL] = []
-        if let project { dirs.append(project.appendingPathComponent(".dsh/plugins", isDirectory: true)) }
+        if let project { dirs += AppPaths.projectFolders(project, "plugins") }
         dirs.append(userDirectory)
         return dirs
     }
 
-    public static var userDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("DSHMac/plugins", isDirectory: true)
-    }
+    public static var userDirectory: URL { AppPaths.plugins }
 
     /// Read every `*.json` manifest from the plugin directories.
     /// Malformed files are reported rather than crashing the load.

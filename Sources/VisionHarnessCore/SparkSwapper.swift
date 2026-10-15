@@ -453,7 +453,7 @@ public final class SparkSwapperClient: @unchecked Sendable {
     private func request(_ path: String, body: [String: Any]? = nil, sendAuth: Bool = true) async throws -> (Int, Data) {
         var req = URLRequest(url: baseURL.appendingPathComponent(path))
         req.setValue("1", forHTTPHeaderField: "X-Swapper")
-        req.setValue(VisionIdentity.userAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue(AppIdentity.userAgent, forHTTPHeaderField: "User-Agent")
         if sendAuth, case .token(let token) = auth {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }

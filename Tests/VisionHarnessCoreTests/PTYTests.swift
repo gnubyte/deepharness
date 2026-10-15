@@ -36,6 +36,11 @@ final class PTYTests: XCTestCase {
                       "expected the echoed marker on screen, got:\n\(screen.text)")
     }
 
+    func testTheTerminalNamesTheAppInTermProgram() throws {
+        let screen = try runOnPTY("echo program=[$TERM_PROGRAM]")
+        XCTAssertTrue(screen.text.contains("program=[Vision]"), "got:\n\(screen.text)")
+    }
+
     func testWorkingDirectoryIsTheProjectFolder() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("vision-pty-\(UUID().uuidString)")

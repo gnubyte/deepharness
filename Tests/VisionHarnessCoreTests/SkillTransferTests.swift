@@ -143,8 +143,8 @@ final class SkillTransferTests: XCTestCase {
     // MARK: Zip
 
     func testExportPortableZipThenImportItBack() throws {
-        try fx.skill(".dsh/skills/alpha", name: "alpha", description: "Use when alpha.", body: "ALPHA")
-        try fx.write(".dsh/skills/alpha/ref/notes.md", "notes")
+        try fx.skill(".vision/skills/alpha", name: "alpha", description: "Use when alpha.", body: "ALPHA")
+        try fx.write(".vision/skills/alpha/ref/notes.md", "notes")
         try fx.write(".cursor/rules/beta.mdc", "---\ndescription: Beta rule\nglobs: [\"b/**\"]\n---\nBETA")
         let skills = SkillCatalog.load(project: fx.project, locations: fx.locations)
         let zip = fx.base.appendingPathComponent("out.zip")
@@ -183,9 +183,9 @@ final class SkillTransferTests: XCTestCase {
     // MARK: Export layouts
 
     func testExportLayoutsAreReadableByTheirTools() throws {
-        try fx.skill(".dsh/skills/alpha", name: "alpha", description: "Use when alpha.", body: "ALPHA")
-        try fx.skill(".dsh/skills/withfiles", name: "withfiles", description: "Use when files.", body: "F")
-        try fx.write(".dsh/skills/withfiles/scripts/run.sh", "echo")
+        try fx.skill(".vision/skills/alpha", name: "alpha", description: "Use when alpha.", body: "ALPHA")
+        try fx.skill(".vision/skills/withfiles", name: "withfiles", description: "Use when files.", body: "F")
+        try fx.write(".vision/skills/withfiles/scripts/run.sh", "echo")
         try fx.write(".claude/commands/ship.md", "---\ndescription: Ship\n---\nShip it")
         let skills = SkillCatalog.load(project: fx.project, locations: fx.locations)
 
@@ -206,7 +206,7 @@ final class SkillTransferTests: XCTestCase {
         XCTAssertEqual(mdc["description"], "Use when alpha."); XCTAssertEqual(mdc.bool("alwaysApply"), false)
         XCTAssertNil(mdc["name"], "Cursor rules carry no name field")
 
-        for (format, sub) in [(ExportFormat.agents, ".agents/skills/alpha/SKILL.md"), (.vision, ".dsh/skills/alpha/SKILL.md"), (.portable, "alpha/SKILL.md")] {
+        for (format, sub) in [(ExportFormat.agents, ".agents/skills/alpha/SKILL.md"), (.vision, ".vision/skills/alpha/SKILL.md"), (.portable, "alpha/SKILL.md")] {
             let root = fx.base.appendingPathComponent("out-\(format.rawValue)")
             try SkillExporter.write(skills, format: format, into: root)
             XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(sub).path), "\(format)")
@@ -214,7 +214,7 @@ final class SkillTransferTests: XCTestCase {
     }
 
     func testExportConflictPolicies() throws {
-        try fx.skill(".dsh/skills/alpha", name: "alpha", description: "Use when alpha.")
+        try fx.skill(".vision/skills/alpha", name: "alpha", description: "Use when alpha.")
         let skills = SkillCatalog.load(project: fx.project, locations: fx.locations)
         let root = fx.base.appendingPathComponent("target")
         try SkillExporter.write(skills, format: .claude, into: root)

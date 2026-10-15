@@ -2,7 +2,15 @@ import SwiftUI
 import AppKit
 import VisionHarnessCore
 
+/// The entry point: what the app kept under its old name comes over before anything reads it.
 @main
+enum VisionLauncher {
+    @MainActor static func main() {
+        LaunchMigration.run()
+        VisionMacApp.main()
+    }
+}
+
 struct VisionMacApp: App {
     @State private var model = AppModel()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -169,7 +177,37 @@ struct RootView: View {
         .sheet(item: $model.planGuide) { request in
             PlanGuideView(request: request, appModel: model).environment(model)
         }
-        .overlay(alignment: .top) { banner }
+        .overlay(alignment: .top) {
+            VStack(spacing: 0) {
+                renameNotice
+                banner
+            }
+        }
+    }
+
+    /// Once, after the move from the app's old name: what came along, and what macOS will ask again.
+    @ViewBuilder
+    private var renameNotice: some View {
+        if let notice = model.renameNotice {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(Color.accentColor)
+                Text(notice)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button("Got It") { model.dismissRenameNotice() }
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.corner))
+            .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Color.accentColor.opacity(0.35)))
+            .shadow(radius: 8, y: 2)
+            .padding(12)
+            .frame(maxWidth: 620)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
     }
 
     @ViewBuilder

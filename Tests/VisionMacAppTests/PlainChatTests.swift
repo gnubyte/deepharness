@@ -98,7 +98,7 @@ final class PlainChatTests: XCTestCase {
     }
 
     func testItsSkillsAreTheUsersOwnNotTheOpenProjects() throws {
-        try skill("project-thing", in: project().appendingPathComponent(".dsh/skills"))
+        try skill("project-thing", in: project().appendingPathComponent(".vision/skills"))
         try skill("my-thing", in: support.appendingPathComponent("skills"))
         transport.adoptProject(project())
         let plain = transport.newSession(cwd: nil)

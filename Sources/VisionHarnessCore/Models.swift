@@ -170,7 +170,7 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     /// Whether the model can take images (screenshots from the screen tools).
     /// nil = assume yes; false makes tools return text only.
     public var vision: Bool?
-    /// Bedrock: the AWS CLI profile whose sign-in is used (e.g. "dsh-bedrock").
+    /// Bedrock: the AWS CLI profile whose sign-in is used (e.g. "vision-bedrock").
     /// Nil together with an API key = authenticate with that Bedrock API key.
     public var awsProfile: String?
     /// Bedrock: the AWS Region to call (e.g. "us-east-1").

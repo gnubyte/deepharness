@@ -260,8 +260,9 @@ public struct AgentCatalog: Sendable, Equatable {
 
     // MARK: Loading
 
-    /// Load built-ins, then every agent file in `userDirectories`, then in the project's `.claude/agents` and
-    /// `.dsh/agents` (project files win). Unreadable files are skipped.
+    /// Load built-ins, then every agent file in `userDirectories`, then in the project's `.claude/agents`, then
+    /// the app's own (`.vision/agents`, with `.dsh/agents` from before the rename under it): project files win, and
+    /// the app's own folder wins over Claude's. Unreadable files are skipped.
     public static func load(workspace: URL?, userDirectories: [URL]? = nil) -> AgentCatalog {
         var byName: [String: AgentDefinition] = [:]
         for built in AgentDefinition.builtIn { byName[built.name.lowercased()] = built }
@@ -270,7 +271,9 @@ public struct AgentCatalog: Sendable, Equatable {
         }
         if let workspace {
             merge(into: &byName, directory: workspace.appendingPathComponent(".claude/agents", isDirectory: true), origin: "project")
-            merge(into: &byName, directory: workspace.appendingPathComponent(".dsh/agents", isDirectory: true), origin: "project")
+            for directory in AppPaths.projectFolders(workspace, "agents").reversed() {
+                merge(into: &byName, directory: directory, origin: "project")
+            }
         }
         let builtInOrder = AgentDefinition.builtIn.map(\.name)
         let ordered = byName.values.sorted { a, b in
@@ -288,7 +291,7 @@ public struct AgentCatalog: Sendable, Equatable {
         var folders = userDirectories ?? defaultUserDirectories()
         if let workspace {
             folders.append(workspace.appendingPathComponent(".claude/agents", isDirectory: true))
-            folders.append(workspace.appendingPathComponent(".dsh/agents", isDirectory: true))
+            folders += AppPaths.projectFolders(workspace, "agents")
         }
         var stamp: UInt64 = 17
         for folder in folders {

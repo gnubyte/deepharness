@@ -147,7 +147,7 @@ final class SkillCatalogTests: XCTestCase {
     override func tearDownWithError() throws { fx.cleanup() }
 
     private func populate() throws {
-        try fx.skill(".dsh/skills/mine", name: "mine", description: "Use when DSH-owned.")
+        try fx.skill(".vision/skills/mine", name: "mine", description: "Use when Vision-owned.")
         try fx.skill(".agents/skills/shared", name: "shared", description: "Use when agents-standard.")
         try fx.skill(".claude/skills/claudey", name: "claudey", description: "Use when Claude.",
                      extra: "allowed-tools: Read, Grep\nargument-hint: <file>\n")
@@ -162,13 +162,13 @@ final class SkillCatalogTests: XCTestCase {
         try fx.write(".cursor/rules/manual.mdc", "---\nalwaysApply: false\n---\nOnly when asked.")
         try fx.skill(".cursor/skills/cursory", name: "cursory", description: "Use when Cursor.")
         try fx.skill(".claude/skills/dupe", name: "dupe", description: "claude copy")
-        try fx.skill(".dsh/skills/dupe", name: "dupe", description: "dsh copy")
+        try fx.skill(".vision/skills/dupe", name: "dupe", description: "vision copy")
         try fx.skill(".claude/skills", name: "x", description: "y", in: fx.home) // ~/.claude/skills/SKILL.md is not a skill dir
         try fx.skill(".claude/skills/homey", name: "homey", description: "Use when at home.", in: fx.home)
         try fx.skill(".cursor/skills/homecursor", name: "homecursor", description: "Cursor home.", in: fx.home)
         try fx.skill("skills/usery", name: "usery", description: "Use when user-wide.", in: fx.support)
         try fx.skill("skills-builtin/godot-debugging", name: "godot-debugging", description: "Use when Godot.", in: fx.support)
-        try fx.skill(".dsh/skills/_drafts/nope", name: "nope", description: "hidden")
+        try fx.skill(".vision/skills/_drafts/nope", name: "nope", description: "hidden")
     }
 
     func testDiscoversEveryLayout() throws {
@@ -204,7 +204,7 @@ final class SkillCatalogTests: XCTestCase {
         let all = SkillCatalog.loadAll(project: fx.project, locations: fx.locations)
         let dupes = all.filter { $0.name == "dupe" }
         XCTAssertEqual(dupes.count, 2)
-        XCTAssertEqual(dupes.first { !$0.shadowed }?.description, "dsh copy", ".dsh beats .claude")
+        XCTAssertEqual(dupes.first { !$0.shadowed }?.description, "vision copy", ".vision beats .claude")
         XCTAssertEqual(dupes.first { $0.shadowed }?.origin, .claude)
         XCTAssertEqual(SkillCatalog.load(project: fx.project, locations: fx.locations).filter { $0.name == "dupe" }.count, 1)
     }
@@ -239,9 +239,9 @@ final class SkillPromptTests: XCTestCase {
     var skills: [Skill] = []
     override func setUpWithError() throws {
         fx = try SkillFixture()
-        try fx.skill(".dsh/skills/alpha", name: "alpha", description: "Use when doing alpha work.", body: "ALPHA STEPS")
-        try fx.skill(".dsh/skills/beta", name: "beta", description: "Use when doing beta work.", body: "BETA $ARGUMENTS")
-        try fx.write(".dsh/skills/beta/scripts/run.sh", "echo hi")
+        try fx.skill(".vision/skills/alpha", name: "alpha", description: "Use when doing alpha work.", body: "ALPHA STEPS")
+        try fx.skill(".vision/skills/beta", name: "beta", description: "Use when doing beta work.", body: "BETA $ARGUMENTS")
+        try fx.write(".vision/skills/beta/scripts/run.sh", "echo hi")
         try fx.write(".claude/commands/ship.md", "SHIP $1")
         try fx.write(".cursor/rules/always.mdc", "---\ndescription: House\nalwaysApply: true\n---\nALWAYS BE TESTING")
         try fx.write(".cursor/rules/glob.mdc", "---\ndescription: Lore\nglobs: [\"docs/**\"]\n---\nLORE BODY")
@@ -287,7 +287,7 @@ final class SkillPromptTests: XCTestCase {
     }
 
     func testOversizedSkillIsCappedNotDropped() throws {
-        try fx.skill(".dsh/skills/huge", name: "huge", description: "Use when huge.", body: String(repeating: "x", count: 100_000))
+        try fx.skill(".vision/skills/huge", name: "huge", description: "Use when huge.", body: String(repeating: "x", count: 100_000))
         let all = SkillCatalog.load(project: fx.project, locations: fx.locations)
         let huge = all.first { $0.name == "huge" }!
         let r = SkillPrompt.build(skills: all, selection: SkillSelection(pinned: [huge.id]))
@@ -341,7 +341,7 @@ final class SkillDraftTests: XCTestCase {
         XCTAssertEqual(drafts[0].scope, .project)
 
         let landed = try SkillDrafts.approve(drafts[0], projectRoot: fx.project, locations: fx.locations)
-        XCTAssertTrue(landed.path.hasSuffix(".dsh/skills/godot-export-android/SKILL.md"))
+        XCTAssertTrue(landed.path.hasSuffix(".vision/skills/godot-export-android/SKILL.md"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: landed.deletingLastPathComponent().appendingPathComponent("draft.json").path))
         XCTAssertTrue(SkillDrafts.list(locations: fx.locations).isEmpty)
         let live = SkillCatalog.load(project: fx.project, locations: fx.locations)

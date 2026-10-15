@@ -96,7 +96,7 @@ enum SkillFiles {
     }
 
     static func stagingDirectory() -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("dsh-skill-\(UUID().uuidString)", isDirectory: true)
+        FileManager.default.temporaryDirectory.appendingPathComponent("vision-skill-\(UUID().uuidString)", isDirectory: true)
     }
 }
 

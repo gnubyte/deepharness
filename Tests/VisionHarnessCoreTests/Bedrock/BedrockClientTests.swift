@@ -209,7 +209,7 @@ final class BedrockClientTests: XCTestCase {
 
     private static func profile(_ model: String = sonnet45) -> ProviderProfile {
         ProviderProfile(kind: .bedrock, name: "Bedrock", baseURL: runtime, model: model,
-                        awsProfile: "dsh-bedrock", awsRegion: "us-east-1")
+                        awsProfile: "vision-bedrock", awsRegion: "us-east-1")
     }
 
     private func client(_ profile: ProviderProfile? = nil,
@@ -324,7 +324,7 @@ final class BedrockClientTests: XCTestCase {
 
     private struct SignedOutSource: AWSCredentialSource {
         func credentials(forceRefresh: Bool) async throws -> AWSCredentials {
-            throw AWSSignInRequiredError(profile: "dsh-bedrock", message: "The SSO session has expired.")
+            throw AWSSignInRequiredError(profile: "vision-bedrock", message: "The SSO session has expired.")
         }
     }
 
@@ -381,7 +381,7 @@ final class BedrockClientTests: XCTestCase {
         _ = try await collect(client())
         let sent = try XCTUnwrap(FakeBedrock.requests.first)
         XCTAssertEqual(sent.header("Accept-Encoding"), "identity")
-        XCTAssertTrue(sent.header("User-Agent")?.hasPrefix("DSH-Mac/") ?? false, "\(sent.headers)")
+        XCTAssertTrue(sent.header("User-Agent")?.hasPrefix("Vision-Mac/") ?? false, "\(sent.headers)")
     }
 
     func testProfileHeadersAreSentAndTheAmzOnesSigned() async throws {
@@ -836,7 +836,7 @@ final class BedrockClientTests: XCTestCase {
         XCTAssertEqual(FakeBedrock.requests.count, 2)
         XCTAssertEqual(retry(error), "fail")
         XCTAssertTrue(isPermanent(error))
-        XCTAssertTrue(error.localizedDescription.contains("aws login --profile dsh-bedrock"), error.localizedDescription)
+        XCTAssertTrue(error.localizedDescription.contains("aws login --profile vision-bedrock"), error.localizedDescription)
         XCTAssertEqual(source.calls, [false, true])
     }
 
@@ -899,7 +899,7 @@ final class BedrockClientTests: XCTestCase {
         let message = error.localizedDescription
         XCTAssertTrue(message.contains("expired"), message)
         XCTAssertTrue(message.contains("Settings ▸ Models"), message)
-        XCTAssertTrue(message.contains("aws login --profile dsh-bedrock"), message)
+        XCTAssertTrue(message.contains("aws login --profile vision-bedrock"), message)
         XCTAssertEqual(status(error), 401)
         XCTAssertTrue(isPermanent(error))
         XCTAssertEqual(errorBody(error), "The SSO session has expired.")
@@ -909,7 +909,7 @@ final class BedrockClientTests: XCTestCase {
     func testTheHostCanTellWhichProfileNeedsSigningIn() async {
         FakeBedrock.reset { _ in FakeBedrock.reply(EventStreamFrames.stop("end_turn")) }
         guard let error = await failure(client(source: SignedOutSource())) else { return }
-        XCTAssertEqual(BedrockClient.expiredSignInProfile(in: error), "dsh-bedrock")
+        XCTAssertEqual(BedrockClient.expiredSignInProfile(in: error), "vision-bedrock")
 
         // Other permanent refusals, and other errors altogether, are not a sign-in prompt.
         FakeBedrock.reset { _ in FakeBedrock.error(403, "UnrecognizedClientException", "The security token included in the request is invalid.") }
@@ -1145,7 +1145,7 @@ final class BedrockClientTests: XCTestCase {
                 : FakeBedrock.reply(EventStreamFrames.textDelta(0, "all done"), EventStreamFrames.stop("end_turn"))
         }
         let scratch = ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()
-        let root = URL(fileURLWithPath: scratch).appendingPathComponent("dsh-bedrock-\(UUID().uuidString)")
+        let root = URL(fileURLWithPath: scratch).appendingPathComponent("vision-bedrock-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -1346,9 +1346,9 @@ final class ProviderClientsTests: XCTestCase {
             return StaticAWSCredentialSource(SigV4Tests.noToken)
         }
         let bedrock = ProviderProfile(kind: .bedrock, name: "B", baseURL: "", model: "amazon.nova-pro-v1:0",
-                                      awsProfile: "dsh-bedrock", awsRegion: "us-east-1")
+                                      awsProfile: "vision-bedrock", awsRegion: "us-east-1")
         XCTAssertTrue(ProviderClients.make(bedrock) is BedrockClient)
-        XCTAssertEqual(asked.current, ["dsh-bedrock"])
+        XCTAssertEqual(asked.current, ["vision-bedrock"])
 
         let keyed = ProviderProfile(kind: .bedrock, name: "B", baseURL: "", apiKey: "bedrock-api-key-x",
                                     model: "amazon.nova-pro-v1:0", awsRegion: "us-east-1")

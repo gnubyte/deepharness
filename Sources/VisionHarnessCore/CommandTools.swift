@@ -79,7 +79,7 @@ public struct WebFetchTool: ToolExecutor {
         }
         var req = URLRequest(url: url)
         req.timeoutInterval = 30
-        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) DSH.app", forHTTPHeaderField: "User-Agent")
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) \(AppIdentity.name).app", forHTTPHeaderField: "User-Agent")
         do {
             let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {

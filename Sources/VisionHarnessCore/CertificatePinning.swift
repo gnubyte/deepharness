@@ -59,7 +59,7 @@ public enum CertificatePin {
         let session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url)
-        request.setValue(VisionIdentity.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(AppIdentity.userAgent, forHTTPHeaderField: "User-Agent")
         _ = try? await session.data(for: request)
         return delegate.seenFingerprint
     }
@@ -173,19 +173,4 @@ final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
         .serverCertificateUntrusted, .serverCertificateHasUnknownRoot, .serverCertificateHasBadDate,
         .serverCertificateNotYetValid, .secureConnectionFailed,
     ]
-}
-
-// MARK: - Who is calling
-
-/// How DSH names itself to the servers it calls. Some plans (Kimi Code) check which app is calling: DSH says
-/// honestly that it is DSH, and never borrows another tool's identity.
-public enum VisionIdentity {
-    /// The app's version from its bundle ("0.14.0"); "dev" in a test run or an unbundled build.
-    public static var version: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        return (short?.isEmpty == false && Bundle.main.bundlePath.hasSuffix(".app")) ? short! : "dev"
-    }
-
-    /// "DSH/0.14.0 (macOS)"
-    public static var userAgent: String { "DSH/\(version) (macOS)" }
 }

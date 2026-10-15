@@ -28,7 +28,7 @@ final class ProviderFoundationTests: XCTestCase {
         let route = ProviderProfile(kind: .bedrock, name: "Amazon Bedrock",
                                     baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
                                     model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-                                    awsProfile: "dsh-bedrock", awsRegion: "us-east-1",
+                                    awsProfile: "vision-bedrock", awsRegion: "us-east-1",
                                     subagentWorker: true, subagentParallel: 3)
         let again = try JSONDecoder().decode(ProviderProfile.self, from: JSONEncoder().encode(route))
         XCTAssertEqual(again, route)
@@ -130,7 +130,7 @@ final class ProviderFoundationTests: XCTestCase {
         let spark = ProviderProfile(kind: .openAICompat, name: "Spark", baseURL: "http://spark:8002/v1", model: "qwen")
         XCTAssertTrue(ProviderClients.make(spark) is OpenAIClient)
         let bedrock = ProviderProfile(kind: .bedrock, name: "Bedrock", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-                                      model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", awsProfile: "dsh-bedrock", awsRegion: "us-east-1")
+                                      model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", awsProfile: "vision-bedrock", awsRegion: "us-east-1")
         XCTAssertTrue(ProviderClients.make(bedrock) is BedrockClient)
         XCTAssertEqual(ProviderClients.make(bedrock).profile, bedrock, "the client carries the route it was made for")
     }
@@ -144,7 +144,7 @@ final class ProviderFoundationTests: XCTestCase {
         }
         defer { ProviderClients.awsCredentials = nil }
         _ = ProviderClients.make(ProviderProfile(kind: .bedrock, name: "B", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-                                                 model: "m", awsProfile: "dsh-bedrock", awsRegion: "us-east-1"))
+                                                 model: "m", awsProfile: "vision-bedrock", awsRegion: "us-east-1"))
         // A route that authenticates with a Bedrock API key never touches the AWS CLI.
         _ = ProviderClients.make(ProviderProfile(kind: .bedrock, name: "K", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
                                                  model: "m", awsRegion: "us-east-1"))
@@ -153,7 +153,7 @@ final class ProviderFoundationTests: XCTestCase {
         withKey.apiKey = "bedrock-api-key-abc"
         _ = ProviderClients.make(withKey)
         lock.lock(); defer { lock.unlock() }
-        XCTAssertEqual(asked, ["dsh-bedrock", "-"], "asked for the profile route, and for the route with neither a profile nor a key; not for the API-key route")
+        XCTAssertEqual(asked, ["vision-bedrock", "-"], "asked for the profile route, and for the route with neither a profile nor a key; not for the API-key route")
     }
 
     // MARK: Helpers

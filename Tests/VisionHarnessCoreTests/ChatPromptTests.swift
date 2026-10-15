@@ -3,7 +3,7 @@ import XCTest
 
 /// A chat without a project is a regular conversation: its own prompt, its own scratch folder.
 final class ChatPromptTests: XCTestCase {
-    private let scratch = URL(fileURLWithPath: "/Users/pat/Library/Application Support/DSHMac/Chats/ABC-123", isDirectory: true)
+    private let scratch = URL(fileURLWithPath: "/Users/pat/Library/Application Support/Vision/Chats/ABC-123", isDirectory: true)
 
     func testWithoutAProjectTheChatIsARegularConversation() {
         XCTAssertEqual(ChatPrompt.kind(project: nil), .plain)
@@ -12,7 +12,7 @@ final class ChatPromptTests: XCTestCase {
 
     func testThePlainPromptSaysSoInTheSpecsWords() {
         XCTAssertEqual(ChatPrompt.plain(scratch: scratch),
-                       "You are DSH, a helpful assistant in a native macOS app. This is a regular conversation: no project folder is open and none is needed — never ask the user to open one. Answer directly and naturally; match the length of your answer to the question. Use tools only when they help: look things up with web_fetch, use one of the user's skills when it fits the request, and remember lasting preferences with memory. When something needs files or commands — a skill that runs a script, a document to draft, data to convert — work in this chat's own scratch folder, /Users/pat/Library/Application Support/DSHMac/Chats/ABC-123; it belongs to this chat and starts empty. Tell the user where a file you made is when it matters.")
+                       "You are DSH, a helpful assistant in a native macOS app. This is a regular conversation: no project folder is open and none is needed — never ask the user to open one. Answer directly and naturally; match the length of your answer to the question. Use tools only when they help: look things up with web_fetch, use one of the user's skills when it fits the request, and remember lasting preferences with memory. When something needs files or commands — a skill that runs a script, a document to draft, data to convert — work in this chat's own scratch folder, /Users/pat/Library/Application Support/Vision/Chats/ABC-123; it belongs to this chat and starts empty. Tell the user where a file you made is when it matters.")
     }
 
     func testTheBasePromptIsChosenByWhetherThereIsAProject() {
@@ -26,7 +26,7 @@ final class ChatPromptTests: XCTestCase {
     }
 
     func testTheScratchFolderLivesUnderTheAppsDataFolder() {
-        let support = URL(fileURLWithPath: "/Users/pat/Library/Application Support/DSHMac", isDirectory: true)
+        let support = URL(fileURLWithPath: "/Users/pat/Library/Application Support/Vision", isDirectory: true)
         XCTAssertEqual(ChatPrompt.scratchFolder(chatID: "ABC-123", appSupport: support).path, scratch.path)
     }
 

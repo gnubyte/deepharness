@@ -12,7 +12,7 @@ public final class PTY: @unchecked Sendable {
     private(set) var pid: pid_t = -1
     private var master: Int32 = -1
     private var readSource: DispatchSourceRead?
-    private let queue = DispatchQueue(label: "dsh.pty.read", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "vision.pty.read", qos: .userInitiated)
 
     /// Raw bytes from the shell, delivered on `queue`.
     public var onOutput: (@Sendable (Data) -> Void)?
@@ -39,7 +39,7 @@ public final class PTY: @unchecked Sendable {
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
-        env["TERM_PROGRAM"] = "DSH"
+        env["TERM_PROGRAM"] = AppIdentity.terminalProgram
         for (key, value) in environment { env[key] = value }
         let envp = Self.makeCArray(env.map { "\($0.key)=\($0.value)" })
         let shellPath = strdup(shell)
@@ -217,7 +217,7 @@ public final class PTY: @unchecked Sendable {
 
         let master = masterFD
         let capture = LockedTail(capacity: maxCapture)
-        let queue = DispatchQueue(label: "dsh.pty.runcommand")
+        let queue = DispatchQueue(label: "vision.pty.runcommand")
         let lastOutput = DoubleBox(initial: Date().timeIntervalSinceReferenceDate)
         let sawOutput = BoolBox()
 

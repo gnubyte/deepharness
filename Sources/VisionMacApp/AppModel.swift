@@ -49,6 +49,8 @@ final class AppModel {
     var skillsAction: SkillsAction?
     /// The folder both modes operate in.
     private(set) var project: URL?
+    /// The one-time "DSH is now Vision" notice, until the user dismisses it.
+    private(set) var renameNotice: String?
 
     init() {
         // Bedrock routes sign their requests with credentials the AWS CLI exports for their profile.
@@ -62,6 +64,13 @@ final class AppModel {
         ProviderClients.shield = policy
         mode = WorkspaceMode(rawValue: config.lastMode) ?? .chat
         showWizard = !config.wizardCompleted || !config.isConfigured
+        if UserDefaults.standard.bool(forKey: LegacySettingsImport.noticePendingKey) {
+            renameNotice = LaunchMigration.renameNotice
+        }
+        if let failure = LaunchMigration.failure {
+            transport.banner = "\(AppIdentity.name) couldn't move its data to its own folder yet (\(failure)), so it is "
+                + "working where \(AppIdentity.Legacy.name) kept it. It tries again the next time it opens."
+        }
 
         let spark = spark
         let config = config, transport = transport
@@ -103,6 +112,11 @@ final class AppModel {
     }
 
     var selectedSession: SessionVM? { transport.selected }
+
+    func dismissRenameNotice() {
+        renameNotice = nil
+        UserDefaults.standard.removeObject(forKey: LegacySettingsImport.noticePendingKey)
+    }
 
     /// Show or hide the plan panel.
     func togglePlan() {

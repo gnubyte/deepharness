@@ -8,7 +8,7 @@ import VisionHarnessCore
 @Observable
 public final class AppConfig {
     public static let shared = AppConfig()
-    public init(defaults: UserDefaults = .standard, secrets: any SecretStore = KeychainSecretStore()) {
+    public init(defaults: UserDefaults = .standard, secrets: any SecretStore = AppSecrets.keychain) {
         self.defaults = defaults
         self.secrets = secrets
         load()
@@ -383,7 +383,7 @@ public final class AppConfig {
     // Keyed by the provider's stable identity rather than its position, so
     // reordering or deleting a provider never hands its key to another one.
 
-    private static let keychainService = "DSHMac.provider"
+    private static let keychainService = AppIdentity.KeychainService.provider
 
     public func setAPIKey(_ key: String, for provider: ProviderProfile) {
         secrets.write(key, service: Self.keychainService, account: provider.routeID)
@@ -494,7 +494,7 @@ extension AppConfig {
     // has them. A Keychain that can't be read never costs terms — the file keeps its copy, and nothing is written
     // over what the Keychain may still hold unless the user changes the terms.
 
-    static let termsService = "DSHMac.shield"
+    static let termsService = AppIdentity.KeychainService.shield
     static let termsAccount = "terms"
 
     /// Read the terms: the Keychain's — unless the settings file still has a list, which is then the newer one (the

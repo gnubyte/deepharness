@@ -8,7 +8,8 @@ import Foundation
 // the open Agent Skills convention, so this app reads all of their layouts in
 // place and can import/export between them:
 //
-//   DSH        .dsh/skills/<n>/SKILL.md        ~/Library/Application Support/DSHMac/skills
+//   Vision     .vision/skills/<n>/SKILL.md     ~/Library/Application Support/Vision/skills
+//              (.dsh/skills, from before the rename, is read too)
 //   Agents     .agents/skills/<n>/SKILL.md     ~/.agents/skills
 //   Qwen Code  .qwen/skills/<n>/SKILL.md
 //   Claude     .claude/skills/<n>/SKILL.md     ~/.claude/skills
@@ -202,7 +203,7 @@ public enum SkillNaming {
 
 public struct SkillLocations: Sendable, Equatable {
     public var home: URL
-    /// `~/Library/Application Support/DSHMac`
+    /// The app's data folder, `~/Library/Application Support/Vision` (see `AppPaths.support`).
     public var appSupport: URL
 
     public init(home: URL, appSupport: URL) {
@@ -211,10 +212,7 @@ public struct SkillLocations: Sendable, Equatable {
     }
 
     public static var standard: SkillLocations {
-        let fm = FileManager.default
-        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return SkillLocations(home: fm.homeDirectoryForCurrentUser,
-                              appSupport: support.appendingPathComponent("DSHMac", isDirectory: true))
+        SkillLocations(home: FileManager.default.homeDirectoryForCurrentUser, appSupport: AppPaths.support)
     }
 
     /// Skills you own, available in every project.
@@ -224,8 +222,9 @@ public struct SkillLocations: Sendable, Equatable {
     /// AI-generated and imported skills waiting for approval.
     public var drafts: URL { appSupport.appendingPathComponent("skill-drafts", isDirectory: true) }
 
+    /// Where the app writes a project's skills: `<project>/.vision/skills`.
     public static func projectSkills(_ project: URL) -> URL {
-        project.appendingPathComponent(".dsh/skills", isDirectory: true)
+        AppPaths.projectFolder(project, "skills")
     }
 }
 
@@ -251,7 +250,10 @@ public enum SkillCatalog {
             out.append(SkillRoot(url: url, rank: rank, origin: origin, scope: scope, layout: layout))
         }
         if let project {
-            add(project.appendingPathComponent(".dsh/skills"), 100, .vision, .project, .skillDirs)
+            // The app's own, then the same folder as a project set up before the rename has it (`.dsh/skills`).
+            for (offset, folder) in AppPaths.projectFolders(project, "skills").enumerated() {
+                add(folder, 100 + offset, .vision, .project, .skillDirs)
+            }
             if sources.contains(.agents) { add(project.appendingPathComponent(".agents/skills"), 200, .agents, .project, .skillDirs) }
             if sources.contains(.qwen) { add(project.appendingPathComponent(".qwen/skills"), 300, .qwen, .project, .skillDirs) }
             if sources.contains(.claude) {

@@ -151,7 +151,7 @@ public struct AWSCLIInstaller: Sendable {
 
     /// What the elevated script prints after `installer`, so the exit status survives osascript
     /// (whose own exit status is 1 for any failure).
-    static let exitMarker = "DSH_EXIT_STATUS="
+    static let exitMarker = "VISION_EXIT_STATUS="
 
     /// One line of what a tool printed, as it arrives (on a background queue).
     public typealias LineHandler = @Sendable (String) -> Void
@@ -220,10 +220,10 @@ public struct AWSCLIInstaller: Sendable {
         }
     }
 
-    /// `$TMPDIR/dsh-aws-cli` (a GUI app's TMPDIR is its private per-user temporary folder).
+    /// `$TMPDIR/vision-aws-cli` (a GUI app's TMPDIR is its private per-user temporary folder).
     public static func defaultWorkFolder() -> String {
         let temporary = ProcessInfo.processInfo.environment["TMPDIR"].flatMap { $0.isEmpty ? nil : $0 } ?? NSTemporaryDirectory()
-        return URL(fileURLWithPath: temporary).appendingPathComponent("dsh-aws-cli").path
+        return URL(fileURLWithPath: temporary).appendingPathComponent("vision-aws-cli").path
     }
 
     // MARK: Platform

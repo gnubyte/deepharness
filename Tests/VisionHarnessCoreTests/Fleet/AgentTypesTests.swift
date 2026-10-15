@@ -224,9 +224,9 @@ final class AgentTypesTests: XCTestCase {
         let user = root.folder("user-agents")
         try root.write("user-agents/explore.md", "---\nname: explore\ndescription: My own explorer\n---\nBe thorough.")
         try root.write("user-agents/helper.md", "---\ndescription: User helper\n---\nHelp.")
-        try root.write("proj/.dsh/agents/helper.md", "---\ndescription: Project helper\n---\nHelp in this project.")
+        try root.write("proj/.vision/agents/helper.md", "---\ndescription: Project helper\n---\nHelp in this project.")
         try root.write("proj/.claude/agents/docs.md", "---\ndescription: Writes docs\ntools: Read, Write\n---\nWrite docs.")
-        try root.write("proj/.dsh/agents/broken.md", "---\n---\n")
+        try root.write("proj/.vision/agents/broken.md", "---\n---\n")
 
         let catalog = AgentCatalog.load(workspace: root.url.appendingPathComponent("proj"), userDirectories: [user])
         XCTAssertEqual(catalog.find("explore")?.description, "My own explorer")
@@ -243,9 +243,9 @@ final class AgentTypesTests: XCTestCase {
 
     func testVisionAgentsBeatClaudeAgentsInTheSameProject() throws {
         try root.write("proj/.claude/agents/twin.md", "---\ndescription: from .claude\n---\nA.")
-        try root.write("proj/.dsh/agents/twin.md", "---\ndescription: from .dsh\n---\nB.")
+        try root.write("proj/.vision/agents/twin.md", "---\ndescription: from .vision\n---\nB.")
         let catalog = AgentCatalog.load(workspace: root.url.appendingPathComponent("proj"), userDirectories: [])
-        XCTAssertEqual(catalog.find("twin")?.description, "from .dsh")
+        XCTAssertEqual(catalog.find("twin")?.description, "from .vision")
     }
 
     func testOnlyMarkdownFilesInsideTheFolderAreRead() throws {
@@ -279,7 +279,7 @@ final class AgentTypesTests: XCTestCase {
     func testTheUsersOwnFoldersAreTheAppsAndClaudeCodes() {
         let folders = AgentCatalog.defaultUserDirectories().map(\.path)
         XCTAssertEqual(folders.count, 2)
-        XCTAssertTrue(folders.first?.hasSuffix("Application Support/DSHMac/agents") ?? false, "\(folders)")
+        XCTAssertEqual(folders.first, AppPaths.support.appendingPathComponent("agents", isDirectory: true).path)
         XCTAssertTrue(folders.last?.hasSuffix("/.claude/agents") ?? false, "\(folders)")
     }
 

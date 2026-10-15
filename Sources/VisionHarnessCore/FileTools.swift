@@ -48,8 +48,9 @@ enum FileText {
     }
 
     /// Write `text` in `format`: LF breaks become CRLF for a CRLF file, and the BOM is
-    /// kept when there was one. The swap uses one temp name per path (`*.dsh-tmp`), so a
+    /// kept when there was one. The swap uses one temp name per path (`*.vision-tmp`), so a
     /// write that dies halfway is replaced by the next write instead of leaving orphans.
+    /// (A build from before the rename used `*.dsh-tmp`: one it left behind goes with the next write too.)
     static func write(to url: URL, text: String, format: TextFileFormat) throws {
         var body = text
         if format.usesCRLF {
@@ -61,7 +62,7 @@ enum FileText {
         if !directory.path.isEmpty {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
-        let temp = URL(fileURLWithPath: url.path + ".dsh-tmp")
+        let temp = URL(fileURLWithPath: url.path + tempSuffix)
         try withLock(url.path) {
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
@@ -76,12 +77,18 @@ enum FileText {
                 } else {
                     try FileManager.default.moveItem(at: temp, to: url)
                 }
+                try? FileManager.default.removeItem(atPath: url.path + legacyTempSuffix)
             } catch {
                 try? FileManager.default.removeItem(at: temp)
                 throw error
             }
         }
     }
+
+    /// The temp name's suffix for a write in progress.
+    static let tempSuffix = ".vision-tmp"
+    /// Legacy: the suffix a build from before the rename used; its leftovers are cleaned up, never written.
+    static let legacyTempSuffix = ".dsh-tmp"
 
     /// Non-overlapping count. An empty needle matches nothing.
     static func countOccurrences(of needle: String, in text: String) -> Int {

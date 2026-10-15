@@ -184,7 +184,7 @@ final class BedrockGuideModelTests: XCTestCase {
     /// Walk a fresh guide to the model page, signed in.
     private func onModelPage(_ backend: FakeBedrockBackend, config: AppConfig? = nil) async throws -> BedrockGuideModel {
         backend.signedIn = true
-        backend.profiles = [AWSProfile(name: "dsh-bedrock", kind: .loginSession, region: "us-east-1", settings: [:])]
+        backend.profiles = [AWSProfile(name: "vision-bedrock", kind: .loginSession, region: "us-east-1", settings: [:])]
         let guide = make(backend, config: config)
         guide.activate()
         guide.next()                                    // welcome → cli
@@ -215,6 +215,17 @@ final class BedrockGuideModelTests: XCTestCase {
         XCTAssertTrue(guide.useExisting)
         XCTAssertEqual(guide.profileName, "work-sso")
         XCTAssertEqual(make(FakeBedrockBackend()).profileName, AWSSignIn.defaultProfile)
+    }
+
+    /// Legacy: a route set up before the rename names the old app profile (`dsh-bedrock`). It keeps it — the
+    /// sign-in is already there — while a new setup signs in as `vision-bedrock`.
+    func testARouteSetUpBeforeTheRenameKeepsItsProfile() {
+        let route = ProviderProfile(kind: .bedrock, name: "Bedrock · Claude", baseURL: "https://x", model: "m",
+                                    awsProfile: AppIdentity.Legacy.awsProfile, awsRegion: "us-west-2")
+        let guide = make(FakeBedrockBackend(), config: config([route]), route: route)
+        XCTAssertTrue(guide.useExisting)
+        XCTAssertEqual(guide.profileName, "dsh-bedrock")
+        XCTAssertEqual(make(FakeBedrockBackend()).profileName, "vision-bedrock")
     }
 
     // MARK: The AWS CLI
@@ -264,7 +275,7 @@ final class BedrockGuideModelTests: XCTestCase {
         guide.signIn()
         try await until("signed in") { guide.identity != nil }
         XCTAssertEqual(backend.calls.filter { $0.hasPrefix("login") || $0.hasPrefix("invalidate") || $0.hasPrefix("verify") },
-                       ["login:dsh-bedrock:us-east-1", "invalidate:dsh-bedrock", "verify:dsh-bedrock:us-east-1"],
+                       ["login:vision-bedrock:us-east-1", "invalidate:vision-bedrock", "verify:vision-bedrock:us-east-1"],
                        "signs in, forgets the cached credentials, then asks who it is")
         XCTAssertTrue(guide.canAdvance)
         XCTAssertTrue(guide.signInLog.contains("Attempting to open your default browser"))
@@ -273,7 +284,7 @@ final class BedrockGuideModelTests: XCTestCase {
     func testAnAlreadySignedInProfileNeedsNoSignIn() async throws {
         let backend = FakeBedrockBackend()
         backend.signedIn = true
-        backend.profiles = [AWSProfile(name: "dsh-bedrock", kind: .loginSession, region: "us-east-1", settings: [:])]
+        backend.profiles = [AWSProfile(name: "vision-bedrock", kind: .loginSession, region: "us-east-1", settings: [:])]
         let guide = make(backend)
         guide.go(.cli)
         try await until("cli") { guide.cliStatus != nil }
@@ -318,7 +329,7 @@ final class BedrockGuideModelTests: XCTestCase {
         guide.go(.signIn)
         guide.signIn()
         try await until("signed in") { guide.identity != nil }
-        XCTAssertTrue(backend.calls.contains("sso:dsh-bedrock"))
+        XCTAssertTrue(backend.calls.contains("sso:vision-bedrock"))
     }
 
     func testAFailedSignInShowsWhyAndStaysOnThePage() async throws {
@@ -483,7 +494,7 @@ final class BedrockGuideModelTests: XCTestCase {
         XCTAssertEqual(guide.region, "eu-west-1")
         XCTAssertNil(guide.selected, "the choice belonged to the old Region")
         XCTAssertTrue(guide.readiness.isEmpty)
-        try await until("reloaded") { guide.models != nil && backend.calls.contains("list:dsh-bedrock:eu-west-1") }
+        try await until("reloaded") { guide.models != nil && backend.calls.contains("list:vision-bedrock:eu-west-1") }
     }
 
     func testAnExpiredSignInWhileListingSendsYouBackToSignIn() async throws {
@@ -491,7 +502,7 @@ final class BedrockGuideModelTests: XCTestCase {
         let guide = try await onModelPage(backend)
         // The session ended: listing fails, and so would asking who is signed in.
         backend.signedIn = false
-        backend.listError = AWSSignInRequiredError(profile: "dsh-bedrock", message: "Your AWS sign-in has expired. Sign in again.")
+        backend.listError = AWSSignInRequiredError(profile: "vision-bedrock", message: "Your AWS sign-in has expired. Sign in again.")
         guide.loadModels()
         try await until("sent back") { guide.page == .signIn }
         XCTAssertNil(guide.identity)
@@ -501,7 +512,7 @@ final class BedrockGuideModelTests: XCTestCase {
     func testOtherListingErrorsAreShownOnTheModelPage() async throws {
         let backend = FakeBedrockBackend()
         backend.signedIn = true
-        backend.profiles = [AWSProfile(name: "dsh-bedrock", kind: .loginSession, region: nil, settings: [:])]
+        backend.profiles = [AWSProfile(name: "vision-bedrock", kind: .loginSession, region: nil, settings: [:])]
         backend.listError = AWSCLIException(AWSCLIError(kind: .accessDenied, message: "Your AWS permissions don't allow bedrock:ListFoundationModels.",
                                                         permission: "bedrock:ListFoundationModels"))
         let guide = make(backend)
@@ -671,7 +682,7 @@ final class BedrockGuideModelTests: XCTestCase {
         XCTAssertEqual(guide.role, .main)
         XCTAssertEqual(config.mainRoute?.name, "Bedrock · Claude Sonnet 4.5")
         XCTAssertEqual(config.mainRoute?.model, "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
-        XCTAssertEqual(config.mainRoute?.awsProfile, "dsh-bedrock")
+        XCTAssertEqual(config.mainRoute?.awsProfile, "vision-bedrock")
         XCTAssertEqual(config.mainRoute?.awsRegion, "us-east-1")
         XCTAssertEqual(config.mainRoute?.baseURL, "https://bedrock-runtime.us-east-1.amazonaws.com")
         XCTAssertEqual(config.mainRoute?.vision, true, "Claude reads images")
@@ -721,7 +732,7 @@ final class BedrockGuideModelTests: XCTestCase {
     func testChangingARoutesModelReplacesItInPlaceAndKeepsItsRole() async throws {
         let old = ProviderProfile(kind: .bedrock, name: "Bedrock · Claude Opus 4.1", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
                                   model: "us.anthropic.claude-opus-4-1-20250805-v1:0", temperature: 0.2, reasoningEffort: "high",
-                                  awsProfile: "dsh-bedrock", awsRegion: "us-east-1", subagentWorker: true, subagentParallel: 4)
+                                  awsProfile: "vision-bedrock", awsRegion: "us-east-1", subagentWorker: true, subagentParallel: 4)
         let config = config([spark("Spark 1"), old, spark("Spark 2")])
         let guide = try await connectedGuide(FakeBedrockBackend(), config: config, route: old, model: nova)
         XCTAssertTrue(guide.connected)
@@ -738,7 +749,7 @@ final class BedrockGuideModelTests: XCTestCase {
 
     func testARouteTheUserRenamedKeepsItsNameWhenItsModelChanges() async throws {
         let old = ProviderProfile(kind: .bedrock, name: "Reviewer", baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-                                  model: "us.anthropic.claude-opus-4-1-20250805-v1:0", awsProfile: "dsh-bedrock", awsRegion: "us-east-1")
+                                  model: "us.anthropic.claude-opus-4-1-20250805-v1:0", awsProfile: "vision-bedrock", awsRegion: "us-east-1")
         let config = config([old])
         _ = try await connectedGuide(FakeBedrockBackend(), config: config, route: old, model: sonnet)
         XCTAssertEqual(config.providers.map(\.name), ["Reviewer"])

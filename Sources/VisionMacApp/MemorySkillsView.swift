@@ -106,7 +106,7 @@ struct MemorySkillsView: View {
             EmptyStateView(icon: "doc.text",
                            title: "No instruction files",
                            message: """
-                           A file named AGENTS.md, QWEN.md, CLAUDE.md, DSH.md, or MEMORY.md in the \
+                           A file named AGENTS.md, QWEN.md, CLAUDE.md, VISION.md, or MEMORY.md in the \
                            project root is loaded into every prompt. Create the memory scaffold to \
                            get started.
                            """) {

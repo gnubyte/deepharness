@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import VisionHarnessCore
 
 /// One stored transcript row.
 public struct LogItemRow: Identifiable, Hashable, Sendable {
@@ -54,7 +55,7 @@ private struct StoredItem: Codable {
 }
 
 /// Per-session conversation store. One JSON file per session under
-/// ~/Library/Application Support/DSHMac/conversations/.
+/// ~/Library/Application Support/Vision/conversations/ (`AppPaths.conversations`).
 @MainActor
 public final class ConversationLog {
     public static let shared = ConversationLog()
@@ -72,7 +73,7 @@ public final class ConversationLog {
     /// How long a burst of changes is coalesced before it is written.
     public var writeDelay: TimeInterval = 0.75
     /// File writes happen here, in order, off the main thread.
-    private let io = DispatchQueue(label: "DSHMac.ConversationLog.io", qos: .utility)
+    private let io = DispatchQueue(label: "vision.ConversationLog.io", qos: .utility)
 
     public init(dir: URL? = nil) {
         let base = dir ?? Self.defaultDir
@@ -92,11 +93,7 @@ public final class ConversationLog {
         } catch {}
     }
 
-    static var defaultDir: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("DSHMac", isDirectory: true)
-                    .appendingPathComponent("conversations", isDirectory: true)
-    }
+    static var defaultDir: URL { AppPaths.conversations }
 
     private func fileURL(_ id: String) -> URL { dir.appendingPathComponent("\(id).json") }
 

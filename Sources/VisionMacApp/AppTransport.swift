@@ -329,11 +329,7 @@ public final class AppTransport {
 
     /// The queue's home for persistence: one JSON file under the app-support
     /// folder, next to the conversations.
-    private static var defaultQueueFile: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("DSHMac", isDirectory: true)
-            .appendingPathComponent("task-queue.json")
-    }
+    private static var defaultQueueFile: URL { AppPaths.taskQueueFile }
 
     public var queueRunningNow: Bool { queueRunning }
 
