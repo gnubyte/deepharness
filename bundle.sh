@@ -4,7 +4,7 @@ set -euo pipefail
 
 CONFIG="${1:-release}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APP="$ROOT/build/DSH.app"
+APP="$ROOT/build/Vision.app"
 BIN_NAME="Vision"
 
 echo "==> building ($CONFIG)"
@@ -27,8 +27,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key>            <string>DSH</string>
-  <key>CFBundleDisplayName</key>     <string>DSH</string>
+  <key>CFBundleName</key>            <string>Vision</string>
+  <key>CFBundleDisplayName</key>     <string>Vision</string>
   <!-- The settings file is named after the identifier (AppIdentity.bundleIdentifier). The first launch brings
        over the settings, data folder and Keychain items of the build before the rename (LaunchMigration). -->
   <key>CFBundleIdentifier</key>      <string>com.503cm.vision.mac</string>
@@ -49,20 +49,20 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <!-- Newer macOS asks before an app talks to other machines on your network.
        This is the wording of that prompt. -->
   <key>NSLocalNetworkUsageDescription</key>
-  <string>DSH connects to the model servers you set up on your network — DGX Sparks, Ollama or LM Studio — and to the Spark Swapper that switches their models.</string>
+  <string>Vision connects to the model servers you set up on your network — DGX Sparks, Ollama or LM Studio — and to the Spark Swapper that switches their models.</string>
   <!-- The agent reads and writes the project folder you open, and the
        integrated terminal runs your login shell there. -->
   <key>NSDesktopFolderUsageDescription</key>
-  <string>DSH opens project folders you choose so the agent can read and edit them.</string>
+  <string>Vision opens project folders you choose so the agent can read and edit them.</string>
   <key>NSDocumentsFolderUsageDescription</key>
-  <string>DSH opens project folders you choose so the agent can read and edit them.</string>
+  <string>Vision opens project folders you choose so the agent can read and edit them.</string>
   <key>NSDownloadsFolderUsageDescription</key>
-  <string>DSH opens project folders you choose so the agent can read and edit them.</string>
+  <string>Vision opens project folders you choose so the agent can read and edit them.</string>
   <!-- The computer-use tools (screenshot, ui_tree, keyboard) talk to the
        window server and System Events. These strings appear in the one-time
        macOS prompts; grants live in System Settings → Privacy & Security. -->
   <key>NSAppleEventsUsageDescription</key>
-  <string>DSH lets the agent inspect and control apps you approve — window titles, accessibility trees, and keyboard input — to debug what you are building.</string>
+  <string>Vision lets the agent inspect and control apps you approve — window titles, accessibility trees, and keyboard input — to debug what you are building.</string>
 </dict>
 </plist>
 PLIST
@@ -71,13 +71,13 @@ PLIST
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (unsigned — Gatekeeper may prompt on first launch)"
 
 # Build a distributable DMG (app + an Applications drag target).
-DMG="$ROOT/build/DeepHarness.dmg"
+DMG="$ROOT/build/Vision.dmg"
 STAGE="$(mktemp -d)/dmg"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 echo "==> building DMG ($DMG)"
-hdiutil create -volname "DeepHarness" -srcfolder "$STAGE" -ov -format UDZO -fs HFS+ "$DMG" >/dev/null
+hdiutil create -volname "Vision" -srcfolder "$STAGE" -ov -format UDZO -fs HFS+ "$DMG" >/dev/null
 rm -rf "$(dirname "$STAGE")"
 
 echo "==> done: $APP"

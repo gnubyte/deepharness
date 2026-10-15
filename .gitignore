@@ -20,4 +20,4 @@ xcuserdata/
 *.key
 # Distributable artifacts
 *.dmg
-DSH-macos.zip
+*-macos.zip

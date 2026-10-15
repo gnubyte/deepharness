@@ -309,6 +309,24 @@ final class AppIdentityTests: XCTestCase {
         XCTAssertFalse(script.contains(AppIdentity.Legacy.bundleIdentifier))
     }
 
+    func testTheBundleAndReleaseScriptsCallTheAppVision() throws {
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let script = try String(contentsOf: repo.appendingPathComponent("bundle.sh"), encoding: .utf8)
+        XCTAssertTrue(script.contains("<key>CFBundleName</key>            <string>\(AppIdentity.name)</string>"))
+        XCTAssertTrue(script.contains("<key>CFBundleDisplayName</key>     <string>\(AppIdentity.name)</string>"))
+        XCTAssertTrue(script.contains(#"APP="$ROOT/build/Vision.app""#))
+        XCTAssertTrue(script.contains(#"cp "$BIN" "$APP/Contents/MacOS/Vision""#))
+        XCTAssertTrue(script.contains(#"DMG="$ROOT/build/Vision.dmg""#))
+        XCTAssertTrue(script.contains(#"hdiutil create -volname "Vision""#))
+        let release = try String(contentsOf: repo.appendingPathComponent(".github/workflows/release.yml"), encoding: .utf8)
+        XCTAssertTrue(release.contains("build/Vision.app/Contents/Info.plist"), "the version is read from the bundle bundle.sh makes")
+        XCTAssertTrue(release.contains(#"echo "title=Vision for macOS v$FULL""#))
+        XCTAssertEqual(release.components(separatedBy: "build/Vision.dmg").count - 1, 2, "kept as an artifact and attached to the release")
+        for (name, text) in [("bundle.sh", script), ("release.yml", release)] {
+            XCTAssertNil(text.range(of: #"\b(DSH|DeepHarness)\b"#, options: [.regularExpression, .caseInsensitive]), name)
+        }
+    }
+
     func testProjectFoldersAreWrittenNewAndReadBoth() {
         let project = URL(fileURLWithPath: "/tmp/p", isDirectory: true)
         XCTAssertEqual(AppPaths.projectFolder(project, "skills").path, "/tmp/p/.vision/skills")
