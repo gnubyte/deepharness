@@ -174,6 +174,14 @@ public final class ConversationLog {
         persist(id)
     }
 
+    /// Store a whole chat at once, with the dates it carries, and write it now (the screenshot mode's chats).
+    func store(_ session: LogSession, items newItems: [LogItemRow]) {
+        rows[session.id] = session
+        items[session.id] = newItems
+        dirty.insert(session.id)
+        flush(wait: true)
+    }
+
     public func touch(_ id: String) {
         guard var row = rows[id] else { return }
         row.updatedAt = .now

@@ -11,6 +11,8 @@ enum LaunchMigration {
     static var failure: String?
 
     static func run() {
+        // An isolated run (the screenshot mode) never touches what the user has, old or new.
+        guard !IsolatedRun.isActive else { return }
         let carryOn = run(base: AppPaths.applicationSupport, defaults: .standard,
                           ownDomain: Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName,
                           legacyDomain: AppIdentity.Legacy.bundleIdentifier, legacyAppIsClosed: legacyAppIsClosed)

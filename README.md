@@ -14,6 +14,11 @@
 <p align="center">
   <img src="assets/screenshot.png" alt="Vision in code mode: project tree, syntax-highlighted editor, integrated terminal, and the agent alongside" width="960" />
 </p>
+<p align="center">
+  <em>Chat with the plan panel</em> · <a href="assets/screenshots/chat.png">full size</a> ·
+  <a href="assets/screenshots/setup.png">the setup wizard</a> ·
+  <a href="assets/screenshots/settings-models.png">Settings ▸ AI Models</a>
+</p>
 
 ---
 

@@ -103,7 +103,7 @@ final class SparkController {
     @ObservationIgnored var installPollInterval: TimeInterval = 2
     @ObservationIgnored var installSilenceLimit: TimeInterval = 300
 
-    init(config: AppConfig, transport: AppTransport, defaults: UserDefaults = .standard,
+    init(config: AppConfig, transport: AppTransport, defaults: UserDefaults = IsolatedRun.defaults,
          secrets: any SecretStore = AppSecrets.keychain) {
         self.config = config
         self.transport = transport

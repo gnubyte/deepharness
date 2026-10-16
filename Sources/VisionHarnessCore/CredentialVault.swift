@@ -196,7 +196,7 @@ public final class CredentialVault: @unchecked Sendable {
     /// Bumped on every change (the UI and the system prompt follow it).
     public private(set) var revision = 0
 
-    public init(directory: URL, store: any SecretBlobStore = LegacyFallbackBlobStore.app) {
+    public init(directory: URL, store: any SecretBlobStore = AppSecrets.vault) {
         self.metadataURL = directory.appendingPathComponent("vault.json")
         self.store = store
         if let data = try? Data(contentsOf: metadataURL),

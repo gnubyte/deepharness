@@ -88,9 +88,10 @@ public enum AppIdentity {
 // MARK: - Where the app keeps things
 
 public enum AppPaths {
-    /// `~/Library/Application Support`.
+    /// `~/Library/Application Support` (a stand-in for it in an isolated run, see `IsolatedRun`).
     public static var applicationSupport: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        IsolatedRun.applicationSupport
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     }
 
     /// The app's data folder: `~/Library/Application Support/Vision`. Chats, the task queue, user skills, plugins,

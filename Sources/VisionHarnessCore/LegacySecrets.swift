@@ -112,9 +112,17 @@ public final class LegacyFallbackSecretStore: SecretStore, @unchecked Sendable {
 }
 
 /// The app's Keychain: Vision's services, with each secret an earlier build kept brought over when first needed.
+/// An isolated run (the screenshot mode, see `IsolatedRun`) keeps its secrets in memory and never opens the Keychain.
 public enum AppSecrets {
-    public static let keychain: any SecretStore = LegacyFallbackSecretStore(
-        base: KeychainSecretStore(), ledger: DefaultsLegacySecretLedger())
+    public static let keychain: any SecretStore = IsolatedRun.isActive
+        ? MemorySecretStore()
+        : LegacyFallbackSecretStore(base: KeychainSecretStore(), ledger: DefaultsLegacySecretLedger())
+
+    /// The credential vault's store: the Keychain item (see `LegacyFallbackBlobStore.app`), or memory in an
+    /// isolated run.
+    public static var vault: any SecretBlobStore {
+        IsolatedRun.isActive ? MemoryBlobStore() : LegacyFallbackBlobStore.app
+    }
 }
 
 // MARK: - The vault's single item

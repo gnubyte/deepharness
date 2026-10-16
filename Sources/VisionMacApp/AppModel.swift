@@ -64,7 +64,7 @@ final class AppModel {
         ProviderClients.shield = policy
         mode = WorkspaceMode(rawValue: config.lastMode) ?? .chat
         showWizard = !config.wizardCompleted || !config.isConfigured
-        if UserDefaults.standard.bool(forKey: LegacySettingsImport.noticePendingKey) {
+        if IsolatedRun.defaults.bool(forKey: LegacySettingsImport.noticePendingKey) {
             renameNotice = LaunchMigration.renameNotice
         }
         if let failure = LaunchMigration.failure {
@@ -115,7 +115,7 @@ final class AppModel {
 
     func dismissRenameNotice() {
         renameNotice = nil
-        UserDefaults.standard.removeObject(forKey: LegacySettingsImport.noticePendingKey)
+        IsolatedRun.defaults.removeObject(forKey: LegacySettingsImport.noticePendingKey)
     }
 
     /// Show or hide the plan panel.

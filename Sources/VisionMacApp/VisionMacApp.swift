@@ -2,11 +2,17 @@ import SwiftUI
 import AppKit
 import VisionHarnessCore
 
-/// The entry point: what the app kept under its old name comes over before anything reads it.
+/// The entry point: what the app kept under its old name comes over before anything reads it. The screenshot mode
+/// (`--snapshot <folder>`) instead moves everything into a throwaway folder first and touches nothing of the user's.
 @main
 enum VisionLauncher {
     @MainActor static func main() {
-        LaunchMigration.run()
+        if let snapshot = Snapshot.options(arguments: CommandLine.arguments,
+                                           environment: ProcessInfo.processInfo.environment) {
+            Snapshot.prepare(snapshot)
+        } else {
+            LaunchMigration.run()
+        }
         VisionMacApp.main()
     }
 }
@@ -20,6 +26,9 @@ struct VisionMacApp: App {
             RootView()
                 .environment(model)
                 .frame(minWidth: 900, minHeight: 560)
+                .task {
+                    if Snapshot.isActive { await Snapshot.drive(model) }
+                }
         }
         .windowToolbarStyle(.unified)
         .commands { AppCommands(model: model) }
@@ -40,7 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // not outlive the app that owns their ptys.
         ProcessManager.shared.stopAll()
         // Conversation writes are coalesced; get the last ones on disk.
-        MainActor.assumeIsolated { ConversationLog.shared.flush(wait: true) }
+        MainActor.assumeIsolated {
+            ConversationLog.shared.flush(wait: true)
+            Snapshot.cleanUp()
+        }
     }
 }
 

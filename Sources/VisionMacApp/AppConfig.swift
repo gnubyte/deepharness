@@ -7,7 +7,8 @@ import VisionHarnessCore
 @MainActor
 @Observable
 public final class AppConfig {
-    public static let shared = AppConfig()
+    /// The app's settings: its own settings file and the Keychain (a throwaway file and memory in an isolated run).
+    public static let shared = AppConfig(defaults: IsolatedRun.defaults)
     public init(defaults: UserDefaults = .standard, secrets: any SecretStore = AppSecrets.keychain) {
         self.defaults = defaults
         self.secrets = secrets

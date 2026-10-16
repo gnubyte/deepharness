@@ -232,13 +232,22 @@ struct ChatView: View {
                     }
                     .fixedSize()
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                ContextGaugeView(session: session, draft: draft)
-                if let usage = session.lastUsage {
-                    Text("\(usage.promptTokens.formatted()) in · \(usage.completionTokens.formatted()) out")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                .frame(minWidth: 140, maxWidth: .infinity, alignment: .leading)
+                // Narrow (code mode's chat pane): the last turn's usage gives way, and the gauge stays on one line.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        ContextGaugeView(session: session, draft: draft)
+                        if let usage = session.lastUsage {
+                            Text("\(usage.promptTokens.formatted()) in · \(usage.completionTokens.formatted()) out")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                    .fixedSize()
+                    ContextGaugeView(session: session, draft: draft)
+                        .fixedSize()
                 }
+                .layoutPriority(1)
             }
             .font(Theme.metaFont)
         }

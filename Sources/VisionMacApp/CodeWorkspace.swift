@@ -261,11 +261,11 @@ final class CodeWorkspace {
                                terminal: terminalVisible,
                                tree: showTree)
         guard let data = try? JSONEncoder().encode(state) else { return }
-        UserDefaults.standard.set(data, forKey: stateKey(root))
+        IsolatedRun.defaults.set(data, forKey: stateKey(root))
     }
 
     private func restoreState(for root: URL) {
-        guard let data = UserDefaults.standard.data(forKey: stateKey(root)),
+        guard let data = IsolatedRun.defaults.data(forKey: stateKey(root)),
               let state = try? JSONDecoder().decode(SavedState.self, from: data) else { return }
         restoring = true
         defer { restoring = false }

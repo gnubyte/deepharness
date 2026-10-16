@@ -211,8 +211,10 @@ public struct SkillLocations: Sendable, Equatable {
         self.appSupport = appSupport
     }
 
+    /// The user's home folder and the app's data folder (both stand-ins in an isolated run, see `IsolatedRun`).
     public static var standard: SkillLocations {
-        SkillLocations(home: FileManager.default.homeDirectoryForCurrentUser, appSupport: AppPaths.support)
+        SkillLocations(home: IsolatedRun.home ?? FileManager.default.homeDirectoryForCurrentUser,
+                       appSupport: AppPaths.support)
     }
 
     /// Skills you own, available in every project.
