@@ -182,8 +182,58 @@ public final class SessionVM: Identifiable {
     /// The plan panel already opened by itself for this chat (it does that only the first time).
     public var planAutoOpened = false
 
+    /// The turn-phase machinery: Planning → Execution → Validation → Results, with the live draft,
+    /// the ETA and the evidence. Reset per turn; kept for the last turn so the results card stays.
+    public var turnPhase: TurnPhaseState?
+    /// Whether the phases run at all for this chat (off: a plain question gets no ceremony).
+    public var phasesEnabled = true
+
+    /// The user prompts sent in this chat, with when they landed and where their results live.
+    /// Backs the prompt timeline (Prompt History); oldest first.
+    public var promptHistory: [PromptRecord] = []
+
+    public struct PromptRecord: Identifiable, Hashable, Sendable {
+        public let id: String
+        public var text: String
+        public var at: Date
+        /// The turn-phase turn these results belong to (nil for a plain question that never phased).
+        public var turnID: String?
+        /// How the turn ended, for the timeline row's chip.
+        public var outcome: Outcome
+
+        public enum Outcome: Hashable, Sendable {
+            case none                  // still working / never finished
+            case completed(evidence: Int)
+            case blocked(reason: String)
+            case failed(reason: String)
+            case stopped
+
+            public var label: String {
+                switch self {
+                case .none: "working…"
+                case .completed: "completed"
+                case .blocked: "needs you"
+                case .failed: "failed"
+                case .stopped: "stopped"
+                }
+            }
+        }
+
+        public init(id: String = UUID().uuidString, text: String, at: Date = .now,
+                    turnID: String? = nil, outcome: Outcome = .none) {
+            self.id = id
+            self.text = text
+            self.at = at
+            self.turnID = turnID
+            self.outcome = outcome
+        }
+    }
+
     /// Whether the chat has anything for the plan panel.
     public var hasPlan: Bool { !todos.isEmpty || proposedPlan != nil || goal != nil || lastGoal != nil || !agentRuns.isEmpty }
+
+    /// The last turn finished with a results card to show.
+    public var hasResults: Bool { turnPhase?.phase == .results }
 
     /// The assistant entry of the turn in progress: the newest one after the last user message.
     public var currentAnswerID: String? {

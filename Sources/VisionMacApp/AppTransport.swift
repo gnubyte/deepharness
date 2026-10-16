@@ -92,6 +92,14 @@ public final class AppTransport {
     /// Chats told this turn that it ran on a backup.
     @ObservationIgnored private var failoverNoticed: Set<String> = []
 
+    // MARK: - Turn phases (Planning → Execution → Validation → Results)
+
+    /// The learned-ETA cache, persisted next to the queue. One per app: every
+    /// chat's finished turns feed it, which is how estimates refine over time.
+    @ObservationIgnored let phaseRunner: TurnPhaseRunner
+    /// The validation loopback cap (nil = unlimited). Settings change it.
+    @ObservationIgnored public var phaseLoopbackCap: Int?
+
     // MARK: - Task queue
 
     /// The unattended work list. One queue per app; persisted so a week-long
@@ -216,6 +224,9 @@ public final class AppTransport {
         self.skillLocations = skillLocations
         self.vault = vault ?? CredentialVault(directory: skillLocations.appSupport)
         self.queueFile = queueFile ?? Self.defaultQueueFile
+        self.phaseRunner = TurnPhaseRunner(
+            fileURL: skillLocations.appSupport.appendingPathComponent("eta-cache.json"))
+        self.phaseLoopbackCap = nil   // unlimited by default; Settings can cap it at 3
         // Ship-with-the-app skills (godot-debugging, …) refresh on every launch.
         try? SkillBuiltin.install(into: skillLocations.builtinSkills)
         reload()
@@ -752,14 +763,22 @@ public final class AppTransport {
     /// Runs the unattended goal loop for a queue task and records the outcome.
     private func runTaskGoal(vm: SessionVM, taskID: String, resuming: Bool) async {
         guard let task = queue.task(taskID) else { return }
+        // Queue tasks run the same phases as an interactive turn: the task
+        // text is the prompt (unless this is a resume, which keeps its turn).
+        if !resuming {
+            phasesBegin(vm, prompt: task.goalText)
+            vm.promptHistory.append(.init(text: task.title, turnID: vm.turnPhase?.turnID))
+        }
         do {
             let outcome = try await goalLoop(vm, goal: task.goalText, auto: true, resuming: resuming)
             // Deleted (skipped) while the last round finished: keep that verdict.
             guard queue.task(taskID)?.status == .running else { return }
             switch outcome {
             case .complete:
+                phasesAbandon(vm, reason: "The task completed.", completed: true)
                 queue.finish(taskID, status: .complete, sessionID: vm.id)
             case .blocked(let why):
+                phasesAbandon(vm, reason: "Paused — the agent needs you: \(why)", completed: false)
                 queue.finish(taskID, status: .blocked, reason: why, sessionID: vm.id)
             case .stopped:
                 return  // cancelled; finishTaskSession puts it back in the queue
@@ -770,6 +789,7 @@ public final class AppTransport {
             if error is CancellationError || Task.isCancelled { return }
             guard queue.task(taskID)?.status == .running else { return }
             let why = Self.describe(error)
+            phasesAbandon(vm, reason: why, completed: false)
             queue.finish(taskID, status: .failed, reason: why, sessionID: vm.id)
             vm.note(why, role: .error)
             log.recordItem(vm.id, kind: "error", text: why, toolName: nil, argSummary: nil, output: nil, isError: true)
@@ -1443,11 +1463,228 @@ public final class AppTransport {
         startQueue(only: taskID)
     }
 
+    // MARK: - Driving the phases
+
+    /// A turn began: open the planning phase. `prompt` is what the model is
+    /// asked (the raw text; a goal's kickoff), so the estimator classifies the
+    /// same thing the model sees.
+    private func phasesBegin(_ vm: SessionVM, prompt: String) {
+        guard vm.phasesEnabled else { return }
+        var state = TurnPhaseState(loopbackCap: phaseLoopbackCap)
+        let files = projectContext.map { Self.countProjectFiles($0.root) } ?? 0
+        phaseRunner.begin(&state, prompt: prompt, projectFiles: files)
+        vm.turnPhase = state
+    }
+
+    /// The plan settled: first todo list of the turn, or the first paragraph
+    /// when the answer has none. Estimates from scope-so-far + history, moves
+    /// to execution with the green working badge.
+    private func phasesPlanSettled(_ vm: SessionVM) {
+        guard var state = vm.turnPhase, state.phase == .planning else { return }
+        // What settles a plan, in order of preference: the todo list the
+        // model wrote, its proposed plan, or the first paragraph it streamed.
+        let plan: String?
+        if !vm.todos.isEmpty {
+            plan = vm.todos.map { "• \($0.content)" }.joined(separator: "\n")
+        } else if let proposed = vm.proposedPlan {
+            plan = proposed
+        } else {
+            plan = nil
+        }
+        let draftText: String
+        if let plan {
+            draftText = plan
+        } else {
+            // First paragraph of the streamed answer, as the de-facto plan.
+            let first = vm.entries.reversed().compactMap { $0.message }.first { $0.role == .assistant }
+            draftText = first.map { String($0.text.split(separator: "\n", omittingEmptySubsequences: true).first ?? "") } ?? ""
+        }
+        phaseRunner.planSettled(&state, plan: draftText, stepsPlanned: max(vm.todos.count, 1))
+        vm.turnPhase = state
+        if let eta = state.etaSeconds {
+            vm.activity = "Planning done — estimated \(TurnPhaseState.phrase(eta)). Executing…"
+        }
+    }
+
+    /// The answer's first paragraph settled the plan (no todo list this turn).
+    private func phasesPlanFromProse(_ vm: SessionVM) {
+        guard vm.turnPhase?.phase == .planning, vm.todos.isEmpty else { return }
+        phasesPlanSettled(vm)
+    }
+
+    /// A step landed (a tool finished): stamped into the working badge's log.
+    private func phasesStep(_ vm: SessionVM, text: String) {
+        guard var state = vm.turnPhase, state.phase == .execution || state.phase == .planning else { return }
+        state.addStep(text)
+        vm.turnPhase = state
+    }
+
+    /// Files changed: the scope grew a little; keep the count for evidence.
+    private func phasesFilesChanged(_ vm: SessionVM, count: Int) {
+        guard var state = vm.turnPhase, count > state.filesChanged else { return }
+        state.filesChanged = count
+        vm.turnPhase = state
+    }
+
+    /// The plan grew mid-execution (more todo items appeared): nudge the
+    /// estimate up, gently.
+    private func phasesRefineIfGrew(_ vm: SessionVM) {
+        guard var state = vm.turnPhase, state.phase == .execution, !vm.todos.isEmpty else { return }
+        let before = state.etaSeconds
+        phaseRunner.refine(&state, stepsPlanned: vm.todos.count)
+        vm.turnPhase = state
+        if let before, let after = state.etaSeconds, after > before * 1.15 {
+            vm.activity = "The plan grew to \(vm.todos.count) steps — estimate now \(TurnPhaseState.phrase(after))."
+        }
+    }
+
+    /// Validation: check the outcome against the plan the turn set out with,
+    /// gather evidence from what the turn already produced, and pass or loop
+    /// back. Called when the engine run ends.
+    private func phasesValidate(_ vm: SessionVM, result: RunResult?) {
+        guard var state = vm.turnPhase, state.phase == .execution else { return }
+        // The turn's closing words: the run's last reply, or the newest
+        // assistant message in the timeline (the run result isn't always in
+        // hand here — a queued task's loop reports through the timeline).
+        let reply = result?.lastReplyText
+            ?? vm.entries.reversed().compactMap { $0.message }.first { $0.role == .assistant }?.text
+            ?? ""
+        let failures = Self.validationFailures(state: state, reply: reply)
+        if let failure = failures.first {
+            state.lastValidationFailure = failure
+            if state.loopBack(reason: failure) {
+                vm.turnPhase = state
+                vm.note("⚠️ Validation failed: \(failure) — executing again to fix it"
+                        + (state.loopbackCap.map { " (capped at \($0) retries)" } ?? "") + ".")
+                return
+            }
+            // Capped out: finish with what was achieved, and say what didn't pass.
+            state.addEvidence(.init(kind: .note, title: "Validation hit the retry cap",
+                                    detail: "Last failure: \(failure)"))
+            state.beginResults(summary: "Completed with unresolved validation failures: \(failure)")
+            vm.turnPhase = state
+            phasesFinish(vm, completed: false)
+            return
+        }
+        // Passed: evidence from the turn's own work.
+        gatherEvidence(vm, into: &state, reply: reply)
+        let stepSummary = vm.todos.isEmpty
+            ? "Validated: the reply matches what was asked."
+            : "Validated against the plan: \(vm.todos.filter { $0.status == .completed }.count) of \(vm.todos.count) steps done."
+        state.beginResults(summary: stepSummary)
+        vm.turnPhase = state
+        phasesFinish(vm, completed: true)
+    }
+
+    /// What the turn's own timeline can already prove, so validation has
+    /// something to show even when the model wrote no summary: screenshots it
+    /// took, files it changed, checks it ran.
+    private func gatherEvidence(_ vm: SessionVM, into state: inout TurnPhaseState, reply: String) {
+        // Screenshots the turn took are the best evidence there is.
+        for entry in vm.entries.reversed().prefix(80) {
+            guard let tool = entry.tool, tool.isFinished, tool.isOk == true else { continue }
+            if tool.name == "screenshot", !tool.images.isEmpty {
+                state.addEvidence(.init(kind: .screenshot, title: "Screenshot of the result",
+                                        detail: "captured during validation — see the screenshot card above"))
+                break
+            }
+        }
+        if state.filesChanged > 0 {
+            let names = vm.changedFiles.prefix(5).map { $0.url.lastPathComponent }.joined(separator: ", ")
+            state.addEvidence(.init(kind: .file, title: "\(state.filesChanged) file\(state.filesChanged == 1 ? "" : "s") changed",
+                                    detail: names))
+        }
+        // A reply that lists what it did doubles as a check note.
+        let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            state.addEvidence(.init(kind: .check, title: "The model's closing summary",
+                                    detail: String(trimmed.prefix(600))))
+        }
+    }
+
+    /// A turn ended without reaching validation (cancelled, or an error the
+    /// phases never saw): close the phases out honestly.
+    private func phasesAbandon(_ vm: SessionVM, reason: String, completed: Bool) {
+        guard var state = vm.turnPhase, state.phase != .results else {
+            vm.turnPhase = nil
+            return
+        }
+        if completed {
+            gatherEvidence(vm, into: &state, reply: "")
+            state.beginResults(summary: reason)
+        } else {
+            state.addStep(reason)
+        }
+        vm.turnPhase = state
+        phasesFinish(vm, completed: completed)
+    }
+
+    /// The turn is over: record the duration in the cache, stamp the prompt
+    /// history row, and keep the results card until the next turn begins.
+    private func phasesFinish(_ vm: SessionVM, completed: Bool) {
+        guard let state = vm.turnPhase else { return }
+        phaseRunner.recordCompletion(state)
+        recordTurnOutcome(vm, turnID: state.turnID,
+                          outcome: completed ? .completed(evidence: state.evidence.count)
+                                             : (state.lastValidationFailure != nil ? .failed(reason: state.lastValidationFailure!)
+                                                                                  : .stopped))
+        // The next turn starts fresh; keep this one's card visible until then.
+        vm.turnPhase = state
+    }
+
+    // MARK: Prompt history
+
+    private func recordTurnOutcome(_ vm: SessionVM, turnID: String, outcome: SessionVM.PromptRecord.Outcome) {
+        guard let index = vm.promptHistory.lastIndex(where: { $0.turnID == turnID }) else { return }
+        vm.promptHistory[index].outcome = outcome
+    }
+
+    static func countProjectFiles(_ root: URL) -> Int {
+        let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])
+        guard let enumerator else { return 0 }
+        var count = 0
+        for case let url as URL in enumerator {
+            var skipped = false
+            for part in ["node_modules", ".git", ".build", "dist", ".venv", "__pycache__"] where url.path.contains(part) {
+                skipped = true
+                break
+            }
+            if !skipped { count += 1 }
+            if count > 2_000 { break }
+        }
+        return count
+    }
+
+    /// Should validation fail this turn? Pure so tests can drive it. Checks
+    /// what the harness can see on its own — the plan's steps against what
+    /// happened — never the model's word alone.
+    static func validationFailures(state: TurnPhaseState, reply: String) -> [String] {
+        var failures: [String] = []
+        // A turn that ended in an error message didn't complete its work.
+        for marker in ["Error:", "error: ", "Traceback (most recent call last)", "Build FAILED"] {
+            if reply.contains(marker) {
+                failures.append("the reply reports an error (\(marker.trimmingCharacters(in: .whitespaces)))")
+                break
+            }
+        }
+        // An empty reply after executing is not an answer.
+        if reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, state.plan != nil || state.filesChanged > 0 {
+            failures.append("the turn ended without a summary")
+        }
+        return failures
+    }
+
     private func runTurn(_ vm: SessionVM, text: String, attachments: [MessageAttachment] = [],
                          goal: String? = nil, modelText: String? = nil, resumingGoal: Bool = false) async {
         let sessionID = vm.id
         vm.running = true
         vm.stopping = false
+        // A new prompt begins a new turn: fresh phases, a fresh prompt-history row. A resumed goal
+        // (a blocked queue task picked back up) keeps its row and continues the same turn.
+        if !resumingGoal {
+            phasesBegin(vm, prompt: modelText ?? goal ?? text)
+            vm.promptHistory.append(.init(text: text, turnID: vm.turnPhase?.turnID))
+        }
         defer {
             vm.running = false
             vm.stopping = false
@@ -1468,19 +1705,32 @@ public final class AppTransport {
             } else {
                 _ = try await turn(vm, modelText: modelText ?? text, displayText: text, attachments: attachments)
             }
+            // The engine run ended: validate what happened. Only a turn that
+            // got as far as executing validates; a stopped one is closed out.
+            if vm.turnPhase?.phase == .execution {
+                phasesValidate(vm, result: nil)
+            } else if let state = vm.turnPhase, state.phase == .planning {
+                // Never got a plan (the model only asked a question): the
+                // prose is its plan; go straight to results.
+                phasesPlanFromProse(vm)
+                phasesValidate(vm, result: nil)
+            }
         } catch is CancellationError {
+            phasesAbandon(vm, reason: "Stopped before finishing.", completed: false)
             vm.endStreaming()
             let text = goal != nil ? "Stopped. The goal was not finished — send `/goal` to pick it back up." : "Stopped."
             vm.note(text)
             log.recordItem(sessionID, kind: "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: false)
         } catch {
             if Task.isCancelled {
+                phasesAbandon(vm, reason: "Stopped before finishing.", completed: false)
                 vm.endStreaming()
                 vm.note("Stopped.")
                 log.recordItem(sessionID, kind: "notice", text: "Stopped.", toolName: nil, argSummary: nil, output: nil, isError: false)
                 return
             }
             let message = PlanCatalog.explainChatError(error, route: config.activeProvider) ?? Self.describe(error)
+            phasesAbandon(vm, reason: message, completed: false)
             vm.endStreaming()
             vm.note(message, role: .error)
             log.recordItem(sessionID, kind: "error", text: message, toolName: nil, argSummary: nil, output: nil, isError: true)
@@ -1788,6 +2038,13 @@ public final class AppTransport {
             if vm.retry != nil { vm.retry = nil }
             vm.clearReasoning()
             vm.appendDelta(chunk)
+            // The planning draft streams live: the first chunk of a turn's
+            // answer is the plan being written in real time.
+            if var state = vm.turnPhase, state.phase == .planning {
+                state.draft += chunk
+                if state.draft.count > 8_000 { state.draft = String(state.draft.suffix(6_000)) }
+                vm.turnPhase = state
+            }
 
         case .reasoningDelta(let chunk):
             if vm.retry != nil { vm.retry = nil }
@@ -1844,6 +2101,11 @@ public final class AppTransport {
 
         case .toolFinished(let id, let name, let ok, let summary, let output):
             vm.finishTool(id: id, ok: ok, summary: summary, output: output)
+            phasesStep(vm, text: "\(Theme.toolLabel(name)) \(vm.entries.last(where: { $0.id == id })?.tool?.preview ?? summary)"
+                           + (ok ? "" : " — failed"))
+            // A tool call means the plan is settled (the model has moved to
+            // work); a question-only turn settles on its prose instead.
+            phasesPlanSettled(vm)
             if name == "propose_skill", ok, output.contains("Saved draft") {
                 refreshDrafts()
                 vm.note("📝 The agent drafted a skill. It is not active until you approve it — open **Skills** under the composer (or Settings ▸ Skills) to review it.")
@@ -1857,11 +2119,14 @@ public final class AppTransport {
 
         case .filesChanged(let changes):
             vm.recordFileChanges(changes)
+            phasesFilesChanged(vm, count: vm.changedFiles.count)
             onFilesChanged?(changes)
 
         case .finished(let usage):
             vm.lastUsage = usage
             vm.endStreaming()
+            // A question-only turn settles its plan on the prose it streamed.
+            phasesPlanFromProse(vm)
 
         case .permissionQuestion(let id, let name, let detail):
             if !vm.pendingGates.contains(where: { $0.id == id }) {
@@ -1870,6 +2135,12 @@ public final class AppTransport {
 
         case .todos(let todos):
             vm.setTodos(todos)
+            // The todo list is the plan: settle (or refine) the estimate on it.
+            if vm.turnPhase?.phase == .planning {
+                phasesPlanSettled(vm)
+            } else if vm.turnPhase?.phase == .execution {
+                phasesRefineIfGrew(vm)
+            }
 
         case .failed(let message):
             vm.note(message, role: .error)

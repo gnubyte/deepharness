@@ -47,6 +47,10 @@ final class AppModel {
     var settingsTab: SettingsTab = .general
     /// A skills action a caller wants the Skills tab to start with.
     var skillsAction: SkillsAction?
+    /// Text a caller wants dropped into the selected chat's composer (the
+    /// prompt timeline's "Reuse in composer"). ChatView picks it up in
+    /// `onChange`, like `code.pendingMention`.
+    var pendingComposerText: String?
     /// The folder both modes operate in.
     private(set) var project: URL?
     /// The one-time "DSH is now Vision" notice, until the user dismisses it.

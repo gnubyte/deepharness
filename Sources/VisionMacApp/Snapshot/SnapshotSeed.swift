@@ -130,6 +130,37 @@ enum SnapshotSeed {
                 return FileChange(url, SnapshotProject.files[path] == nil ? .created : .modified)
             })
         }
+        seedPhases(of: vm, start: start)
+    }
+
+    /// The finished turn's phases and the chat's prompt history, so the
+    /// screenshots show the results card and the prompt timeline.
+    private static func seedPhases(of vm: SessionVM, start: Date) {
+        guard let transcript else { return }
+        let finished = start.addingTimeInterval(transcript.duration)
+        var state = TurnPhaseState(turnID: "seeded-turn")
+        state.beginPlanning(prompt: prompt, kind: .codeEdit, scope: 1.6, at: start)
+        state.draft = "Add a `--by-category` flag to `ledger report`: extend the parser, group each month's lines by category, sort by total, and leave the default output byte-identical. Covered by new tests."
+        state.beginExecution(plan: transcript.finalTodos.map { "• \($0.content)" }.joined(separator: "\n"),
+                             etaSeconds: 210, basis: "learned from 5 similar tasks", at: start.addingTimeInterval(35))
+        state.addStep("read ledger/report.py, cli.py", at: start.addingTimeInterval(60))
+        state.addStep("edit report.py — added category_totals()", at: start.addingTimeInterval(120))
+        state.addStep("edit cli.py — added --by-category", at: start.addingTimeInterval(180))
+        state.addStep("run python3 -m unittest — 14 tests pass", at: start.addingTimeInterval(240))
+        state.filesChanged = 4
+        state.addEvidence(.init(kind: .runOutput, title: "Full suite passes — 14 tests, 0 failures",
+                                detail: "python3 -m unittest → Ran 14 tests in 0.412s · OK", at: finished.addingTimeInterval(-14)))
+        state.addEvidence(.init(kind: .file, title: "4 files changed",
+                                detail: "report.py, cli.py, test_report.py, README.md", at: finished.addingTimeInterval(-12)))
+        state.addEvidence(.init(kind: .check, title: "Matches the plan — 6 of 6 steps done",
+                                detail: "Default output byte-identical to the pre-change baseline.", at: finished.addingTimeInterval(-9)))
+        state.beginResults(summary: "Validated against the plan: 6 of 6 steps done.", at: finished)
+        vm.turnPhase = state
+        vm.promptHistory = [
+            .init(text: "What does ledger report output today?", at: start.addingTimeInterval(-3 * 3_600),
+                  turnID: "older", outcome: .completed(evidence: 1)),
+            .init(text: prompt, at: start, turnID: "seeded-turn", outcome: .completed(evidence: 3)),
+        ]
     }
 
     /// The seeded chat (made from a live run's `chat-transcript.json`).

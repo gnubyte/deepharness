@@ -64,6 +64,12 @@ struct ChatView: View {
             insertMention(mention)
             model.code.pendingMention = nil
         }
+        .onChange(of: model.pendingComposerText) { _, text in
+            guard let text else { return }
+            draft = text
+            composerHeight = min(max(ComposerField.minHeight, 90), ComposerField.maxHeight)
+            model.pendingComposerText = nil
+        }
     }
 
     // MARK: - Transcript
@@ -81,6 +87,18 @@ struct ChatView: View {
                     ForEach(session.entries) { entry in
                         EntryRow(entry: entry, session: session)
                             .id(entry.id)
+                    }
+                    // The live turn-phase card sits under the newest entry
+                    // while a turn runs; the finished one stays until the
+                    // next turn replaces it.
+                    if let phase = session.turnPhase {
+                        PhaseCard(state: phase)
+                            .padding(.leading, Theme.gutter)
+                            .id("phase-\(phase.turnID)")
+                    }
+                    if !session.running, session.promptHistory.count > 1 {
+                        PromptHistoryView(session: session)
+                            .padding(.leading, Theme.gutter)
                     }
                     if session.running, session.entries.last?.tool?.isFinished ?? true {
                         ThinkingRow(session: session)
@@ -864,6 +882,393 @@ private struct CompactionCard: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(note.summary, forType: .string)
             }
+        }
+    }
+}
+
+// MARK: - Turn phases
+
+/// The live phase card: Planning (draft streaming in) → Execution (green
+/// working badge, runtime vs estimate, stamped steps) → Results. Validation
+/// happens between execution and results; when it loops back, the card says
+/// so and returns to the execution badge.
+struct PhaseCard: View {
+    let state: TurnPhaseState
+    /// Keeps the runtime ticking and the badge animating.
+    @State private var tick = Date()
+    @State private var pulse = false
+    @State private var showSteps = false
+    @State private var showDraft = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // The phase strip: done phases tick, the live one animates.
+            HStack(spacing: 10) {
+                phaseChip(.planning)
+                chevron
+                phaseChip(.execution)
+                chevron
+                phaseChip(.validation)
+                chevron
+                phaseChip(.results)
+                Spacer()
+                if state.phase != .results { runtime }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+
+            switch state.phase {
+            case .planning:
+                planningBody
+            case .execution:
+                executionBody
+            case .validation:
+                validationBody
+            case .results:
+                resultsBody
+            }
+        }
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.corner)
+                .strokeBorder(outline, lineWidth: 1)
+        )
+        .task(id: state.phase) {
+            // One timer per phase: the runtime line and the pulsing badge.
+            while !Task.isCancelled, state.phase != .results {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                tick = Date()
+                pulse.toggle()
+            }
+        }
+    }
+
+    // MARK: Pieces
+
+    private var chevron: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundStyle(.tertiary)
+    }
+
+    private func phaseChip(_ phase: TurnPhaseState.Phase) -> some View {
+        let isLive = phase == state.phase
+        let isDone = state.phase == .results ||
+            (state.phase == .validation && phase == .planning) ||
+            (state.phase == .validation && phase == .execution && false) ||
+            (state.phase == .results && phase != .results)
+        return HStack(spacing: 4) {
+            if isLive, state.phase != .planning {
+                Circle()
+                    .fill(Theme.successTint)
+                    .frame(width: 7, height: 7)
+                    .scaleEffect(pulse ? 1.25 : 0.9)
+                    .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
+            } else if isDone {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Theme.successTint)
+            } else {
+                Circle().strokeBorder(.tertiary, lineWidth: 1).frame(width: 7, height: 7)
+            }
+            Text(phase.label)
+                .font(.system(size: 10.5, weight: isLive ? .semibold : .regular))
+                .foregroundStyle(isLive ? .primary : (isDone ? Theme.successTint : .secondary))
+        }
+    }
+
+    private var runtime: some View {
+        Group {
+            if let start = state.startedAt {
+                let elapsed = Int(Date().timeIntervalSince(start))
+                Text("runtime \(elapsed)m\(elapsed % 60 < 10 ? "0" : "")\(elapsed % 60)s")
+                    .font(Theme.mono(10))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    private var outline: Color {
+        switch state.phase {
+        case .planning: Color.accentColor.opacity(0.35)
+        case .execution, .validation: Theme.successTint.opacity(0.4)
+        case .results: Theme.successTint.opacity(0.55)
+        }
+    }
+
+    // MARK: Planning
+
+    private var planningBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Drafting the plan")
+                    .font(.system(size: 11, weight: .semibold))
+                ProgressView().controlSize(.small).scaleEffect(0.6)
+                if let kind = state.taskKind {
+                    Text(kind.label).font(Theme.metaFont).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            if state.draft.isEmpty {
+                Text("Reading the ask…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .padding(.bottom, 8)
+            } else {
+                // The live draft: the plan being written right now.
+                Text(state.draft)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(showDraft ? nil : 3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 4)
+                Button(showDraft ? "Show less" : "Show the draft") { showDraft.toggle() }
+                    .buttonStyle(.plain)
+                    .font(Theme.metaFont)
+                    .foregroundStyle(.tint)
+                    .padding(.bottom, 8)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+    }
+
+    // MARK: Execution (the green working badge)
+
+    private var executionBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                // The green, semi-animated working badge.
+                Image(systemName: "hammer.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.successTint)
+                    .opacity(pulse ? 1 : 0.55)
+                    .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+                Text("Executing")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.successTint)
+                if let eta = state.etaSeconds {
+                    Text("· est. \(TurnPhaseState.phrase(eta))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Spacer()
+                Button(showSteps ? "Hide what it's doing" : "What it's doing") { showSteps.toggle() }
+                    .buttonStyle(.plain)
+                    .font(Theme.metaFont)
+                    .foregroundStyle(.tint)
+            }
+            if let failure = state.lastValidationFailure, state.loopbacks > 0 {
+                Text("Validation sent it back (\(state.loopbacks)\(state.loopbackCap.map { " of \($0)" } ?? "") retries): \(failure)")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.noticeTint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if showSteps {
+                // Timestamped steps, newest last — what drilling into the badge shows.
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(state.steps.suffix(40).enumerated().reversed()), id: \.offset) { _, step in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(step.at, style: .time)
+                                .font(Theme.mono(9.5))
+                                .foregroundStyle(.tertiary)
+                            Text(step.text)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+    }
+
+    // MARK: Validation
+
+    private var validationBody: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "checkmark.seal")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.successTint)
+            Text("Validating the work against the plan…")
+                .font(.system(size: 11, weight: .semibold))
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+    }
+
+    // MARK: Results
+
+    private var resultsBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.successTint)
+                Text("Completed with results")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.successTint)
+                Spacer()
+                if let finished = state.finishedAt {
+                    Text(finished, style: .time)
+                        .font(Theme.mono(10))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            if !state.evidence.isEmpty {
+                Divider().padding(.vertical, 2)
+                ForEach(state.evidence) { item in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: item.kind.symbol)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 14)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 6) {
+                                Text(item.title)
+                                    .font(.system(size: 11, weight: .medium))
+                                Text(item.at, style: .time)
+                                    .font(Theme.mono(9.5))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            if !item.detail.isEmpty {
+                                Text(item.detail)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+    }
+}
+
+/// A chat's prompts so far, with their outcomes and a way to reuse one: the
+/// prompt timeline. Click a row to expand it; copy it, drop it back into the
+/// composer to talk about it, and jump to the results card it produced.
+struct PromptHistoryView: View {
+    @Environment(AppModel.self) private var model
+    let session: SessionVM
+    @State private var expandedID: String?
+    @State private var jumpTarget: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text("Prompt history — \(session.promptHistory.count) prompt\(session.promptHistory.count == 1 ? "" : "s") in this chat")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            ForEach(session.promptHistory) { record in
+                row(record)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ record: SessionVM.PromptRecord) -> some View {
+        let isExpanded = expandedID == record.id
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.12)) { expandedID = isExpanded ? nil : record.id }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.userTint)
+                    Text(record.text)
+                        .font(.system(size: 11.5))
+                        .lineLimit(isExpanded ? nil : 1)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 4)
+                    outcomeChip(record)
+                    Text(record.at, style: .time)
+                        .font(Theme.mono(9.5))
+                        .foregroundStyle(.tertiary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .padding(6)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(record.text)
+                        .font(.system(size: 11))
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 6))
+                    HStack(spacing: 10) {
+                        Button("Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(record.text, forType: .string)
+                        }
+                        Button("Reuse in composer") {
+                            model.pendingComposerText = record.text
+                        }
+                        if record.turnID != nil {
+                            Button("Show its results") { jumpTarget = record.turnID }
+                        }
+                        Spacer()
+                    }
+                    .font(Theme.metaFont)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                }
+                .padding(.leading, 24)
+                .padding(.trailing, 8)
+                .padding(.bottom, 8)
+            }
+        }
+        .background(isExpanded ? Theme.surface.opacity(0.5) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func outcomeChip(_ record: SessionVM.PromptRecord) -> some View {
+        switch record.outcome {
+        case .none:
+            Label("working", systemImage: "hourglass")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+        case .completed(let evidence):
+            Label(evidence > 0 ? "completed · \(evidence) evidence" : "completed",
+                  systemImage: "checkmark.circle.fill")
+                .font(.system(size: 9.5))
+                .foregroundStyle(Theme.successTint)
+        case .blocked:
+            Label("needs you", systemImage: "pause.circle")
+                .font(.system(size: 9.5))
+                .foregroundStyle(Theme.noticeTint)
+        case .failed:
+            Label("failed", systemImage: "xmark.circle")
+                .font(.system(size: 9.5))
+                .foregroundStyle(Theme.errorTint)
+        case .stopped:
+            Label("stopped", systemImage: "stop.circle")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
         }
     }
 }
