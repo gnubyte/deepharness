@@ -1645,9 +1645,20 @@ public final class AppTransport {
                           outcome: completed ? .completed(evidence: state.evidence.count)
                                              : (state.lastValidationFailure != nil ? .failed(reason: state.lastValidationFailure!)
                                                                                   : .stopped))
+        // The multitenant cache: the duration goes up to Guardian when the
+        // user is signed in (silent on failure — the local cache has it).
+        if let kind = state.taskKind, let start = state.startedAt,
+           state.phase == .results || state.lastValidationFailure != nil {
+            let seconds = (state.finishedAt ?? Date()).timeIntervalSince(start)
+            guardianEtaPush?(kind.rawValue, state.scopeScale, seconds)
+        }
         // The next turn starts fresh; keep this one's card visible until then.
         vm.turnPhase = state
     }
+
+    /// Set by AppModel: pushes finished-turn durations to Guardian's shared
+    /// ETA cache when signed in.
+    @ObservationIgnored public var guardianEtaPush: (@Sendable (String, Double, Double) -> Void)?
 
     // MARK: Prompt history
 

@@ -17,6 +17,9 @@ public final class GuardianService: ObservableObject {
     /// The signed-in user for the UI ("Signed in as …").
     @Published public private(set) var accountEmail: String?
     @Published public private(set) var lastError: String?
+    /// The transport whose ETA cache Guardian's shared samples blend into.
+    /// Set by AppModel after both are constructed.
+    public weak var transport: AppTransport?
 
     /// Prompts already pushed, so a prompt is never synced twice.
     private var pushedPromptIDs: Set<String> = []
@@ -52,6 +55,11 @@ public final class GuardianService: ObservableObject {
             secrets.write(address, service: AppIdentity.KeychainService.guardian, account: "address")
             client = guardian
             accountEmail = session.email
+            // The shared ETA cache: what the org's harnesses learned blends
+            // into this Mac's cache, so its first estimates start smart.
+            if let runner = transport?.phaseRunner {
+                try? await guardian.syncEtas(into: runner)
+            }
             return true
         } catch {
             lastError = (error as? GuardianError)?.errorDescription ?? error.localizedDescription
@@ -111,6 +119,19 @@ public final class GuardianService: ObservableObject {
     private func persistPushed() {
         if let data = try? JSONEncoder().encode(Array(pushedPromptIDs)) {
             try? data.write(to: pushedFile, options: .atomic)
+        }
+    }
+
+    // MARK: ETA samples up (the multitenant cache)
+
+    /// Push a finished turn's duration to Guardian's shared cache. Called by
+    /// the transport when a turn's phases finish; failures are silent (the
+    /// local cache already has the sample).
+    nonisolated func pushEta(kindRawValue: String, scope: Double, seconds: Double) {
+        let kind = TurnPhaseState.TaskKind(rawValue: kindRawValue)
+        Task { @MainActor [kind] in
+            guard let kind, let client = self.client else { return }
+            try? await client.pushEtaSamples([(kind, scope, seconds)])
         }
     }
 }

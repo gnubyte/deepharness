@@ -388,7 +388,14 @@ public struct TurnPhaseState: Codable, Hashable, Sendable {
 /// main actor; tests use it directly). Sendable only by discipline.
 public final class TurnPhaseRunner: @unchecked Sendable {
     /// The ETA cache, by task kind. Loaded from disk, saved on every update.
+    /// Written by the runner itself and by `GuardianClient.syncEtas` (the
+    /// multitenant blend); read anywhere.
     public private(set) var samples: [TurnPhaseState.TaskKind: TurnPhaseState.DurationSample]
+
+    /// Merge one kind's learned entry in (the Guardian sync's write path).
+    public func mergeSample(kind: TurnPhaseState.TaskKind, _ sample: TurnPhaseState.DurationSample) {
+        samples[kind] = sample
+    }
     private let fileURL: URL?
     /// How many loopbacks a turn may take by default (nil = unlimited, per the spec).
     public var loopbackCapDefault: Int?

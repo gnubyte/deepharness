@@ -161,6 +161,8 @@ public final class GuardianClient: @unchecked Sendable {
             struct User: Decodable { var id: String; var email: String; var name: String? }
             var token: String?
             var user: User?
+            /// Guardian's own login shape: `{ok, session:{userId, email}, token}`.
+            var session: User?
             // A few shapes Guardian has used; the client accepts them all.
             var accessToken: String?
             var sessionToken: String?
@@ -178,10 +180,11 @@ public final class GuardianClient: @unchecked Sendable {
             }
             throw GuardianError.invalidCredentials("Check the email and password.")
         }
-        let user = decoded?.user
+        let user = decoded?.user ?? decoded?.session
+        let email = user?.email ?? decoded?.email ?? email
         let newSession = GuardianSession(
             userID: user?.id ?? decoded?.id ?? email,
-            email: user?.email ?? decoded?.email ?? email,
+            email: email,
             name: user?.name ?? decoded?.name,
             token: token, issuedAt: issued)
         session = newSession
@@ -327,6 +330,63 @@ public final class GuardianClient: @unchecked Sendable {
     public func putProject(name: String, files: [String: String]) async throws {
         struct Body: Encodable { var name: String; var files: [String: String] }
         _ = try await post(path: "/api/harness/projects", body: Body(name: name, files: files), token: session?.token)
+    }
+
+    // MARK: The shared ETA cache
+
+    /// Push finished-turn durations up to Guardian's shared cache. Guardian
+    /// is multitenant: every harness on the org teaches every other, which
+    /// is the whole reason to keep the samples server-side.
+    public func pushEtaSamples(_ samples: [(kind: TurnPhaseState.TaskKind, scope: Double, seconds: Double)]) async throws {
+        struct Body: Encodable {
+            struct Sample: Encodable { var kind: String; var scope: Double; var seconds: Double; var harness: String }
+            var samples: [Sample]
+        }
+        let body = Body(samples: samples.map {
+            .init(kind: $0.kind.rawValue, scope: $0.scope, seconds: $0.seconds, harness: "vision-mac")
+        })
+        _ = try await post(path: "/api/harness/eta", body: body, token: session?.token)
+    }
+
+    /// Pull the org's learned durations per kind — the multitenant cache —
+    /// in the same shape the local `TurnPhaseRunner` keeps.
+    public func etaSummary() async throws -> [TurnPhaseState.TaskKind: TurnPhaseState.DurationSample] {
+        struct Response: Decodable {
+            struct Entry: Decodable { var count: Int; var meanSeconds: Double; var meanScope: Double }
+            var byKind: [String: Entry]
+        }
+        let data = try await get(path: "/api/harness/eta")
+        let decoded = try Self.decoder.decode(Response.self, from: data)
+        var out: [TurnPhaseState.TaskKind: TurnPhaseState.DurationSample] = [:]
+        for (key, entry) in decoded.byKind {
+            if let kind = TurnPhaseState.TaskKind(rawValue: key) {
+                out[kind] = TurnPhaseState.DurationSample(count: entry.count,
+                                                          meanSeconds: entry.meanSeconds,
+                                                          meanScope: entry.meanScope)
+            }
+        }
+        return out
+    }
+
+    /// Blend the org's learned durations into the local runner: each kind's
+    /// local mean moves halfway toward Guardian's when Guardian has more
+    /// evidence than this Mac does. Called on sign-in and after pushes.
+    public func syncEtas(into runner: TurnPhaseRunner) async throws {
+        let shared = try await etaSummary()
+        for (kind, entry) in shared where entry.count > 0 {
+            let local = runner.sample(for: kind)
+            if local.count == 0 {
+                runner.mergeSample(kind: kind, entry)
+            } else if entry.count > local.count {
+                let merged = TurnPhaseState.DurationSample(
+                    count: max(local.count, 1) + entry.count,
+                    meanSeconds: (local.meanSeconds * Double(local.count) + entry.meanSeconds * Double(entry.count))
+                        / Double(local.count + entry.count),
+                    meanScope: (local.meanScope * Double(local.count) + entry.meanScope * Double(entry.count))
+                        / Double(local.count + entry.count))
+                runner.mergeSample(kind: kind, merged)
+            }
+        }
     }
 
     // MARK: Wire helpers

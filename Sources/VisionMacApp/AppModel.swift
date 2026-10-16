@@ -63,9 +63,16 @@ final class AppModel {
         AWSAccounts.install()
         transport = AppTransport(config: config)
         spark = SparkController(config: config, transport: transport)
+        // Guardian's shared state: prompts on submit, turn durations for the
+        // multitenant ETA cache, and the transport back-reference for the
+        // sign-in-time ETA blend.
+        let guardian = guardian
+        guardian.transport = transport
+        transport.guardianEtaPush = { kind, scope, seconds in
+            guardian.pushEta(kindRawValue: kind, scope: scope, seconds: seconds)
+        }
         // A prompt sent while signed into Guardian lands in the account's
         // prompt history (the service deduplicates).
-        let guardian = guardian
         transport.guardianSync = { record, chatID in
             let outcome: String? = {
                 switch record.outcome {

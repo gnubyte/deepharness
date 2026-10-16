@@ -240,4 +240,48 @@ final class GuardianClientTests: XCTestCase {
         XCTAssertTrue(body.contains("ledger"))
         XCTAssertTrue(body.contains("main.py"))
     }
+
+    // MARK: The shared ETA cache
+
+    func testEtaSummaryDecodesByKind() async throws {
+        let c = try client(["/api/harness/eta": reply(
+            #"{"byKind":{"codeEdit":{"count":12,"meanSeconds":180,"meanScope":1.4},"research":{"count":3,"meanSeconds":45,"meanScope":0.9}}}"#)])
+        let summary = try await c.etaSummary()
+        XCTAssertEqual(summary[.codeEdit]?.count, 12)
+        XCTAssertEqual(summary[.codeEdit]?.meanSeconds ?? 0, 180, accuracy: 0.01)
+        XCTAssertEqual(summary[.research]?.meanScope ?? 0, 0.9, accuracy: 0.001)
+    }
+
+    func testPushEtaSamples() async throws {
+        let seenBody = Box<Data?>(nil)
+        let c = try client(["POST /api/harness/eta": { request in
+            seenBody.value = request.httpBody
+            return GuardianHTTPResponse(data: Data(#"{"accepted":1}"#.utf8), status: 200, headers: [:])
+        }])
+        _ = try await c.signIn(email: "e", password: "p")
+        try await c.pushEtaSamples([(.codeEdit, 1.5, 240)])
+        let body = String(decoding: seenBody.value ?? Data(), as: UTF8.self)
+        XCTAssertTrue(body.contains("codeEdit"))
+        XCTAssertTrue(body.contains("240"))
+    }
+
+    func testSyncEtasBlendsSharedIntoRunner() async throws {
+        let c = try client(["/api/harness/eta": reply(
+            #"{"byKind":{"codeEdit":{"count":40,"meanSeconds":100,"meanScope":1.0}}}"#)])
+        _ = try await c.signIn(email: "e", password: "p")
+        let runner = TurnPhaseRunner()
+        // Local: 4 samples at 200s.
+        runner.mergeSample(kind: .codeEdit, .init(count: 4, meanSeconds: 200, meanScope: 1.0))
+        try await c.syncEtas(into: runner)
+        let blended = runner.sample(for: .codeEdit)
+        // (200×4 + 100×40) / 44 ≈ 109
+        XCTAssertEqual(blended.meanSeconds, 109.09, accuracy: 0.5)
+        XCTAssertEqual(blended.count, 44)
+        // A kind Guardian knows and the Mac doesn't is adopted whole.
+        let c2 = try client(["/api/harness/eta": reply(
+            #"{"byKind":{"writing":{"count":7,"meanSeconds":80,"meanScope":1.1}}}"#)])
+        _ = try await c2.signIn(email: "e", password: "p")
+        try await c2.syncEtas(into: runner)
+        XCTAssertEqual(runner.sample(for: .writing).meanSeconds, 80, accuracy: 0.01)
+    }
 }
