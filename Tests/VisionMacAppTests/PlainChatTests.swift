@@ -12,7 +12,6 @@ final class PlainChatTests: XCTestCase {
     private var support: URL { dir.appendingPathComponent("support", isDirectory: true) }
 
     override func setUp() async throws {
-        try await super.setUp()
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-plain-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
@@ -37,7 +36,6 @@ final class PlainChatTests: XCTestCase {
         if let defaultsSuite { UserDefaults.standard.removePersistentDomain(forName: defaultsSuite) }
         try? FileManager.default.removeItem(at: dir)
         transport = nil
-        try await super.tearDown()
     }
 
     private func project() -> URL {

@@ -10,7 +10,7 @@ final class IdentityMigrationHostTests: XCTestCase {
     private var base: URL!
     private var suites: [String] = []
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         base = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("vision-host-migration-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
     }
@@ -19,7 +19,6 @@ final class IdentityMigrationHostTests: XCTestCase {
         try? FileManager.default.removeItem(at: base)
         for suite in suites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         suites = []
-        try await super.tearDown()
     }
 
     private func defaults() -> UserDefaults {

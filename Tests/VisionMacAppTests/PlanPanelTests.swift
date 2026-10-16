@@ -11,7 +11,6 @@ final class PlanPanelTests: XCTestCase {
     private var transport: AppTransport!
 
     override func setUp() async throws {
-        try await super.setUp()
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-plan-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
@@ -34,7 +33,6 @@ final class PlanPanelTests: XCTestCase {
         if let defaultsSuite { UserDefaults.standard.removePersistentDomain(forName: defaultsSuite) }
         try? FileManager.default.removeItem(at: dir)
         transport = nil
-        try await super.tearDown()
     }
 
     private static let todos = #"{"todos":[{"content":"Read the code","status":"completed"},{"content":"Fix the bug","status":"in_progress"},{"content":"Test it","status":"pending"}]}"#

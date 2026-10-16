@@ -9,10 +9,9 @@ final class FleetConfigTests: XCTestCase {
 
     private var suites: [String] = []
 
-    override func tearDown() {
+    override func tearDown() async throws {
         for suite in suites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         suites = []
-        super.tearDown()
     }
 
     private func defaults() -> UserDefaults {

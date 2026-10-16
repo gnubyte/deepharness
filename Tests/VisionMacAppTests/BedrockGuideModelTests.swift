@@ -142,10 +142,9 @@ func bedrockModel(_ id: String, _ name: String, provider: String = "Anthropic", 
 final class BedrockGuideModelTests: XCTestCase {
     private var suites: [String] = []
 
-    override func tearDown() {
+    override func tearDown() async throws {
         for suite in suites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         suites = []
-        super.tearDown()
     }
 
     private let sonnet = bedrockModel("anthropic.claude-sonnet-4-5-20250929-v1:0", "Claude Sonnet 4.5", recommended: true)
