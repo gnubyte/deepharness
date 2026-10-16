@@ -2,22 +2,22 @@
 import PackageDescription
 
 let package = Package(
-    name: "DSHMac",
+    name: "VisionMac",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "DSHCore", targets: ["DSHCore"]),
-        .executable(name: "DSHMacApp", targets: ["DSHMacApp"]),
+        .library(name: "VisionHarnessCore", targets: ["VisionHarnessCore"]),
+        .executable(name: "Vision", targets: ["VisionMacApp"]),
     ],
     targets: [
         // Agent engine: LLM clients, tool execution, permissions, sessions.
         // No UI, no AppKit — verifiable headlessly.
-        .target(name: "DSHCore"),
+        .target(name: "VisionHarnessCore"),
         // The native SwiftUI app — it IS the harness.
-        .executableTarget(name: "DSHMacApp", dependencies: ["DSHCore"]),
+        .executableTarget(name: "VisionMacApp", dependencies: ["VisionHarnessCore"]),
         // Engine tests (tools, permissions, Qwen XML parser, loop).
-        .testTarget(name: "DSHCoreTests", dependencies: ["DSHCore"]),
+        .testTarget(name: "VisionHarnessCoreTests", dependencies: ["VisionHarnessCore"]),
         // The harness end to end: the task queue runner, /goal, retries —
         // driven against a fake model server.
-        .testTarget(name: "DSHMacAppTests", dependencies: ["DSHMacApp", "DSHCore"]),
+        .testTarget(name: "VisionMacAppTests", dependencies: ["VisionMacApp", "VisionHarnessCore"]),
     ]
 )

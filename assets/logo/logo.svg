@@ -22,7 +22,7 @@
   <circle cx="358" cy="613" r="54" fill="#a5f3fc"/>
   <circle cx="666" cy="613" r="54" fill="#a5f3fc"/>
 
-  <!-- the "d" stem rising through the ring -->
+  <!-- the stem rising through the ring -->
   <rect x="470" y="255" width="84" height="430" rx="42" fill="#ffffff"/>
 
   <!-- base bar: the grounding / ground truth -->
