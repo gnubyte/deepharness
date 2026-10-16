@@ -1255,6 +1255,11 @@ public final class AppTransport {
 
     // MARK: - Sending
 
+    /// Where prompt submissions go when the user is signed into Guardian
+    /// (item 4): each sent prompt lands in Guardian's prompt history. Nil in
+    /// tests and when not signed in.
+    @ObservationIgnored public var guardianSync: (@Sendable (SessionVM.PromptRecord, String) -> Void)?
+
     public func send(_ text: String, sessionID: String,
                      attachments: [MessageAttachment] = []) {
         guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
@@ -1695,7 +1700,10 @@ public final class AppTransport {
         // (a blocked queue task picked back up) keeps its row and continues the same turn.
         if !resumingGoal {
             phasesBegin(vm, prompt: modelText ?? goal ?? text)
-            vm.promptHistory.append(.init(text: text, turnID: vm.turnPhase?.turnID))
+            let record = SessionVM.PromptRecord(text: text, turnID: vm.turnPhase?.turnID)
+            vm.promptHistory.append(record)
+            // Signed into Guardian: the prompt goes to the account's history.
+            if let guardianSync { guardianSync(record, sessionID) }
         }
         defer {
             vm.running = false

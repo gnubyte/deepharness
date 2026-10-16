@@ -40,6 +40,9 @@ public enum AppIdentity {
         public static let sparkSwapper = "Vision.sparkSwapper"
         /// The credential vault: every value in one item (account "secrets").
         public static let vault = "Vision.vault"
+        /// The Guardian sign-in: session token, email, deployment address
+        /// (accounts "token", "email", "address").
+        public static let guardian = "Vision.guardian"
     }
 
     /// The app's version from its bundle ("0.15.0"); "dev" in a test run or an unbundled build.

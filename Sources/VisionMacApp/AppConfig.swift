@@ -566,6 +566,8 @@ public extension ProviderProfile {
         case .openAI, .openRouter: return true
         // A Bedrock route signs with an AWS sign-in; only one without a profile uses a Bedrock API key.
         case .bedrock: return awsProfile == nil
+        // Guardian signs in with the account login; the session token is stored like a key.
+        case .guardian: return false
         }
     }
 

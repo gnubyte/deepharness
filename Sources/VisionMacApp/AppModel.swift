@@ -11,7 +11,7 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
     var icon: String { self == .chat ? "bubble.left.and.bubble.right" : "chevron.left.forwardslash.chevron.right" }
 }
 
-enum SettingsTab: Hashable { case general, models, spark, skills, computer, plugins, editor }
+enum SettingsTab: Hashable { case general, models, spark, guardian, skills, computer, plugins, editor }
 enum SkillsAction: Equatable { case generate, importSkills, newManual }
 
 /// Root-level state: the config, the transport that drives sessions, the
@@ -51,6 +51,8 @@ final class AppModel {
     /// prompt timeline's "Reuse in composer"). ChatView picks it up in
     /// `onChange`, like `code.pendingMention`.
     var pendingComposerText: String?
+    /// The Guardian connection: sign-in state, prompt sync, skills, chats.
+    let guardian = GuardianService(appSupport: AppPaths.support)
     /// The folder both modes operate in.
     private(set) var project: URL?
     /// The one-time "DSH is now Vision" notice, until the user dismisses it.
@@ -61,6 +63,23 @@ final class AppModel {
         AWSAccounts.install()
         transport = AppTransport(config: config)
         spark = SparkController(config: config, transport: transport)
+        // A prompt sent while signed into Guardian lands in the account's
+        // prompt history (the service deduplicates).
+        let guardian = guardian
+        transport.guardianSync = { record, chatID in
+            let outcome: String? = {
+                switch record.outcome {
+                case .none: return nil
+                case .completed: return "completed"
+                case .blocked: return "needs you"
+                case .failed: return "failed"
+                case .stopped: return "stopped"
+                }
+            }()
+            Task { await guardian.syncPrompts([
+                .init(id: record.id, text: record.text, at: record.at, outcome: outcome, chatID: chatID),
+            ]) }
+        }
         // Requests to models that aren't private go through the sensitive-data shield: the user's settings, and
         // every secret in the Credentials Vault.
         let vault = transport.vault

@@ -15,6 +15,10 @@ struct SetupWizard: View {
     @State private var host = ""
     @State private var port = ""
     @State private var apiKey = ""
+    /// Guardian sign-in (kind == .guardian): exchanged for a session token
+    /// during the connection test, stored in the Keychain as the route's key.
+    @State private var guardianEmail = ""
+    @State private var guardianPassword = ""
     @State private var modelID = ""
     @State private var discovered: [String] = []
     @State private var probe: ProbeState = .idle
@@ -200,6 +204,40 @@ struct SetupWizard: View {
                 .buttonStyle(.plain)
             }
 
+            // Guardian: one wizard flow (sign in with the Guardian login, pick
+            // a model from the account's list). Not in `manual` — it has its
+            // own fields, so it gets its own choice button.
+            Button {
+                kind = .guardian
+                applyDefaults(for: .guardian)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: ProviderProfile.Kind.guardian.icon)
+                        .font(.system(size: 16))
+                        .foregroundStyle(kind == .guardian ? Color.accentColor : .secondary)
+                        .frame(width: 26)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("My Guardian account — models, prompts and skills in one place").font(.callout.weight(.medium))
+                        Text("Sign in with your guardian.503cm.com login. Your account's models are the proxy; prompts, skills, chats and code projects sync with Guardian too.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    if kind == .guardian {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(kind == .guardian ? Color.accentColor.opacity(0.10) : Theme.surface,
+                            in: RoundedRectangle(cornerRadius: Theme.corner))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.corner)
+                        .strokeBorder(kind == .guardian ? Color.accentColor.opacity(0.5) : Theme.hairline)
+                )
+            }
+            .buttonStyle(.plain)
+
             // Bedrock has its own step-by-step guide (AWS CLI, sign-in, model, access), so it is not a
             // "kind" to fill a form for: choosing it hands over to the guide.
             Button {
@@ -274,6 +312,7 @@ struct SetupWizard: View {
         case .openAI: "OpenAI's hosted API. Needs an API key."
         case .openRouter: "Many hosted models behind one API. Needs an API key."
         case .bedrock: "Claude, Amazon Nova, Llama and more through your AWS account. Set up by its own guide."
+        case .guardian: "Your Guardian account is the proxy: sign in with your guardian.503cm.com login and use the models your plan allows. Your prompts, skills, chats and code projects sync with Guardian too."
         }
     }
 
@@ -298,7 +337,20 @@ struct SetupWizard: View {
                             .frame(width: 110)
                     }
                 }
-                if allowsKey {
+                if kind == .guardian {
+                    GridRow {
+                        Text("Email").frame(width: 70, alignment: .trailing)
+                        TextField("you@503cm.com", text: $guardianEmail)
+                            .textFieldStyle(.roundedBorder)
+                            .textContentType(.emailAddress)
+                            .autocorrectionDisabled()
+                    }
+                    GridRow {
+                        Text("Password").frame(width: 70, alignment: .trailing)
+                        SecureField("Your Guardian password", text: $guardianPassword)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                } else if allowsKey {
                     GridRow {
                         Text("API key").frame(width: 70, alignment: .trailing)
                         SecureField(needsKey ? "sk-…" : "optional — e.g. vllm-local", text: $apiKey)
@@ -349,6 +401,8 @@ struct SetupWizard: View {
             "Paste an API key. It is stored in your login keychain, never in the app's preferences file."
         case .bedrock:
             "Amazon Bedrock is set up by its own guide: Settings ▸ Models ▸ Add Amazon Bedrock…"
+        case .guardian:
+            "Sign in with your Guardian login (the email and password you use at guardian.503cm.com). Vision exchanges it for a session token that is kept in your Keychain — the password never is."
         }
     }
 
@@ -359,6 +413,7 @@ struct SetupWizard: View {
         case .openAI: "https://api.openai.com/v1"
         case .openRouter: "https://openrouter.ai/api/v1"
         case .bedrock: "https://bedrock-runtime.us-east-1.amazonaws.com"
+        case .guardian: "https://guardian.503cm.com"
         }
     }
 
@@ -399,6 +454,8 @@ struct SetupWizard: View {
             "Check the key is current and has credit or quota on the account."
         case .bedrock:
             "Sign in to AWS again and check that your account is allowed to use the model."
+        case .guardian:
+            "Check your Guardian email and password, and that your plan covers the model you picked. If the sign-in has expired, sign in again."
         }
     }
 
@@ -790,6 +847,8 @@ struct SetupWizard: View {
             host = "https://openrouter.ai/api/v1"; port = ""; modelID = "qwen/qwen3-32b"
         case .bedrock:
             host = "https://bedrock-runtime.us-east-1.amazonaws.com"; port = ""; modelID = ""
+        case .guardian:
+            host = "https://guardian.503cm.com"; port = ""; modelID = ""
         }
     }
 
@@ -814,6 +873,24 @@ struct SetupWizard: View {
 
     private func runProbe() async {
         probe = .running
+        // Guardian: the connection test is the sign-in. The password is
+        // exchanged for a session token once; afterwards the route talks to
+        // the model proxy with the token, like any OpenAI-compatible server.
+        if kind == .guardian {
+            do {
+                let guardian = try GuardianClient(baseURL: host.isEmpty ? "https://guardian.503cm.com" : host)
+                let session = try await guardian.signIn(email: guardianEmail, password: guardianPassword)
+                let models = try await guardian.models().map(\.id)
+                discovered = models.sorted()
+                apiKey = session.token          // saved to the Keychain by saveProvider()
+                probe = .ok(models.count)
+                if modelID.isEmpty, let first = models.first { modelID = first }
+            } catch {
+                discovered = []
+                probe = .failed(AppTransport.describe(error))
+            }
+            return
+        }
         let client = ProviderClients.make(draftProfile)
         do {
             let models = try await client.listModels()

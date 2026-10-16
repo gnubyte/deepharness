@@ -20,6 +20,9 @@ struct SettingsView: View {
             SwapperSettings()
                 .tabItem { Label("Model Servers", systemImage: "server.rack") }
                 .tag(SettingsTab.spark)
+            GuardianSettings()
+                .tabItem { Label("Guardian", systemImage: "shield.lefthalf.filled") }
+                .tag(SettingsTab.guardian)
             SkillsManagerView()
                 .tabItem { Label("Skills", systemImage: "graduationcap") }
                 .tag(SettingsTab.skills)
