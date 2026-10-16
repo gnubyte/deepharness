@@ -325,8 +325,12 @@ calls, the text is run through an XML parser that understands both the `<functio
 
 - **Live processes and the machine** (0.8). `process_start`, `process_read`, `process_write`, `process_stop` and `process_list` talk to a running program. `screenshot`, `list_windows`, `screen_watch`, `ui_tree`, `inspect_process`, `mouse`, `keyboard`, `focus_app` and `view_image` look at and drive the Mac.
 - **Task Queue** (0.9; unattended since 0.10). `queue_task` adds follow-up work; `/queue` runs the queue one task at a time. A model outage retries until the server is back.
-- **Credentials Vault** (0.11). API keys and passwords live in the Keychain. The agent writes `{{vault:NAME}}` and never sees the value; `vault_search` lists names, not secrets.
+- **Credentials Vault** (0.11). API keys and passwords live in the Keychain. The agent references a secret by its vault name and never sees the value; `vault_search` lists names, not secrets.
 - **Background subagents** (0.12). `agent` with `run_in_background` (up to four per chat), plus `agent_status` and `agent_stop`.
+- **Turn phases** (0.16). Every turn runs Planning → Execution → Validation → Results. Planning drafts the plan live and states an ETA — classified into a small task catalog, scoped to the ask, and blended with how long turns of that kind took before (the cache persists and refines as turns complete; Guardian aggregates the same learning across its users). Execution shows a green working badge with the runtime against the estimate, and every step timestamped when you drill in. When the work ends, validation checks the outcome against the plan the turn set out with and gathers evidence — screenshots, changed files, the closing summary — or loops back to execution when it fails (unlimited by default, cappable). Results shows a green "completed with results" with the evidence. Works with `/goal` and the task queue.
+- **Prompt history** (0.16). Every prompt a chat has sent, with its outcome chip and timestamp: copy it, reuse it in the composer, and see the results card it produced.
+- **Guardian** (0.16). Sign in with your guardian.503cm.com login and use your account's models through its OpenAI-compatible proxy — a wizard option and a Settings ▸ Guardian tab. Prompts you send sync to Guardian's prompt history; skills, chats and code projects move both ways (deposit/take skills, export/import chats, upload a project to the account's private repo store for the AI Coders module).
+- **The machine-in-use glow** (0.16). While a computer-use tool is on the machine — observing or controlling it — the screen edges glow green with "machine in use by Vision AI". It takes no input and goes away when the tool ends.
 
 ## Code mode
 
@@ -501,6 +505,24 @@ A running agent is reachable without opening its chat: the running bar at the to
 (with Stop All), a stop button on the chat's own row, the toolbar, and **Session ▸ Stop Turn (⌘.)** /
 **Stop All Agents (⇧⌘.)**. Running chats sort to the top of the sidebar.
 
+## Talking to Guardian
+
+Guardian (guardian.503cm.com) is the account side of the family — models, prompts, skills, chats and code, shared across your harnesses.
+
+**Connect**: the wizard's *My Guardian account* choice, or Settings ▸ Guardian. Sign in with your Guardian email and password; Vision exchanges them for a session token (Keychain, not preferences) and lists the models your plan allows. The route behaves like any OpenAI-compatible server — primary, subagent, backup, thinking levels — with Guardian doing the proxying.
+
+**What syncs**:
+
+| | Direction | When |
+|---|---|---|
+| Prompt history | harness → Guardian | automatically, as you send prompts while signed in (deduplicated) |
+| Prompt history | Guardian → harness | Settings ▸ Guardian browses the account's notebook |
+| Skills | both ways | import the account's skills; deposit the project's `.vision/skills` |
+| Chats | both ways | export all loaded chats; import the account's exported ones back |
+| Code projects | harness → Guardian | upload the open project's text files to the account's private repo store — Guardian's own github-for-one, ready for the AI Coders module |
+
+**Estimates across users**: the turn-phase ETA cache that Vision keeps per machine (`eta-cache.json`) has a multitenant big sibling in Guardian, which aggregates durations per task kind and scope across its users — the client sends nothing but the kind, the scope number and the wall-clock.
+
 ## Architecture
 
 ```
@@ -565,7 +587,7 @@ VisionMacApp/              SwiftUI
 swift test
 ```
 
-1,387 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
+1,257 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
 cancellation), permission containment, the Qwen XML fallback, glob, markdown, plugin interpolation
 and quoting, prompt assembly, editor-buffer conflict resolution, 34 over the terminal emulator, and 8
 that spawn a real shell on a real pty and assert on what lands on the screen — plus the fleet (server
