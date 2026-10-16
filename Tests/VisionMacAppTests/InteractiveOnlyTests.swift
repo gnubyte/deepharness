@@ -10,7 +10,6 @@ final class InteractiveOnlyTests: XCTestCase {
     private var transport: AppTransport!
 
     override func setUp() async throws {
-        try await super.setUp()
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-interactive-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
@@ -39,7 +38,6 @@ final class InteractiveOnlyTests: XCTestCase {
         if let defaultsSuite { UserDefaults.standard.removePersistentDomain(forName: defaultsSuite) }
         try? FileManager.default.removeItem(at: dir)
         transport = nil
-        try await super.tearDown()
     }
 
     private let refusal = "Qwen Coding Plan is for interactive use only under its plan's terms, so the queue won't run on it. Make another model primary for unattended work."

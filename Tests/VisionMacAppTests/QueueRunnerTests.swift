@@ -130,7 +130,6 @@ final class QueueRunnerTests: XCTestCase {
     private var transport: AppTransport!
 
     override func setUp() async throws {
-        try await super.setUp()
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-queue-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         OpenAIClient.protocolClassesForTesting = [FakeModelServer.self]
@@ -146,7 +145,6 @@ final class QueueRunnerTests: XCTestCase {
         if let defaultsSuite { UserDefaults.standard.removePersistentDomain(forName: defaultsSuite) }
         try? FileManager.default.removeItem(at: dir)
         transport = nil
-        try await super.tearDown()
     }
 
     private func makeTransport() -> AppTransport {

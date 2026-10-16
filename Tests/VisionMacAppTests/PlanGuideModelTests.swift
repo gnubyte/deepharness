@@ -37,7 +37,6 @@ final class PlanGuideModelTests: XCTestCase {
     override func tearDown() async throws {
         for suite in suites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         suites = []
-        try await super.tearDown()
     }
 
     private func config(_ routes: [ProviderProfile] = []) -> AppConfig {

@@ -11,7 +11,6 @@ final class SparkControllerTests: XCTestCase {
     private let fingerprint = (1...32).map { String(format: "%02X", $0) }.joined(separator: ":")
 
     override func setUp() async throws {
-        try await super.setUp()
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("vision-spark-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // Nothing here reaches a real box: every Swapper request gets the fake server's 404.
@@ -27,7 +26,6 @@ final class SparkControllerTests: XCTestCase {
         OpenAIClient.protocolClassesForTesting = nil
         for suite in suites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         try? FileManager.default.removeItem(at: dir)
-        try await super.tearDown()
     }
 
     private func defaults() -> UserDefaults {

@@ -11,7 +11,6 @@ final class FleetHostTests: XCTestCase {
     private var transport: AppTransport!
 
     override func setUp() async throws {
-        try await super.setUp()
         let base = ProcessInfo.processInfo.environment["TMPDIR"].map(URL.init(fileURLWithPath:)) ?? FileManager.default.temporaryDirectory
         dir = base.appendingPathComponent("vision-fleet-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -25,7 +24,6 @@ final class FleetHostTests: XCTestCase {
         if let defaultsSuite { UserDefaults.standard.removePersistentDomain(forName: defaultsSuite) }
         try? FileManager.default.removeItem(at: dir)
         transport = nil
-        try await super.tearDown()
     }
 
     private func route(_ name: String, host: String, worker: Bool = false, parallel: Int? = nil) -> ProviderProfile {
