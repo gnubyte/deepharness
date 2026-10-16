@@ -100,6 +100,18 @@ public final class AppTransport {
     /// The validation loopback cap (nil = unlimited). Settings change it.
     @ObservationIgnored public var phaseLoopbackCap: Int?
 
+    // MARK: - The machine-in-use glow
+
+    /// True while a computer-use tool of the selected session (any session,
+    /// actually — the glow is about the machine, not a chat) is on the machine:
+    /// observing it or controlling it. The glow controller watches this.
+    public private(set) var machineInUse = false {
+        didSet { MachineGlowController.shared.setActive(machineInUse) }
+    }
+    /// Tools that touch the machine; a running one of these lights the glow.
+    private static let machineTools = ["screenshot", "list_windows", "screen_watch", "ui_tree",
+                                       "inspect_process", "view_image", "mouse", "keyboard", "focus_app"]
+
     // MARK: - Task queue
 
     /// The unattended work list. One queue per app; persisted so a week-long
@@ -2098,14 +2110,21 @@ public final class AppTransport {
             if vm.retry != nil { vm.retry = nil }
             vm.clearReasoning()
             vm.startTool(id: id, name: name, preview: preview)
+            // A computer-use tool is on the machine: light the glow.
+            if Self.machineTools.contains(name) { machineInUse = true }
+            // A tool call means the plan is settled (the model has moved to
+            // work); a question-only turn settles on its prose instead.
+            phasesPlanSettled(vm)
 
         case .toolFinished(let id, let name, let ok, let summary, let output):
             vm.finishTool(id: id, ok: ok, summary: summary, output: output)
             phasesStep(vm, text: "\(Theme.toolLabel(name)) \(vm.entries.last(where: { $0.id == id })?.tool?.preview ?? summary)"
                            + (ok ? "" : " — failed"))
-            // A tool call means the plan is settled (the model has moved to
-            // work); a question-only turn settles on its prose instead.
-            phasesPlanSettled(vm)
+            // The machine tool ended: if no other one is running, dim the glow.
+            if Self.machineTools.contains(name), vm.runningTool == nil,
+               !sessions.contains(where: { $0.id != vm.id && $0.runningTool.map({ Self.machineTools.contains($0.name) }) == true }) {
+                machineInUse = false
+            }
             if name == "propose_skill", ok, output.contains("Saved draft") {
                 refreshDrafts()
                 vm.note("📝 The agent drafted a skill. It is not active until you approve it — open **Skills** under the composer (or Settings ▸ Skills) to review it.")
