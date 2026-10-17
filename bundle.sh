@@ -33,7 +33,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
        over the settings, data folder and Keychain items of the build before the rename (LaunchMigration). -->
   <key>CFBundleIdentifier</key>      <string>com.503cm.vision.mac</string>
   <key>CFBundleVersion</key>         <string>17</string>
-  <key>CFBundleShortVersionString</key> <string>0.15.0</string>
+  <key>CFBundleShortVersionString</key> <string>0.15.1</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleExecutable</key>      <string>Vision</string>
   <key>CFBundleIconFile</key>        <string>AppIcon</string>
