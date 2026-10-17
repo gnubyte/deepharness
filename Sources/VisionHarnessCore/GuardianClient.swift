@@ -89,6 +89,9 @@ public struct GuardianHTTPResponse: Sendable {
 public enum GuardianError: LocalizedError, Equatable {
     case badURL
     case invalidCredentials(String)
+    /// The account has TOTP 2FA on. The attached challenge is a short-lived
+    /// JWT from Guardian — complete the sign-in with `verifyTwoFactor`.
+    case twoFactorRequired(String)
     case unauthorized          // token expired or revoked
     case server(String)
     case network(String)
@@ -99,6 +102,8 @@ public enum GuardianError: LocalizedError, Equatable {
             "That doesn't look like a Guardian address — it should be https://guardian.503cm.com (or your own deployment)."
         case .invalidCredentials(let detail):
             "Guardian didn't accept that sign-in. \(detail)"
+        case .twoFactorRequired:
+            "This Guardian account uses two-factor sign-in. Enter the 6-digit code from your authenticator app."
         case .unauthorized:
             "The Guardian sign-in has expired — sign in again to keep using it."
         case .server(let detail):
@@ -171,8 +176,16 @@ public final class GuardianClient: @unchecked Sendable {
             var name: String?
             var error: String?
             var message: String?
+            /// 2FA on the account: `{ok, twoFactorRequired: true, challenge: jwt}`.
+            var twoFactorRequired: Bool?
+            var challenge: String?
         }
         let decoded = try? Self.decoder.decode(Response.self, from: data)
+        // A TOTP account gets no token on the first call — Guardian hands back
+        // a short-lived challenge to finish with `verifyTwoFactor(code:)`.
+        if decoded?.twoFactorRequired == true, let challenge = decoded?.challenge, !challenge.isEmpty {
+            throw GuardianError.twoFactorRequired(challenge)
+        }
         let token = decoded?.token ?? decoded?.accessToken ?? decoded?.sessionToken
         guard let token, !token.isEmpty else {
             if let statusDetail = decoded?.error ?? decoded?.message {
@@ -186,6 +199,54 @@ public final class GuardianClient: @unchecked Sendable {
             userID: user?.id ?? decoded?.id ?? email,
             email: email,
             name: user?.name ?? decoded?.name,
+            token: token, issuedAt: issued)
+        session = newSession
+        return newSession
+    }
+
+    /// Finish a 2FA sign-in: exchange the challenge from
+    /// `GuardianError.twoFactorRequired` plus the 6-digit authenticator code
+    /// for the real session (Guardian's `POST /auth/login/2fa`).
+    public func verifyTwoFactor(challenge: String, code: String) async throws -> GuardianSession {
+        let trimmed = code.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count == 6, trimmed.allSatisfy(\.isNumber) else {
+            throw GuardianError.invalidCredentials("The 2FA code is the 6-digit number from your authenticator app.")
+        }
+        struct Body: Encodable { var challenge: String; var code: String }
+        let issued = Date()
+        let data: Data
+        do {
+            data = try await post(path: "/api/auth/login/2fa", body: Body(challenge: challenge, code: trimmed),
+                                  token: nil)
+        } catch GuardianError.unauthorized {
+            // Guardian 401s a wrong or rotated code; to the user that's a
+            // retryable credentials problem, not an expired session.
+            throw GuardianError.invalidCredentials("Guardian didn't accept that code — it may have rotated. Codes refresh every 30 seconds; enter the current one.")
+        }
+        struct Response: Decodable {
+            struct User: Decodable {
+                var id: String?
+                /// Guardian's session shape: `{userId, email, name}`.
+                var userId: String?
+                var email: String?
+                var name: String?
+                var uid: String?
+            }
+            var token: String?
+            var session: User?
+            var error: String?
+            var message: String?
+        }
+        let decoded = try? Self.decoder.decode(Response.self, from: data)
+        guard let token = decoded?.token, !token.isEmpty else {
+            let detail = decoded?.error ?? decoded?.message ?? "Check the code and try again — codes rotate every 30 seconds."
+            throw GuardianError.invalidCredentials(detail)
+        }
+        let user = decoded?.session
+        let newSession = GuardianSession(
+            userID: user?.id ?? user?.userId ?? user?.uid ?? session?.email ?? "",
+            email: user?.email ?? session?.email ?? "",
+            name: user?.name ?? session?.name,
             token: token, issuedAt: issued)
         session = newSession
         return newSession

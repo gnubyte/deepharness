@@ -17,6 +17,12 @@ public final class GuardianService: ObservableObject {
     /// The signed-in user for the UI ("Signed in as …").
     @Published public private(set) var accountEmail: String?
     @Published public private(set) var lastError: String?
+    /// Set when a sign-in stopped at the 2FA step: the challenge from
+    /// Guardian is held here until `verifyTwoFactor(code:)` completes (or
+    /// another sign-in replaces it). The settings UI shows the code field.
+    @Published public private(set) var pendingTwoFactorChallenge: String?
+    /// The email of the sign-in waiting on its 2FA code.
+    @Published public private(set) var pendingTwoFactorEmail: String?
     /// The transport whose ETA cache Guardian's shared samples blend into.
     /// Set by AppModel after both are constructed.
     public weak var transport: AppTransport?
@@ -47,24 +53,73 @@ public final class GuardianService: ObservableObject {
     public func signIn(address: String, email: String, password: String,
                        secrets: any SecretStore = AppSecrets.keychain) async -> Bool {
         lastError = nil
+        pendingTwoFactorChallenge = nil
+        pendingTwoFactorEmail = nil
         do {
             let guardian = try GuardianClient(baseURL: address)
-            let session = try await guardian.signIn(email: email, password: password)
-            secrets.write(session.token, service: AppIdentity.KeychainService.guardian, account: "token")
-            secrets.write(session.email, service: AppIdentity.KeychainService.guardian, account: "email")
-            secrets.write(address, service: AppIdentity.KeychainService.guardian, account: "address")
-            client = guardian
-            accountEmail = session.email
-            // The shared ETA cache: what the org's harnesses learned blends
-            // into this Mac's cache, so its first estimates start smart.
-            if let runner = transport?.phaseRunner {
-                try? await guardian.syncEtas(into: runner)
+            let session: GuardianSession
+            do {
+                session = try await guardian.signIn(email: email, password: password)
+            } catch GuardianError.twoFactorRequired(let challenge) {
+                // The account has TOTP on: hold the challenge and let the UI
+                // collect the authenticator code.
+                pendingTwoFactorChallenge = challenge
+                pendingTwoFactorEmail = email
+                lastError = nil
+                return false
             }
+            try completeSignIn(guardian, session: session, address: address, secrets: secrets)
             return true
         } catch {
             lastError = (error as? GuardianError)?.errorDescription ?? error.localizedDescription
             return false
         }
+    }
+
+    /// Finish a sign-in that stopped at the 2FA step. On success the session
+    /// is stored exactly like a password-only sign-in.
+    @discardableResult
+    public func verifyTwoFactor(code: String,
+                                secrets: any SecretStore = AppSecrets.keychain) async -> Bool {
+        lastError = nil
+        guard let challenge = pendingTwoFactorChallenge, let guardian = client else {
+            lastError = "No 2FA sign-in is waiting for a code — sign in again."
+            return false
+        }
+        do {
+            let session = try await guardian.verifyTwoFactor(challenge: challenge, code: code)
+            pendingTwoFactorChallenge = nil
+            pendingTwoFactorEmail = nil
+            try completeSignIn(guardian, session: session,
+                               address: guardian.baseURL.absoluteString, secrets: secrets)
+            return true
+        } catch {
+            lastError = (error as? GuardianError)?.errorDescription ?? error.localizedDescription
+            return false
+        }
+    }
+
+    /// The shared tail of both sign-in paths: keep the token, name the account.
+    private func completeSignIn(_ guardian: GuardianClient, session: GuardianSession,
+                                address: String, secrets: any SecretStore) throws {
+        secrets.write(session.token, service: AppIdentity.KeychainService.guardian, account: "token")
+        secrets.write(session.email, service: AppIdentity.KeychainService.guardian, account: "email")
+        secrets.write(address, service: AppIdentity.KeychainService.guardian, account: "address")
+        client = guardian
+        accountEmail = session.email
+        // The shared ETA cache: what the org's harnesses learned blends
+        // into this Mac's cache, so its first estimates start smart.
+        Task { [weak self] in
+            guard let transport = self?.transport else { return }
+            try? await guardian.syncEtas(into: transport.phaseRunner)
+        }
+    }
+
+    /// Abandon a sign-in that's waiting on its 2FA code.
+    public func cancelTwoFactor() {
+        pendingTwoFactorChallenge = nil
+        pendingTwoFactorEmail = nil
+        lastError = nil
     }
 
     public func signOut(secrets: any SecretStore = AppSecrets.keychain) {

@@ -38,8 +38,85 @@ final class GuardianClientTests: XCTestCase {
 
     // MARK: URL validation
 
-    func testBadURLIsRefused() {
-        XCTAssertThrowsError(try GuardianClient(baseURL: "not a url"))
+    // MARK: 2FA (TOTP) sign-in
+
+    func testSignInWith2FAAccountThrowsTwoFactorRequired() async throws {
+        // Guardian answers a TOTP account with {ok, twoFactorRequired, challenge}.
+        let c = try client([
+            "POST /api/auth/login": reply(#"{"ok":true,"twoFactorRequired":true,"challenge":"jwt-challenge-1"}"#),
+        ])
+        do {
+            _ = try await c.signIn(email: "me@503cm.com", password: "pw")
+            XCTFail("signIn should surface the 2FA step, not misreport bad credentials")
+        } catch let GuardianError.twoFactorRequired(challenge) {
+            XCTAssertEqual(challenge, "jwt-challenge-1")
+        }
+        // No session until the code lands.
+        XCTAssertNil(c.session)
+    }
+
+    func testVerifyTwoFactorExchangesChallengeAndCodeForSession() async throws {
+        let seen = Box<URLRequest?>(nil)
+        let c = try client([
+            "POST /api/auth/login": reply(#"{"ok":true,"twoFactorRequired":true,"challenge":"jwt-challenge-1"}"#),
+            "POST /api/auth/login/2fa": { request in
+                seen.value = request
+                return GuardianHTTPResponse(
+                    data: Data(#"{"ok":true,"token":"sess-tok","session":{"userId":"u1","email":"me@503cm.com","name":"Pat"}}"#.utf8),
+                    status: 200, headers: [:])
+            },
+        ])
+        do {
+            _ = try await c.signIn(email: "me@503cm.com", password: "pw")
+            XCTFail("expected the 2FA step")
+        } catch GuardianError.twoFactorRequired { }
+        let session = try await c.verifyTwoFactor(challenge: "jwt-challenge-1", code: "123456")
+        XCTAssertEqual(session.token, "sess-tok")
+        XCTAssertEqual(session.email, "me@503cm.com")
+        XCTAssertEqual(c.session?.token, "sess-tok")
+        let body = String(decoding: seen.value?.httpBody ?? Data(), as: UTF8.self)
+        XCTAssertTrue(body.contains(#""challenge":"jwt-challenge-1""#))
+        XCTAssertTrue(body.contains(#""code":"123456""#))
+        XCTAssertEqual(seen.value?.url?.path, "/api/auth/login/2fa")
+    }
+
+    func testVerifyTwoFactorRejectsMalformedCodesBeforeCalling() async throws {
+        let c = try client([
+            "POST /api/auth/login": reply(#"{"ok":true,"twoFactorRequired":true,"challenge":"jwt-c"}"#),
+            "POST /api/auth/login/2fa": reply(#"{"ok":true,"token":"should-not-happen"}"#),
+        ])
+        do {
+            _ = try await c.signIn(email: "me@503cm.com", password: "pw")
+            XCTFail("expected the 2FA step")
+        } catch GuardianError.twoFactorRequired { }
+        for bad in ["12 456", "abc123", "12345", "1234567", ""] {
+            do {
+                _ = try await c.verifyTwoFactor(challenge: "c", code: bad)
+                XCTFail("'\(bad)' should be refused client-side")
+            } catch let GuardianError.invalidCredentials(detail) {
+                XCTAssertTrue(detail.contains("6-digit"), "message should explain the format: \(detail)")
+            }
+        }
+    }
+
+    func testVerifyTwoFactorBadCodeSurfacesGuardianError() async throws {
+        let c = try client([
+            "POST /api/auth/login": reply(#"{"ok":true,"twoFactorRequired":true,"challenge":"jwt-1"}"#),
+            "POST /api/auth/login/2fa": reply(#"{"statusCode":401,"message":"invalid 2fa code"}"#, status: 401),
+        ])
+        _ = try? await c.signIn(email: "me@503cm.com", password: "pw")
+        do {
+            _ = try await c.verifyTwoFactor(challenge: "jwt-1", code: "000000")
+            XCTFail("a rejected code must throw")
+        } catch let GuardianError.invalidCredentials(detail) {
+            // A wrong/rotated code is remapped to retry guidance (the wire
+            // 401 doesn't carry a decode-able body through `check`).
+            XCTAssertTrue(detail.contains("rotated") || detail.contains("invalid 2fa code"),
+                          "detail should explain the retry: \(detail)")
+        }
+    }
+
+    func testBadURLIsRefused() {        XCTAssertThrowsError(try GuardianClient(baseURL: "not a url"))
         XCTAssertThrowsError(try GuardianClient(baseURL: "ftp://guardian.503cm.com"))
         XCTAssertNoThrow(try GuardianClient(baseURL: "https://guardian.503cm.com"))
         XCTAssertNoThrow(try GuardianClient(baseURL: "http://localhost:3000"))

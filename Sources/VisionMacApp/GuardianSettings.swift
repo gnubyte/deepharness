@@ -12,6 +12,7 @@ struct GuardianSettings: View {
     @State private var address = GuardianService.defaultURL
     @State private var email = ""
     @State private var password = ""
+    @State private var twoFactorCode = ""
     @State private var signingIn = false
     @State private var status: String?
     @State private var isSyncingSkills = false
@@ -32,6 +33,31 @@ struct GuardianSettings: View {
                         Spacer()
                         Button("Sign Out", role: .destructive) { model.guardian.signOut() }
                     }
+                } else if model.guardian.pendingTwoFactorChallenge != nil {
+                    // A sign-in is waiting on the authenticator code.
+                    TextField("Email", text: $email)
+                        .autocorrectionDisabled()
+                    HStack {
+                        TextField("6-digit code", text: $twoFactorCode)
+                            .autocorrectionDisabled()
+                            .onSubmit { Task { await submitTwoFactor() } }
+                        Button {
+                            Task { await submitTwoFactor() }
+                        } label: {
+                            if signingIn { ProgressView().controlSize(.small) } else { Text("Verify") }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(signingIn || twoFactorCode.count != 6)
+                        if let status { Text(status).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    Text("Enter the 6-digit code from your authenticator app. Codes rotate every 30 seconds.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Start over") {
+                        model.guardian.cancelTwoFactor()
+                        twoFactorCode = ""
+                        status = nil
+                    }
+                    .font(.caption)
                 } else {
                     TextField("Guardian address", text: $address)
                         .autocorrectionDisabled()
@@ -117,6 +143,21 @@ struct GuardianSettings: View {
     }
 
     // MARK: Actions
+
+    /// The second half of a 2FA sign-in: verify the authenticator code.
+    private func submitTwoFactor() async {
+        guard !twoFactorCode.isEmpty else { return }
+        signingIn = true
+        status = nil
+        let ok = await model.guardian.verifyTwoFactor(code: twoFactorCode)
+        signingIn = false
+        if ok {
+            twoFactorCode = ""
+            status = "Signed in."
+        } else {
+            status = model.guardian.lastError ?? "That code didn't take — codes rotate every 30 seconds."
+        }
+    }
 
     private func syncSkillsDown() async {
         guard let client = model.guardian.client else { return }

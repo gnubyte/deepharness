@@ -19,6 +19,10 @@ struct SetupWizard: View {
     /// during the connection test, stored in the Keychain as the route's key.
     @State private var guardianEmail = ""
     @State private var guardianPassword = ""
+    /// Shown when the account answers the password with a 2FA challenge: the
+    /// challenge is held here while the user types the authenticator code.
+    @State private var guardianChallenge: String?
+    @State private var guardianTwoFactorCode = ""
     @State private var modelID = ""
     @State private var discovered: [String] = []
     @State private var probe: ProbeState = .idle
@@ -349,6 +353,14 @@ struct SetupWizard: View {
                         Text("Password").frame(width: 70, alignment: .trailing)
                         SecureField("Your Guardian password", text: $guardianPassword)
                             .textFieldStyle(.roundedBorder)
+                    }
+                    if guardianChallenge != nil {
+                        GridRow {
+                            Text("2FA code").frame(width: 70, alignment: .trailing)
+                            TextField("6-digit code from your authenticator app", text: $guardianTwoFactorCode)
+                                .textFieldStyle(.roundedBorder)
+                                .autocorrectionDisabled()
+                        }
                     }
                 } else if allowsKey {
                     GridRow {
@@ -876,10 +888,25 @@ struct SetupWizard: View {
         // Guardian: the connection test is the sign-in. The password is
         // exchanged for a session token once; afterwards the route talks to
         // the model proxy with the token, like any OpenAI-compatible server.
+        // A TOTP account answers with a challenge instead — the code field
+        // appears and the next Test finishes the sign-in with it.
         if kind == .guardian {
             do {
                 let guardian = try GuardianClient(baseURL: host.isEmpty ? "https://guardian.503cm.com" : host)
-                let session = try await guardian.signIn(email: guardianEmail, password: guardianPassword)
+                let session: GuardianSession
+                if let challenge = guardianChallenge {
+                    session = try await guardian.verifyTwoFactor(challenge: challenge, code: guardianTwoFactorCode)
+                } else {
+                    do {
+                        session = try await guardian.signIn(email: guardianEmail, password: guardianPassword)
+                    } catch GuardianError.twoFactorRequired(let challenge) {
+                        guardianChallenge = challenge
+                        guardianTwoFactorCode = ""
+                        probe = .failed("2FA is on for this account — enter the 6-digit code from your authenticator app, then Test again.")
+                        return
+                    }
+                }
+                guardianChallenge = nil
                 let models = try await guardian.models().map(\.id)
                 discovered = models.sorted()
                 apiKey = session.token          // saved to the Keychain by saveProvider()
