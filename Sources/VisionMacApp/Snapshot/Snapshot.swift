@@ -30,6 +30,8 @@ enum Snapshot {
         case chat, code, setup
         case models = "settings-models"
         case computer = "settings-computer"
+        /// Settings ▸ Import & Export over a made-up OpenClaw in the throwaway home folder.
+        case importExport = "settings-import"
         /// The machine-in-use glow's border and pill, with two chats sharing the Mac.
         case glow
     }
@@ -296,6 +298,13 @@ enum Snapshot {
             model.showSettings = true
         case .glow:
             glowWindow = showGlowPreview()
+        case .importExport:
+            SnapshotSeed.writeOpenClaw(home: model.transport.skillLocations.home)
+            ImportExportSettings.previewOnAppear = true
+            model.mode = .chat
+            model.settingsTab = .importExport
+            model.showSettings = true
+            await pause(2.0)
         }
     }
 
@@ -333,7 +342,7 @@ enum Snapshot {
     private static func unstage(_ scene: Scene, _ model: AppModel, window: NSWindow) async {
         switch scene {
         case .setup: model.showWizard = false
-        case .models, .computer: model.showSettings = false
+        case .models, .computer, .importExport: model.showSettings = false
         case .glow:
             glowWindow?.orderOut(nil)
             glowWindow = nil

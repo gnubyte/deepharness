@@ -11,7 +11,7 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
     var icon: String { self == .chat ? "bubble.left.and.bubble.right" : "chevron.left.forwardslash.chevron.right" }
 }
 
-enum SettingsTab: Hashable { case general, models, spark, guardian, skills, computer, plugins, editor }
+enum SettingsTab: Hashable { case general, models, spark, guardian, skills, computer, importExport, plugins, editor }
 enum SkillsAction: Equatable { case generate, importSkills, newManual }
 
 /// Root-level state: the config, the transport that drives sessions, the
