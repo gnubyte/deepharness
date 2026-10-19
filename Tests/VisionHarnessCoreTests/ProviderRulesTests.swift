@@ -126,6 +126,9 @@ final class ProviderRulesTests: XCTestCase {
         XCTAssertEqual(assistants[1]["reasoning_content"] as? String, ReasoningEcho.placeholder,
                        "a message rebuilt from text gets a stand-in, not a 400")
         XCTAssertNil(assistants[2]["reasoning_content"])
+        // With thinking switched off there's no reasoning to stand in for.
+        let off = try body(k26, thinking: .off, messages: [.user("go"), lost, .toolResult(id: "c2", name: "read_file", output: "y")])
+        XCTAssertNil((off["messages"] as! [[String: Any]])[1]["reasoning_content"])
         // Other servers never see it.
         let other = try body(route("https://api.openai.com/v1", "gpt-4.1"), messages: [.user("go"), kept])
         XCTAssertNil((other["messages"] as! [[String: Any]])[1]["reasoning_content"])

@@ -605,6 +605,11 @@ public struct OpenAIClient: LLMClient {
         let rules = ModelRequestRules.for(profile, model: requestModel(request))
         let learned = adaptations.adaptation(for: adaptationKey(request))
         let echo = rules.echoReasoning || (learned?.echoReasoning ?? false)
+        // A stand-in is only needed while the model thinks (K2.6 with thinking switched off wants none).
+        let thinkingOff: Bool = {
+            if case .toggle = rules.thinking { return thinkingLevel(for: request) == .off }
+            return false
+        }()
         var messages: [[String: Any]] = []
         // Some OpenAI-compatible servers (SGLang on the DGX Spark, notably)
         // reject any request with more than one system message, or with one
@@ -636,7 +641,7 @@ public struct OpenAIClient: LLMClient {
                 if echo {
                     if let reasoning = ReasoningEcho.reasoning(from: m.providerState) {
                         msg["reasoning_content"] = reasoning
-                    } else if m.toolCalls?.isEmpty == false {
+                    } else if m.toolCalls?.isEmpty == false, !thinkingOff {
                         msg["reasoning_content"] = ReasoningEcho.placeholder
                     }
                 }
