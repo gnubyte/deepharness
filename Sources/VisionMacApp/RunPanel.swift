@@ -401,6 +401,14 @@ private struct IdleCard: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // The plan the last work left, so its steps (and who worked them) stay in view.
+                if !session.todos.isEmpty {
+                    let done = session.todos.filter { $0.status == .completed }.count
+                    Divider().padding(.vertical, 2)
+                    Text("Last plan — \(done) of \(session.todos.count) done")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    PlanSteps(session: session, steps: session.todos)
+                }
             }
         }
     }

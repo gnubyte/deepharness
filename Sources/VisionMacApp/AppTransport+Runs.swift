@@ -125,7 +125,12 @@ extension AppTransport {
             record.etaSeconds = state.etaSeconds ?? record.etaSeconds
             record.taskKind = state.taskKind?.rawValue ?? record.taskKind
             record.attempts = state.loopbacks + 1
-            record.evidence = state.evidence
+            // The timeline keeps the gist of the evidence (the turn's card has it all): a long chat's file stays small.
+            record.evidence = state.evidence.suffix(8).map { item in
+                var item = item
+                if item.detail.count > 400 { item.detail = String(item.detail.prefix(399)) + "…" }
+                return item
+            }
         }
         var notes: [String] = []
         if let state = vm.turnPhase, state.turnID == record.turnID, state.phase == .results,

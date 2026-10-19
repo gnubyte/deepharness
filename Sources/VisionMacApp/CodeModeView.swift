@@ -17,8 +17,9 @@ struct CodeModeView: View {
         // fill, which otherwise leaves the panes floating in a band.
         HSplitView {
             if code.showTree {
+                // Beside the chat (no editor) the tree stays a narrow navigator; the chat is the main view.
                 FileTreeView()
-                    .frame(minWidth: 180, idealWidth: 250, maxWidth: 460,
+                    .frame(minWidth: 180, idealWidth: 250, maxWidth: code.editorAreaVisible ? 460 : 300,
                            maxHeight: .infinity)
             }
 
@@ -44,6 +45,7 @@ struct CodeModeView: View {
                 // The chat is the main view; the project status beside it.
                 chatPane
                     .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+                    .layoutPriority(1)
                 ProjectStatusPanel()
                     .frame(minWidth: 260, idealWidth: 330, maxWidth: 460, maxHeight: .infinity)
             }
