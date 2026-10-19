@@ -892,7 +892,9 @@ public enum FallbackContextWindow {
         "llama3.3-70b-instruct": 131_072, "llama3.1-8b-instruct": 131_072,
         "glm-4.5": 131_072, "glm-4.5-air": 131_072, "glm-4.6": 131_072,
         // The subscription plans' models (see `PlanCatalog`).
-        "glm-5.3": 1_000_000, "kimi-for-coding": 1_000_000, "k3-256k": 262_144,
+        "glm-5.3": 1_000_000, "kimi-for-coding": 1_000_000, "k3-256k": 262_144, "k3": 1_000_000,
+        // Moonshot's platform (platform.kimi.ai/docs/models, 2026-10-18).
+        "kimi-k3": 1_000_000, "kimi-k2.7-code": 262_144, "kimi-k2.7-code-highspeed": 262_144, "kimi-k2.6": 262_144,
     ]
 
     /// Prefix rules on the base name, checked after the exact table.
@@ -910,6 +912,7 @@ public enum FallbackContextWindow {
         ("mistral-large", 131_072), ("mistral-small", 131_072),
         ("mixtral", 32_768), ("llama", 131_072), ("smollm", 131_072),
         ("glm-4.5", 131_072), ("glm-4.6", 131_072), ("glm-4", 131_072),
+        ("kimi-k3", 1_000_000), ("kimi-k2.", 262_144),
     ]
 
     /// Look up a context window for a model name, or nil if unknown.

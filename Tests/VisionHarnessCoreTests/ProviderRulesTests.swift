@@ -93,6 +93,17 @@ final class ProviderRulesTests: XCTestCase {
         XCTAssertEqual(KnownProvider.of(baseURL: "https://api.moonshot.cn/v1"), .moonshot)
     }
 
+    func testKimiContextWindowsFromMoonshotsModelList() {
+        XCTAssertEqual(FallbackContextWindow.limit(for: "kimi-k3"), 1_000_000)
+        XCTAssertEqual(FallbackContextWindow.limit(for: "kimi-k2.7-code"), 262_144)
+        XCTAssertEqual(FallbackContextWindow.limit(for: "kimi-k2.6"), 262_144)
+        XCTAssertEqual(FallbackContextWindow.limit(for: "moonshotai/kimi-k2.5"), 262_144)
+        var learned = RequestAdaptation()
+        learned.apply(.drop("temperature"))
+        learned.apply(.rename(from: "max_tokens", to: "max_completion_tokens"))
+        XCTAssertEqual(learned.summary, "no temperature; max_completion_tokens instead of max_tokens")
+    }
+
     /// The retired K2 previews and moonshot-v1 take a temperature (0…1) and no thinking setting.
     func testOlderMoonshotModelsKeepATemperatureInRange() throws {
         let b = try body(route(moonshot, "moonshot-v1-128k", temperature: 1.6), thinking: .high)

@@ -1493,9 +1493,10 @@ private struct ThinkingMenu: View {
         let current = chosen.flatMap { rules?.nearestLevel($0) ?? $0 }
         let name = { (level: ThinkingLevel) in rules?.label(level) ?? level.label }
         if offered.isEmpty {
-            Label(rules?.alwaysThinks == true ? "Thinking: always on" : "Thinking: —", systemImage: "brain")
+            Label(rules?.alwaysThinks == true ? "Always thinks" : "No thinking setting", systemImage: "brain")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+                .fixedSize()
                 .help(rules?.alwaysThinks == true
                       ? "This model always thinks and takes no thinking setting."
                       : "This model has no thinking setting.")
