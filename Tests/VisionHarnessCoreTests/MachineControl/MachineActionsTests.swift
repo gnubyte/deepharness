@@ -223,6 +223,22 @@ final class MachineActionsTests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(holder, "background typing never takes the controls")
     }
 
+    func testTypingIntoTheAppThePersonIsInWaitsForThemToStop() async {
+        let backend = FakeMachineBackend.standard()
+        backend.front = 501                                  // the person is typing in TextEdit
+        let field = backend.textField
+        backend.apps[501]?.focused = field
+        clock.busy(until: Date().addingTimeInterval(0.4))
+        let s = seat()
+        let activities = Recorder<SeatActivity>()
+        s.onActivity = { activities.append($0) }
+        let started = Date()
+        _ = await actions(backend, s).type(text: "!", combos: [], appName: "TextEdit", foreground: false)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.3)
+        XCTAssertTrue(activities.values.contains(.waitingForPerson))
+        XCTAssertEqual(backend.log, [.insert("!", "Name")])
+    }
+
     func testAnInsertTheAppIgnoresFallsBackToKeyEventsForThatApp() async {
         let backend = FakeMachineBackend.standard()
         backend.front = 777

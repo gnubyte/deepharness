@@ -99,14 +99,12 @@ public enum ControlPlanner {
     }
 
     /// Whether a keyboard route needs the machine's controls from the arbiter: the real keyboard always does,
-    /// and so do events posted to the app the person is in (they would land in the middle of the person's typing).
+    /// and so does anything typed into the app the person is in — key events or an insert at its caret would land
+    /// in the middle of the person's own typing. An app in the background needs neither.
     public static func keyboardNeedsControls(text: TextPlan?, keys: KeysPlan?, targetIsFront: Bool) -> Bool {
         if case .realKeyboard = text { return true }
         if case .realKeyboard = keys { return true }
-        if targetIsFront {
-            if text == .postToProcess || keys == .postToProcess { return true }
-        }
-        return false
+        return targetIsFront && (text != nil || keys != nil)
     }
 
     /// Whether the element can do `verb` (focus and set_value/type go through attributes).

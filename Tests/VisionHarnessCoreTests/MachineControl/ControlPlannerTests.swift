@@ -81,8 +81,9 @@ final class ControlPlannerTests: XCTestCase {
     func testWhichKeyboardRoutesWaitForTheControls() {
         // Background app: no wait.
         XCTAssertFalse(ControlPlanner.keyboardNeedsControls(text: .postToProcess, keys: .postToProcess, targetIsFront: false))
-        XCTAssertFalse(ControlPlanner.keyboardNeedsControls(text: .insertAtCaret, keys: nil, targetIsFront: true),
-                       "an Accessibility insert never interleaves with the person's typing")
+        XCTAssertFalse(ControlPlanner.keyboardNeedsControls(text: .insertAtCaret, keys: nil, targetIsFront: false))
+        XCTAssertTrue(ControlPlanner.keyboardNeedsControls(text: .insertAtCaret, keys: nil, targetIsFront: true),
+                      "an insert into the field the person is typing in waits for them too")
         // The app the person is in: events would land in their typing.
         XCTAssertTrue(ControlPlanner.keyboardNeedsControls(text: .postToProcess, keys: nil, targetIsFront: true))
         XCTAssertTrue(ControlPlanner.keyboardNeedsControls(text: nil, keys: .postToProcess, targetIsFront: true))
