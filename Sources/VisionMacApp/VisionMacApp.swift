@@ -170,6 +170,8 @@ struct RootView: View {
             }
             .toolbar { toolbar }
         }
+        // Guardian's refusals met in a chat (a spent budget, a module that's off) as a dialog.
+        .guardianProblemAlert(model.guardian)
         .inspector(isPresented: $model.showQueuePanel) {
             QueueView()
                 .environment(model)

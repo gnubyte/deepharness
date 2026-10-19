@@ -1684,6 +1684,8 @@ public final class AppTransport {
     private func recordTurnOutcome(_ vm: SessionVM, turnID: String, outcome: SessionVM.PromptRecord.Outcome) {
         guard let index = vm.promptHistory.lastIndex(where: { $0.turnID == turnID }) else { return }
         vm.promptHistory[index].outcome = outcome
+        // Signed into Guardian: the row there gets the outcome too (the service sends each outcome once).
+        if let guardianSync { guardianSync(vm.promptHistory[index], vm.id) }
     }
 
     static func countProjectFiles(_ root: URL) -> Int {

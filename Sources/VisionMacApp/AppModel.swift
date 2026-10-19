@@ -73,6 +73,7 @@ final class AppModel {
         }
         // A prompt sent while signed into Guardian lands in the account's
         // prompt history (the service deduplicates).
+        let transportRef = transport
         transport.guardianSync = { record, chatID in
             let outcome: String? = {
                 switch record.outcome {
@@ -83,9 +84,19 @@ final class AppModel {
                 case .stopped: return "stopped"
                 }
             }()
-            Task { await guardian.syncPrompts([
-                .init(id: record.id, text: record.text, at: record.at, outcome: outcome, chatID: chatID),
-            ]) }
+            Task { @MainActor in
+                // The chat's name, project and model ride along (Guardian's Prompt Notebook shows them).
+                let vm = transportRef.sessions.first { $0.id == chatID }
+                await guardian.syncPrompts([
+                    .init(id: record.id, text: record.text, at: record.at, outcome: outcome, chatID: chatID,
+                          chatTitle: vm?.title, project: vm?.projectName, model: transportRef.config.activeProvider?.model,
+                          durationSeconds: outcome == nil ? nil : Date().timeIntervalSince(record.at), runID: record.turnID),
+                ])
+            }
+        }
+        // Guardian's structured refusals (a missing module, a spent budget) become a dialog, wherever they came from.
+        GuardianProblems.setHandler { problem in
+            Task { @MainActor in guardian.show(problem) }
         }
         // Requests to models that aren't private go through the sensitive-data shield: the user's settings, and
         // every secret in the Credentials Vault.

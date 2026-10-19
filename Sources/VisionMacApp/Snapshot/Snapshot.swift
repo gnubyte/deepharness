@@ -32,6 +32,9 @@ enum Snapshot {
         case computer = "settings-computer"
         /// Settings ▸ Import & Export over a made-up OpenClaw in the throwaway home folder.
         case importExport = "settings-import"
+        /// Settings ▸ Guardian signed out (the browser sign-in) and signed in (org, limits, vault).
+        case guardianSignIn = "settings-guardian-signin"
+        case guardian = "settings-guardian"
         /// The machine-in-use glow's border and pill, with two chats sharing the Mac.
         case glow
     }
@@ -298,6 +301,15 @@ enum Snapshot {
             model.showSettings = true
         case .glow:
             glowWindow = showGlowPreview()
+        case .guardianSignIn:
+            model.mode = .chat
+            model.settingsTab = .guardian
+            model.showSettings = true
+        case .guardian:
+            model.guardian.seedSnapshotAccount()
+            model.mode = .chat
+            model.settingsTab = .guardian
+            model.showSettings = true
         case .importExport:
             SnapshotSeed.writeOpenClaw(home: model.transport.skillLocations.home)
             ImportExportSettings.previewOnAppear = true
@@ -342,7 +354,10 @@ enum Snapshot {
     private static func unstage(_ scene: Scene, _ model: AppModel, window: NSWindow) async {
         switch scene {
         case .setup: model.showWizard = false
-        case .models, .computer, .importExport: model.showSettings = false
+        case .models, .computer, .importExport, .guardianSignIn: model.showSettings = false
+        case .guardian:
+            model.showSettings = false
+            model.guardian.signOut()
         case .glow:
             glowWindow?.orderOut(nil)
             glowWindow = nil
