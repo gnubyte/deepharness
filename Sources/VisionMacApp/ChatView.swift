@@ -100,7 +100,7 @@ struct ChatView: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: Theme.rowSpacing) {
+                TranscriptStack(eager: session.entries.count < TranscriptStackLimit.eagerRows, spacing: Theme.rowSpacing) {
                     if session.entries.isEmpty {
                         ChatStarterView(session: session) { text in
                             model.send(text, in: session)
@@ -410,6 +410,33 @@ struct ChatView: View {
     private func insertMention(_ path: String) {
         if !draft.isEmpty, !draft.hasSuffix(" ") { draft += " " }
         draft += "@\(path) "
+    }
+}
+
+// MARK: - Transcript stack
+
+enum TranscriptStackLimit {
+    /// Up to this many rows the transcript stack is eager (see `TranscriptStack`).
+    static let eagerRows = 120
+}
+
+/// The transcript's rows: an eager `VStack` for a chat of ordinary length, a `LazyVStack` for a very long one.
+///
+/// A lazy stack estimates the height of rows it hasn't drawn; opening a chat scrolls to the bottom through those
+/// estimates, and when one row is far taller than the rest (a long pasted message) the scroll lands where no row is —
+/// the transcript shows blank and stays that way (seen in snapshot mode: a chat with one 40-line message rendered
+/// empty until the stack was made eager). An eager stack measures every row, so the scroll is exact.
+struct TranscriptStack<Content: View>: View {
+    let eager: Bool
+    let spacing: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if eager {
+            VStack(alignment: .leading, spacing: spacing, content: content)
+        } else {
+            LazyVStack(alignment: .leading, spacing: spacing, content: content)
+        }
     }
 }
 
