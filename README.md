@@ -1,3 +1,7 @@
+> **Vision for macOS has moved to [github.com/phastings503cm/vision-mac](https://github.com/phastings503cm/vision-mac).**
+> Releases from 0.16.0 on are published there — download the latest from its
+> [Releases](https://github.com/phastings503cm/vision-mac/releases/latest) page. This repository is no longer updated.
+
 <p align="center">
   <img src="assets/logo/logo.png" alt="Vision for macOS" width="120" />
 </p>
