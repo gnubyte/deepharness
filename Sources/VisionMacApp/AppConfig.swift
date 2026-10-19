@@ -33,6 +33,7 @@ public final class AppConfig {
         static let skillSources = "skills.sources.v1"
         static let sessionSkills = "skills.session.v1"
         static let computerTools = "computer.tools.v1"
+        static let machineControl = "computer.control.v1"
         static let queuePaused = "queue.paused.v1"
         static let queueResume = "queue.resumeOnLaunch.v1"
         static let subagentsUsePrimary = "subagents.usePrimary.v1"
@@ -108,6 +109,9 @@ public final class AppConfig {
 
     /// Screen, mouse/keyboard and background-process tools offered to the agent.
     public var computerToolsEnabled: Bool = true { didSet { persist() } }
+    /// How chats act on the machine: in the background first, how long they wait for the real mouse, whether
+    /// each is limited to its own apps (Settings ▸ Computer).
+    public var machineControl = MachineControlOptions() { didSet { persist() } }
 
     // The plan panel.
     /// Whether the plan panel is showing (it follows whichever chat is selected).
@@ -447,6 +451,10 @@ public final class AppConfig {
             sessionSkills = decoded
         }
         computerToolsEnabled = defaults.object(forKey: Keys.computerTools) as? Bool ?? true
+        if let data = defaults.data(forKey: Keys.machineControl),
+           let decoded = try? JSONDecoder().decode(MachineControlOptions.self, from: data) {
+            machineControl = decoded
+        }
         queuePaused = defaults.bool(forKey: Keys.queuePaused)
         queueResumeOnLaunch = defaults.bool(forKey: Keys.queueResume)
         subagentsUsePrimary = defaults.object(forKey: Keys.subagentsUsePrimary) as? Bool ?? true
@@ -477,6 +485,7 @@ public final class AppConfig {
         defaults.set(skillSources.rawValue, forKey: Keys.skillSources)
         if let data = try? JSONEncoder().encode(sessionSkills) { defaults.set(data, forKey: Keys.sessionSkills) }
         defaults.set(computerToolsEnabled, forKey: Keys.computerTools)
+        if let data = try? JSONEncoder().encode(machineControl) { defaults.set(data, forKey: Keys.machineControl) }
         defaults.set(queuePaused, forKey: Keys.queuePaused)
         defaults.set(queueResumeOnLaunch, forKey: Keys.queueResume)
         defaults.set(subagentsUsePrimary, forKey: Keys.subagentsUsePrimary)

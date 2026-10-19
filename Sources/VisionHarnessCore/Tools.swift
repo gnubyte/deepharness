@@ -48,6 +48,9 @@ public struct ToolContext: Sendable {
     /// The run is unattended work (a queue task, `/goal`): subagents keep off servers whose plans allow
     /// interactive use only.
     public let unattended: Bool
+    /// This chat's seat at the machine: its place in line for the real mouse and keyboard, how it prefers to
+    /// act, and which apps it may control (see `MachineSeat`). Nil = tools make a throwaway one.
+    public let machine: MachineSeat?
 
     public init(workspace: URL, policy: PermissionPolicy,
                 client: any LLMClient, registry: ToolRegistry, depth: Int = 0,
@@ -57,7 +60,8 @@ public struct ToolContext: Sendable {
                 backgroundAgents: BackgroundAgents? = nil,
                 fleet: AgentFleet? = nil, roster: AgentRoster? = nil, agentTypes: AgentCatalog? = nil,
                 retry: RetryPolicy? = nil, visionEnabled: Bool = true,
-                temperature: Double? = nil, maxOutputTokens: Int? = nil, unattended: Bool = false) {
+                temperature: Double? = nil, maxOutputTokens: Int? = nil, unattended: Bool = false,
+                machine: MachineSeat? = nil) {
         self.workspace = workspace
         self.policy = policy
         self.client = client
@@ -78,6 +82,7 @@ public struct ToolContext: Sendable {
         self.temperature = temperature
         self.maxOutputTokens = maxOutputTokens
         self.unattended = unattended
+        self.machine = machine
     }
 }
 
@@ -286,7 +291,7 @@ public struct ToolRegistry: Sendable {
     /// the computerToolsEnabled setting in the app and by the per-chat
     /// observe/control grants inside the engine.
     public static func machineTools() -> [any ToolExecutor] {
-        [ScreenshotTool(), ListWindowsTool(), ScreenWatchTool(), UITreeTool(),
+        [ScreenshotTool(), ListWindowsTool(), ScreenWatchTool(), UITreeTool(), UIActionTool(),
          InspectProcessTool(), MouseTool(), KeyboardTool(), FocusAppTool(), ViewImageTool()]
     }
 }

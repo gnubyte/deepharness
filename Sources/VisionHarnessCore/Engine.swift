@@ -226,6 +226,8 @@ public struct Engine: Sendable {
     public let roster: AgentRoster?
     /// The kinds of subagent this chat offers.
     public let agentTypes: AgentCatalog?
+    /// This chat's seat at the machine (see `MachineSeat`); nil = tools make a throwaway one.
+    public let machineSeat: MachineSeat?
 
     public init(client: any LLMClient,
                 registry: ToolRegistry,
@@ -243,7 +245,8 @@ public struct Engine: Sendable {
                 backgroundAgents: BackgroundAgents? = nil,
                 fleet: AgentFleet? = nil,
                 roster: AgentRoster? = nil,
-                agentTypes: AgentCatalog? = nil) {
+                agentTypes: AgentCatalog? = nil,
+                machineSeat: MachineSeat? = nil) {
         self.client = client
         self.registry = registry
         self.systemPrompt = systemPrompt
@@ -261,6 +264,7 @@ public struct Engine: Sendable {
         self.fleet = fleet
         self.roster = roster
         self.agentTypes = agentTypes
+        self.machineSeat = machineSeat
     }
 
     /// Convenience for tests / subagents with auto-approval.
@@ -322,7 +326,7 @@ public struct Engine: Sendable {
                         fleet: fleet, roster: roster, agentTypes: agentTypes,
                         retry: config.retry, visionEnabled: config.visionEnabled,
                         temperature: config.temperature, maxOutputTokens: config.maxOutputTokens,
-                        unattended: config.unattended)
+                        unattended: config.unattended, machine: machineSeat)
         }
 
         for iteration in 0..<config.maxIterations {
@@ -848,6 +852,17 @@ public struct Engine: Sendable {
         case "glob": return JSONArgs.string(call.arguments, "pattern") ?? call.name
         case "grep": return JSONArgs.string(call.arguments, "pattern") ?? call.name
         case "read_many_files": return JSONArgs.string(call.arguments, "paths") ?? call.name
+        case "ui_action":
+            let app = JSONArgs.string(call.arguments, "app") ?? "an app"
+            let what = JSONArgs.string(call.arguments, "menu") ?? JSONArgs.string(call.arguments, "find")
+                ?? JSONArgs.string(call.arguments, "element")
+            return "\(JSONArgs.string(call.arguments, "action") ?? "press") \(what.map { "“\($0.prefix(40))” " } ?? "")in \(app)"
+        case "ui_tree", "focus_app": return JSONArgs.string(call.arguments, "app") ?? call.name
+        case "keyboard":
+            let keys = (JSONArgs.dictionary(call.arguments)["keys"] as? [Any])?.compactMap { $0 as? String } ?? []
+            let text = JSONArgs.string(call.arguments, "text").map { "“\($0.prefix(30))”" }
+            let what = ([text].compactMap { $0 } + keys).joined(separator: " ")
+            return (what.isEmpty ? "keys" : what) + " → " + (JSONArgs.string(call.arguments, "app") ?? "app in front")
         default:
             // Plugin tools: show the first string argument, which is nearly
             // always the interesting one.

@@ -29,6 +29,9 @@ enum Snapshot {
     enum Scene: String, CaseIterable, Sendable {
         case chat, code, setup
         case models = "settings-models"
+        case computer = "settings-computer"
+        /// The machine-in-use glow's border and pill, with two chats sharing the Mac.
+        case glow
     }
 
     struct Live: Equatable, Sendable {
@@ -219,9 +222,10 @@ enum Snapshot {
             window.makeKeyAndOrderFront(nil)
             await pause(scene == .code ? 3.0 : 1.5)
             let file = options.output.appendingPathComponent("\(scene.rawValue).png")
+            let shot = scene == .glow ? (glowWindow ?? window) : window
             do {
-                let image = try await capture(window)
-                try png(image, points: window.frame.size).write(to: file, options: .atomic)
+                let image = try await capture(shot)
+                try png(image, points: shot.frame.size).write(to: file, options: .atomic)
                 note("\(scene.rawValue): \(image.width)x\(image.height) → \(file.path)")
             } catch {
                 note("\(scene.rawValue): FAILED — \(error.localizedDescription)")
@@ -286,7 +290,36 @@ enum Snapshot {
             model.mode = .chat
             model.settingsTab = .models
             model.showSettings = true
+        case .computer:
+            model.mode = .chat
+            model.settingsTab = .computer
+            model.showSettings = true
+        case .glow:
+            glowWindow = showGlowPreview()
         }
+    }
+
+    /// The glow drawn in a window of its own (the real one is a click-through panel over the whole screen, which a
+    /// window capture can't take): a dark desk, the border, and the pill as two chats sharing the Mac see it.
+    private static var glowWindow: NSWindow?
+
+    private static func showGlowPreview() -> NSWindow {
+        let size = NSSize(width: 1100, height: 300)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = NSColor(calibratedRed: 0.10, green: 0.11, blue: 0.13, alpha: 1)
+        let model = MachineGlowModel()
+        model.text = GlowStatus.pill(
+            control: ControlSnapshot(holder: ControlHolder(id: "a", chatID: "a", label: "Fix the Godot build"),
+                                     waiting: [ControlHolder(id: "b", chatID: "b", label: "File the expense report")]),
+            work: [])
+        window.contentView = NSHostingView(rootView: MachineGlowView(model: model)
+            .frame(width: size.width, height: size.height)
+            .background(Color(red: 0.10, green: 0.11, blue: 0.13)))
+        window.center()
+        window.orderFrontRegardless()
+        return window
     }
 
     /// Open the chat the pictures are about; the seeded one gets back what a stored chat doesn't keep.
@@ -300,7 +333,10 @@ enum Snapshot {
     private static func unstage(_ scene: Scene, _ model: AppModel, window: NSWindow) async {
         switch scene {
         case .setup: model.showWizard = false
-        case .models: model.showSettings = false
+        case .models, .computer: model.showSettings = false
+        case .glow:
+            glowWindow?.orderOut(nil)
+            glowWindow = nil
         case .code:
             model.mode = .chat
             setSidebarCollapsed(false, in: window)
