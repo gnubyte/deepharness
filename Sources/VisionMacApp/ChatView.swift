@@ -11,8 +11,10 @@ struct ChatView: View {
     @State private var draft = ""
     /// Grows with the draft, between one line and a sensible ceiling.
     @State private var composerHeight: CGFloat = 32
-    /// Attachments queued to go out with the next message.
-    @State private var attachments: [MessageAttachment] = []
+    /// Attachments queued to go out with the next message (read in the background as they are added).
+    @State private var staged: [StagedAttachment] = []
+    /// The attachment whose content is open in the preview sheet.
+    @State private var previewing: StagedAttachment?
     /// Skills offered in the "/" autocomplete, loaded when the user starts typing a command.
     @State private var slashSkills: [Skill] = []
     @State private var slashSkillsRevision = -1
@@ -66,9 +68,30 @@ struct ChatView: View {
         }
         .onChange(of: model.pendingComposerText) { _, text in
             guard let text else { return }
-            draft = text
-            composerHeight = min(max(ComposerField.minHeight, 90), ComposerField.maxHeight)
+            if PastedText.isLarge(text) {
+                // A re-sent prompt as long as a big paste goes the same way: as an attachment.
+                addPasted(text)
+            } else {
+                draft = text
+                composerHeight = min(max(ComposerField.minHeight, 90), ComposerField.maxHeight)
+            }
             model.pendingComposerText = nil
+        }
+        .onChange(of: model.pendingComposerAttachments == nil) { _, none in
+            guard !none, let pending = model.pendingComposerAttachments else { return }
+            for attachment in pending { add(attachment) }
+            model.pendingComposerAttachments = nil
+        }
+        .onChange(of: model.pendingAttachmentPreview) { _, name in
+            guard let name else { return }
+            previewing = staged.first { $0.attachment.name == name }
+            model.pendingAttachmentPreview = nil
+        }
+        .sheet(item: $previewing) { item in
+            AttachmentPreviewSheet(
+                item: item, route: transport.attachmentRoute(),
+                onSave: item.isPasted ? { text in replacePasted(item.id, with: text) } : nil,
+                onRemove: { staged.removeAll { $0.id == item.id }; refreshParts() })
         }
     }
 
@@ -132,9 +155,10 @@ struct ChatView: View {
 
     private let bottomAnchor = "transcript-bottom"
 
-    /// Streaming text changes the last entry without changing the count.
+    /// Streaming text changes the last entry without changing the count. (UTF-8 length: constant time, where
+    /// `count` walks every character of a long message on every redraw.)
     private var lastEntryLength: Int {
-        session.entries.last?.message?.text.count ?? 0
+        session.entries.last?.message?.text.utf8.count ?? 0
     }
 
     private func scroll(_ proxy: ScrollViewProxy) {
@@ -186,8 +210,9 @@ struct ChatView: View {
                 }
             }
 
-            if !attachments.isEmpty {
-                attachChips
+            if !staged.isEmpty {
+                AttachmentChips(items: $staged, route: transport.attachmentRoute()) { previewing = $0 }
+                    .onChange(of: staged.count) { _, _ in refreshParts() }
             }
 
             HStack(alignment: .bottom, spacing: 8) {
@@ -204,7 +229,8 @@ struct ChatView: View {
                 .disabled(session.running)
 
                 ComposerField(text: $draft, height: $composerHeight,
-                              isEnabled: !session.running, onSubmit: send)
+                              isEnabled: !session.running, onSubmit: send,
+                              onLargePaste: { addPasted($0) })
                     .frame(height: composerHeight)
                     .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
                     .overlay(
@@ -229,8 +255,9 @@ struct ChatView: View {
                             .frame(width: 22, height: 22)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
-                    .help("Send (↩)")
+                    .disabled((draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && staged.isEmpty)
+                              || staged.contains(where: \.reading))
+                    .help(staged.contains(where: \.reading) ? "Reading the attachments…" : "Send (↩)")
                 }
             }
 
@@ -273,6 +300,13 @@ struct ChatView: View {
         .padding(.vertical, 10)
         .frame(maxWidth: Theme.maxTranscriptWidth)
         .frame(maxWidth: .infinity)
+        // Files dropped on the composer are attached like ones picked with +.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard !session.running else { return false }
+            let files = urls.filter(\.isFileURL)
+            for url in files { stage(url, kind: .file) }
+            return !files.isEmpty
+        }
     }
 
     /// Commands and skills matching what's typed, while the draft is a bare "/word".
@@ -291,43 +325,52 @@ struct ChatView: View {
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty, !session.running else { return }
-        let payload = attachments
+        guard !text.isEmpty || !staged.isEmpty, !session.running, !staged.contains(where: \.reading) else { return }
+        let payload = staged.map(\.attachment)
         draft = ""
-        attachments = []
+        staged = []
         model.send(text, in: session, attachments: payload)
     }
 
-    /// The queued attachments as removable chips.
-    private var attachChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(attachments, id: \.self) { attachment in
-                    HStack(spacing: 5) {
-                        Image(systemName: attachment.kind == .image ? "photo" : "doc")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(attachment.name)
-                            .font(Theme.mono(11))
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Theme.surface, in: Capsule())
-                    .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
-                    .help(attachment.name)
-                    Button {
-                        attachments.removeAll { $0 == attachment }
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Remove attachment")
-                }
-            }
-            .padding(.bottom, 2)
+    /// A paste too large for the message box becomes a "Pasted text" attachment.
+    private func addPasted(_ text: String) {
+        let names = staged.map(\.attachment.name) + session.entries.flatMap { $0.message?.attachments.map(\.name) ?? [] }
+        add(PastedText.attachment(text, existing: names))
+    }
+
+    /// An edited paste: the same chip, new text (the paste stays an attachment even if it got short).
+    private func replacePasted(_ id: UUID, with text: String) {
+        guard let index = staged.firstIndex(where: { $0.id == id }) else { return }
+        staged[index].attachment = AttachmentReader.pasted(text, name: staged[index].attachment.name)
+        refreshParts()
+    }
+
+    /// Queue an attachment; one nobody read yet is read in the background (PDF text, OCR, Office XML) while its chip
+    /// says "reading…".
+    private func add(_ attachment: MessageAttachment) {
+        // The same file twice is one attachment.
+        guard !staged.contains(where: { $0.attachment.name == attachment.name && $0.attachment.data == attachment.data }) else { return }
+        let item = StagedAttachment(attachment: attachment, reading: attachment.digest == nil)
+        staged.append(item)
+        guard item.reading else { refreshParts(); return }
+        let id = item.id
+        Task {
+            let read = await Task.detached(priority: .userInitiated) { AttachmentReader.digested(attachment) }.value
+            guard let index = staged.firstIndex(where: { $0.id == id }) else { return }
+            staged[index].attachment = read
+            staged[index].reading = false
+            refreshParts()
+        }
+    }
+
+    /// How many parts each staged file's text makes for the current route's window, shared among the readable
+    /// files as the message will share it (`AttachmentBudget`).
+    private func refreshParts() {
+        let readable = staged.filter { !$0.reading && $0.attachment.kind == .file && ($0.attachment.digest?.readable ?? false) }.count
+        let budget = AttachmentBudget(window: transport.contextLimit(), sharing: max(1, readable))
+        for index in staged.indices where !staged[index].reading {
+            guard let digest = staged[index].attachment.digest else { continue }
+            staged[index].parts = AttachmentPrep.partCount(digest, budget: budget)
         }
     }
 
@@ -352,19 +395,15 @@ struct ChatView: View {
         for url in panel.urls { stage(url, kind: .file) }
     }
 
-    /// Read the file and, for images, re-encode to PNG so any model can see it.
+    /// Read the file and queue it; a picture is re-encoded to a PNG any model server takes (and scaled down when
+    /// it is huge), whichever menu item attached it.
     private func stage(_ url: URL, kind: MessageAttachment.Kind) {
         guard let data = try? Data(contentsOf: url) else { return }
         let name = url.lastPathComponent
-        guard !attachments.contains(where: { $0.name == name && $0.data == data }) else { return }
-        if kind == .image,
-           let image = NSImage(data: data),
-           let png = image.tiffRepresentation,
-           let rep = NSBitmapImageRep(data: png),
-           let out = rep.representation(using: .png, properties: [:]) {
-            attachments.append(MessageAttachment(kind: .image, name: name, data: out))
+        if kind == .image || AttachmentReader.isImage(name: name, data: data) {
+            add(MessageAttachment(kind: .image, name: name, data: ImageData.normalized(data) ?? data))
         } else {
-            attachments.append(MessageAttachment(kind: kind, name: name, data: data))
+            add(MessageAttachment(kind: kind, name: name, data: data))
         }
     }
 
@@ -382,8 +421,11 @@ struct ComposerField: NSViewRepresentable {
     @Binding var height: CGFloat
     var isEnabled: Bool
     var onSubmit: () -> Void
+    /// A paste (or drop) over `PastedText`'s thresholds goes here instead of into the field.
+    var onLargePaste: ((String) -> Void)? = nil
 
     static let minHeight: CGFloat = 32
+    /// The field grows to this and then scrolls inside itself, so the transcript above keeps its room.
     static let maxHeight: CGFloat = 180
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -424,6 +466,15 @@ struct ComposerField: NSViewRepresentable {
 
         init(_ parent: ComposerField) { self.parent = parent }
 
+        /// A very large paste never lands in the field: it becomes an attachment chip.
+        func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange,
+                      replacementString: String?) -> Bool {
+            guard let replacement = replacementString, let onLargePaste = parent.onLargePaste,
+                  PastedText.isLarge(replacement) else { return true }
+            onLargePaste(replacement)
+            return false
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
@@ -435,11 +486,17 @@ struct ComposerField: NSViewRepresentable {
         func reportHeight(_ textView: NSTextView) {
             guard let layoutManager = textView.layoutManager,
                   let container = textView.textContainer else { return }
-            layoutManager.ensureLayout(for: container)
-            let used = layoutManager.usedRect(for: container).height
-            let target = min(max(ComposerField.minHeight,
+            let target: CGFloat
+            if textView.string.utf16.count > 4_000 {
+                // Long text is past the ceiling for sure: don't lay all of it out on every keystroke to find out.
+                target = ComposerField.maxHeight
+            } else {
+                layoutManager.ensureLayout(for: container)
+                let used = layoutManager.usedRect(for: container).height
+                target = min(max(ComposerField.minHeight,
                                  (used + textView.textContainerInset.height * 2).rounded(.up)),
                              ComposerField.maxHeight)
+            }
             guard abs(target - parent.height) > 0.5 else { return }
             let binding = parent.$height
             DispatchQueue.main.async { binding.wrappedValue = target }
@@ -507,10 +564,17 @@ private struct MessageRow: View {
             marker
             VStack(alignment: .leading, spacing: 4) {
                 if body_.role == .user {
-                    Text(body_.text)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let long = PastedText.collapsed(body_.text) {
+                        CollapsedUserText(text: body_.text, preview: long.preview, lines: long.lines)
+                    } else if !body_.text.isEmpty || body_.attachments.isEmpty {
+                        Text(body_.text)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if !body_.attachments.isEmpty {
+                        AttachmentBadges(badges: body_.attachments)
+                    }
                 } else {
                     MarkdownView(source: body_.text)
                 }

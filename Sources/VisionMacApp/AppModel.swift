@@ -51,6 +51,10 @@ final class AppModel {
     /// prompt timeline's "Reuse in composer"). ChatView picks it up in
     /// `onChange`, like `code.pendingMention`.
     var pendingComposerText: String?
+    /// Attachments a caller wants queued in the selected chat's composer (screenshot mode), and the name of one whose
+    /// preview it wants opened. ChatView picks them up like `pendingComposerText`.
+    var pendingComposerAttachments: [MessageAttachment]?
+    var pendingAttachmentPreview: String?
     /// The Guardian connection: sign-in state, prompt sync, skills, chats.
     let guardian = GuardianService(appSupport: AppPaths.support)
     /// The folder both modes operate in.
