@@ -154,7 +154,6 @@ public struct MachineActions: Sendable {
         }
 
         let gesture: MouseGesture = dragTo.map { .drag(from: point, to: $0) } ?? .click(point, button: button, clicks: clicks)
-        let backend = self.backend
         let outcome = await withControls(app: appName) { () -> Bool in
             let saved = backend.pointerLocation()
             await backend.postMouse(gesture)
@@ -235,7 +234,6 @@ public struct MachineActions: Sendable {
         }()
 
         if realKeyboard {
-            let backend = self.backend
             let outcome = await withControls(app: target.name) { () -> String? in
                 if !targetIsFront {
                     if let failure = await backend.activate(app: target.name) { return "Error: \(failure)" }
@@ -266,7 +264,6 @@ public struct MachineActions: Sendable {
         }
 
         // In the background: Accessibility first for text, then events posted to the process only.
-        let backend = self.backend
         let deliver: @Sendable () async -> [String] = {
             var notes: [String] = []
             if let text {
@@ -325,7 +322,6 @@ public struct MachineActions: Sendable {
             return .init(output: "Error: '\(appName)' is not running or not focusable. process_list/inspect_process to check; process_start or `open -a \"\(appName)\"` to launch it.")
         }
         if let refusal = await admit(target, typing: false, tool: "focus_app") { return .init(output: refusal) }
-        let backend = self.backend
         switch await withControls(app: target.name, { await backend.activate(app: target.name) }) {
         case .failure(let refusal): return .init(output: refusal.message)
         case .success(let error?): return .init(output: "Error: \(error)")
