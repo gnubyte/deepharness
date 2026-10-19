@@ -51,6 +51,8 @@ final class MachineGlowController {
     }
 
     private func show() {
+        // No app running (unit tests): nothing to draw on.
+        guard NSApp != nil else { return }
         let screen = NSScreen.main ?? NSScreen.screens.first
         let frame = screen?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let panel = NSPanel(contentRect: frame,
