@@ -203,9 +203,11 @@ public enum ZAIDiagnosis {
     /// Codes (and HTTP statuses) that say the key or account doesn't fit the endpoint — worth trying elsewhere.
     static let keyProblems: Set<String> = ["1000", "1001", "1002", "1003", "1004", "401", "1113", "1309", "1314", "1315"]
 
-    /// `ping` sends a one-token request to an endpoint and throws what the server said.
+    /// `ping` sends a one-token request to an endpoint and throws what the server said. It runs on the caller's
+    /// actor (the guide's is the main actor), one endpoint at a time.
     public static func run(endpoint: ZAIErrors.Endpoint, model: String,
-                           ping: @Sendable (ZAIErrors.Endpoint) async throws -> Void) async -> Result {
+                           isolation: isolated (any Actor)? = #isolation,
+                           ping: (ZAIErrors.Endpoint) async throws -> Void) async -> Result {
         do {
             try await ping(endpoint)
             return Result(ok: true, message: "✔ The key works on \(endpoint.name) with \(model).", worksOn: nil)
@@ -259,5 +261,24 @@ public enum ZAIDiagnosis {
         }
         if error is URLError { return "Couldn't reach Z.ai. Check the internet connection, then try again." }
         return error.localizedDescription
+    }
+}
+
+public extension ZAIDiagnosis {
+    /// Test a Z.ai route as it is set up — its key, model and endpoint (nil for a route that isn't Z.ai's).
+    static func test(_ route: ProviderProfile) async -> Result? {
+        guard let endpoint = ZAIErrors.Endpoint.of(baseURL: route.baseURL) else { return nil }
+        return await run(endpoint: endpoint, model: route.model) { candidate in
+            var probe = route
+            probe.baseURL = candidate.baseURL
+            try await ping(probe)
+        }
+    }
+
+    /// A one-token reply from the route (listing models proves nothing on Z.ai: any valid key lists them anywhere).
+    static func ping(_ route: ProviderProfile) async throws {
+        let client = ProviderClients.make(route)
+        let request = LLMRequest(systemPrompt: "", messages: [.user("Hi")], tools: [], model: route.model, maxTokens: 1)
+        for try await _ in client.stream(request) {}
     }
 }

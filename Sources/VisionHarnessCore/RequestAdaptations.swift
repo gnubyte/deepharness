@@ -53,12 +53,12 @@ public struct RequestAdaptation: Codable, Equatable, Sendable {
         learnedAt = Date()
     }
 
-    /// In a sentence, for Settings: "doesn't take temperature, thinking".
+    /// In a line, for Settings: "no temperature, thinking; max_completion_tokens instead of max_tokens".
     public var summary: String {
         var parts: [String] = []
         if minimal { parts.append("only the basic settings") }
-        if !dropped.isEmpty { parts.append("no " + dropped.map { "`\($0)`" }.joined(separator: ", ")) }
-        for (from, to) in renamed.sorted(by: { $0.key < $1.key }) { parts.append("`\(to)` instead of `\(from)`") }
+        if !dropped.isEmpty { parts.append("no " + dropped.joined(separator: ", ")) }
+        for (from, to) in renamed.sorted(by: { $0.key < $1.key }) { parts.append("\(to) instead of \(from)") }
         if echoReasoning { parts.append("its reasoning sent back with tool calls") }
         return parts.joined(separator: "; ")
     }
