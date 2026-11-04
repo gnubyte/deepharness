@@ -148,6 +148,7 @@ extension ProviderProfile.Kind {
         case .openAI: "OpenAI"
         case .openRouter: "OpenRouter"
         case .bedrock: "Amazon Bedrock"
+        case .guardian: "Guardian"
         }
     }
 
@@ -157,6 +158,7 @@ extension ProviderProfile.Kind {
         case .openAICompat: "server.rack"
         case .openAI, .openRouter: "cloud"
         case .bedrock: "cloud.bolt"
+        case .guardian: "shield.lefthalf.filled"
         }
     }
 }

@@ -68,6 +68,52 @@ private struct GeneralSettings: View {
                 }
             }
 
+            Section("Harness") {
+                Toggle(isOn: Binding(
+                    get: { model.config.daemonMode },
+                    set: { model.config.daemonMode = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Keep running when the window is closed (daemon)")
+                        Text("The task queue, automations, background agents and the API server keep working; a brain icon in the menu bar brings the window back.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(isOn: Binding(
+                    get: { model.config.gitAutoSync },
+                    set: { model.config.gitAutoSync = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Keep the working branch synced with origin")
+                        Text("Before turns: fetch, fast-forward when clean, push when ahead — never force, never touch uncommitted work. Per-chat /git-sync overrides this.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(isOn: Binding(
+                    get: { model.config.apiServerEnabled },
+                    set: { newValue in
+                        model.config.apiServerEnabled = newValue
+                        model.apiServerSettingChanged()
+                    })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Local API server (other programs can use the default model)")
+                        Text(model.apiServerRunning
+                             ? "Serving on 127.0.0.1:\(model.apiServerPort ?? model.config.apiServerPort) — POST /v1/chat/completions, GET /v1/models, GET /health"
+                             : "Off. An OpenAI-compatible endpoint on 127.0.0.1 that always serves the current main model.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if model.config.apiServerEnabled {
+                    Stepper(value: Binding(
+                        get: { model.config.apiServerPort },
+                        set: { newValue in
+                            model.config.apiServerPort = newValue
+                            model.apiServerSettingChanged()
+                        }), in: 1024...65_535) {
+                        Text("Port \(model.config.apiServerPort)")
+                            .font(.caption)
+                    }
+                }
+            }
+
             Section("Setup") {
                 LabeledContent("Configuration wizard") {
                     Button("Run Again…") { model.showWizard = true }

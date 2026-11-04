@@ -10,8 +10,24 @@ struct RouteMenuSections: View {
 
     var body: some View {
         let config = model.config
+        let guardianRoutes = config.providers.filter { $0.kind == .guardian }
+        let otherRoutes = config.providers.filter { $0.kind != .guardian }
+        if !guardianRoutes.isEmpty {
+            Section("Guardian — \(model.guardian.accountEmail ?? "signed in")") {
+                ForEach(guardianRoutes, id: \.routeID) { provider in
+                    Button {
+                        guard provider.routeID != config.activeRoute else { return }
+                        config.makeMain(provider.routeID)
+                        model.transport.resetRouteCache()
+                    } label: {
+                        Label(provider.displayName,
+                              systemImage: provider.routeID == config.activeRoute ? "checkmark" : "shield.lefthalf.filled")
+                    }
+                }
+            }
+        }
         Section("Main model — the chat talks to it") {
-            ForEach(config.providers, id: \.routeID) { provider in
+            ForEach(otherRoutes, id: \.routeID) { provider in
                 Button {
                     guard provider.routeID != config.activeRoute else { return }
                     config.makeMain(provider.routeID)
@@ -19,6 +35,12 @@ struct RouteMenuSections: View {
                 } label: {
                     Label(provider.displayName,
                           systemImage: provider.routeID == config.activeRoute ? "checkmark" : provider.kind.icon)
+                }
+            }
+            if guardianRoutes.isEmpty {
+                Button("Sign in to Guardian…") {
+                    model.settingsTab = .models
+                    model.showSettings = true
                 }
             }
         }

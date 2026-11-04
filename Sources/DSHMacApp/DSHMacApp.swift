@@ -15,12 +15,42 @@ struct DSHMacApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands { AppCommands(model: model) }
+
+        // The daemon's handle: even with no window open (the queue,
+        // automations, background agents and the API server keep working),
+        // this menu shows state and brings the window back.
+        MenuBarExtra {
+            MenuBarExtraContent()
+                .environment(model)
+        } label: {
+            Image(systemName: model.anythingRunning ? "brain.fill" : "brain")
+        }
+        .menuBarExtraStyle(.menu)
     }
 }
 
-/// Keeps the app's lifetime tied to its window and stops agents on the way out.
+/// Keeps the app alive when its last window closes (daemon mode), so the task
+/// queue, automations, background agents and the API server keep working;
+/// clicking the dock icon (or the menu-bar brain) brings the window back.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !MainActor.assumeIsolated { AppConfig.shared.daemonMode }
+    }
+
+    /// Dock click with no window: reopen rather than do nothing.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
+        MainActor.assumeIsolated { Self.openMainWindow() }
+        return true
+    }
+
+    @MainActor
+    static func openMainWindow() {
+        if let window = NSApp.windows.first(where: { $0.canBecomeKey && !$0.isSheet }) ?? NSApp.windows.first {
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -36,6 +66,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+@MainActor
+struct MenuBarExtraContent: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack {
+            Button("Open DSH") { AppDelegate.openMainWindow() }
+            Divider()
+            let running = model.transport.runningSessions.count
+            Text(running == 0 ? "No agents running" : running == 1 ? "1 agent running" : "\(running) agents running")
+            let queue = model.transport.queue.stats()
+            Text("Queue: \(queue.queued) waiting · \(queue.completed) done")
+                .disabled(true)
+            if model.apiServerRunning {
+                Text("API server :\(model.apiServerPort ?? model.config.apiServerPort)")
+                    .disabled(true)
+            }
+            Divider()
+            if model.transport.queueRunningNow {
+                Button("Stop Task Queue") { model.transport.stopQueue() }
+            } else if queue.queued > 0 {
+                Button("Start Task Queue") { model.transport.startQueue() }
+            }
+            if !model.automations.currentStore().automations.filter(\.enabled).isEmpty {
+                Text("\(model.automations.currentStore().automations.filter(\.enabled).count) automations scheduled")
+                    .disabled(true)
+            }
+            Divider()
+            Button("Quit DSH") { NSApp.terminate(nil) }
+        }
+    }
+}
+
 // MARK: - Menus
 
 struct AppCommands: Commands {
@@ -47,6 +110,9 @@ struct AppCommands: Commands {
                 .keyboardShortcut("n", modifiers: .command)
             Button("Open Project Folder…") { model.chooseProject() }
                 .keyboardShortcut("o", modifiers: .command)
+            Button("Add Folder to Session…") { model.addFolder() }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(model.project == nil)
             Divider()
             Button("New Terminal") {
                 model.mode = .code
@@ -94,6 +160,8 @@ struct AppCommands: Commands {
                 .keyboardShortcut("1", modifiers: .command)
             Button("Code Mode") { model.mode = .code }
                 .keyboardShortcut("2", modifiers: .command)
+            Button("Automations Mode") { model.mode = .automations }
+                .keyboardShortcut("3", modifiers: .command)
             Divider()
             Button("Toggle File Tree") { model.code.showTree.toggle() }
                 .keyboardShortcut("b", modifiers: .command)
@@ -171,6 +239,8 @@ struct RootView: View {
             }
         case .code:
             CodeModeView()
+        case .automations:
+            AutomationsView()
         }
     }
 
@@ -190,16 +260,48 @@ struct RootView: View {
         }
 
         ToolbarItem(placement: .principal) {
-            Button {
-                model.chooseProject()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "folder")
-                    Text(model.project?.lastPathComponent ?? "No project")
-                        .lineLimit(1)
+            if model.additionalProjects.isEmpty {
+                Button {
+                    model.chooseProject()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "folder")
+                        Text(model.project?.lastPathComponent ?? "No project")
+                            .lineLimit(1)
+                    }
                 }
+                .help(model.project?.path ?? "Open a project folder (⌘O)")
+            } else {
+                // Multi-folder session: the working set, with add/remove.
+                Menu {
+                    Section("Working folders") {
+                        if let project = model.project {
+                            Label(project.lastPathComponent, systemImage: "folder.fill")
+                        }
+                        ForEach(model.additionalProjects, id: \.standardizedFileURL) { extra in
+                            Button {
+                                model.removeFolder(extra)
+                            } label: {
+                                Label("Remove \(extra.lastPathComponent)", systemImage: "folder.badge.minus")
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Add Folder…") { model.addFolder() }
+                    Button("Open Another Project…") { model.chooseProject() }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "folder.badge.plus")
+                        Text(model.project?.lastPathComponent ?? "No project")
+                            .lineLimit(1)
+                        Text("+\(model.additionalProjects.count)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .help("Folders the agent works across")
             }
-            .help(model.project?.path ?? "Open a project folder (⌘O)")
         }
 
         ToolbarItem {

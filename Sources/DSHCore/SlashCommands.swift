@@ -22,6 +22,8 @@ public enum SlashCommand: Equatable, Sendable {
     case skill(String?)
     /// Start (or report) the unattended task queue.
     case queue
+    /// Turn this chat's automatic git sync with origin on or off.
+    case gitSync(String?)
     /// The model servers subagents run on, how busy each is, and what is running.
     case agents
     case help
@@ -44,6 +46,7 @@ public enum SlashCommand: Equatable, Sendable {
         .init(usage: "/skills", summary: "List skills and what is selected for this chat"),
         .init(usage: "/skill <name>|new <what>", summary: "Select/deselect a skill for this chat, or have the model write a new one"),
         .init(usage: "/queue", summary: "Start the task queue — it works queued tasks one at a time, unattended"),
+        .init(usage: "/git-sync on|off", summary: "Keep this chat's branch synced with origin before turns (fetch/pull/push, never force)"),
         .init(usage: "/agents", summary: "Show the model servers subagents run on, how busy each is, and what is running now"),
         .init(usage: "/help", summary: "List commands"),
     ]
@@ -63,6 +66,7 @@ public enum SlashCommand: Equatable, Sendable {
         case "/skills": return .skills
         case "/skill": return .skill(arg)
         case "/queue": return .queue
+        case "/git-sync", "/gitsync", "/sync": return .gitSync(arg)
         case "/agents", "/fleet", "/servers": return .agents
         case "/help", "/?", "/commands": return .help
         default: return nil

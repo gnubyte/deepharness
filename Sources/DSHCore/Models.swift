@@ -143,11 +143,13 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
         /// Amazon Bedrock: the Converse API, signed with AWS credentials (the
         /// AWS CLI's sign-in) or authorised with a Bedrock API key.
         case bedrock
+        /// Guardian (guardian.503cm.com): a hosted proxy fronting the models
+        /// the account may use. One route per model, created at sign-in.
+        case guardian
 
         /// The kinds the editor offers for a route made by hand. A Bedrock
         /// route comes from its guide (profile, Region and model together).
-        public static var manual: [Kind] { [.openAICompat, .ollama, .lmStudio, .openAI, .openRouter] }
-    }
+        public static var manual: [Kind] { [.openAICompat, .ollama, .lmStudio, .openAI, .openRouter] }    }
 
     public var kind: Kind
     public var name: String

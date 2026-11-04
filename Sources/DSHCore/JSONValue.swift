@@ -4,13 +4,36 @@ import Foundation
 /// builds or reads JSON without `[String: Any]` (which Swift 6 will not let
 /// cross an isolation boundary): the Bedrock request/response mapping and the
 /// output of the AWS CLI.
-public enum JSONValue: Sendable, Equatable, Hashable {
+public enum JSONValue: Sendable, Equatable, Hashable, Codable {
     case null
     case bool(Bool)
     case number(Double)
     case string(String)
     case array([JSONValue])
     case object([String: JSONValue])
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null: try container.encodeNil()
+        case .bool(let b): try container.encode(b)
+        case .number(let n): try container.encode(n)
+        case .string(let s): try container.encode(s)
+        case .array(let items): try container.encode(items)
+        case .object(let fields): try container.encode(fields)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null; return }
+        if let b = try? container.decode(Bool.self) { self = .bool(b); return }
+        if let n = try? container.decode(Double.self) { self = .number(n); return }
+        if let s = try? container.decode(String.self) { self = .string(s); return }
+        if let items = try? container.decode([JSONValue].self) { self = .array(items); return }
+        if let fields = try? container.decode([String: JSONValue].self) { self = .object(fields); return }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "unsupported JSON value")
+    }
 
     // MARK: Parsing
 

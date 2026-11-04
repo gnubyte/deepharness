@@ -33,6 +33,10 @@ public final class AppConfig {
         static let queuePaused = "queue.paused.v1"
         static let queueResume = "queue.resumeOnLaunch.v1"
         static let subagentsUsePrimary = "subagents.usePrimary.v1"
+        static let daemonMode = "daemon.mode.v1"
+        static let gitAutoSync = "git.autoSync.v1"
+        static let apiServerEnabled = "api.server.enabled.v1"
+        static let apiServerPort = "api.server.port.v1"
     }
 
     private let defaults: UserDefaults
@@ -63,6 +67,10 @@ public final class AppConfig {
     public var recentProjects: [String] = [] {
         didSet { persist() }
     }
+    /// Extra folders opened alongside each primary project (multi-folder
+    /// sessions), keyed by the primary project's path — so reopening a project
+    /// restores the whole working set.
+    public var additionalFolders: [String: [String]] = [:] { didSet { persist() } }
     public var wizardCompleted: Bool = false {
         didSet { if !loading { defaults.set(wizardCompleted, forKey: Keys.wizardDone) } }
     }
@@ -96,6 +104,19 @@ public final class AppConfig {
     /// picks up again on launch. Set by Start, cleared by Stop, by a pause
     /// and when the queue runs dry — tasks merely *added* never auto-start.
     public var queueResumeOnLaunch: Bool = false { didSet { persist() } }
+
+    /// Keep running when the last window closes (daemon mode): the task
+    /// queue, automations, the API server and background agents stay alive;
+    /// the menu-bar extra brings the window back.
+    public var daemonMode: Bool = true { didSet { persist() } }
+
+    /// Keep the AI's working branch synced with its git origin before turns
+    /// (fetch, fast-forward when clean, push when ahead — never force).
+    public var gitAutoSync: Bool = true { didSet { persist() } }
+
+    /// Expose the default model on 127.0.0.1 for other programs.
+    public var apiServerEnabled: Bool = false { didSet { persist() } }
+    public var apiServerPort: Int = 8337 { didSet { persist() } }
 
     // MARK: - Active route
 
@@ -318,6 +339,10 @@ public final class AppConfig {
         activeRoute = defaults.string(forKey: Keys.activeModel)
         preset = defaults.string(forKey: Keys.preset) ?? PermissionPreset.workspaceWrite.rawValue
         recentProjects = defaults.stringArray(forKey: Keys.recentProjects) ?? []
+        if let data = defaults.data(forKey: "additionalFolders.v1"),
+           let decoded = try? JSONDecoder().decode([String: [String]].self, from: data) {
+            additionalFolders = decoded
+        }
         wizardCompleted = defaults.bool(forKey: Keys.wizardDone)
         editorFontSize = defaults.object(forKey: Keys.editorFontSize) as? Double ?? 13
         editorWraps = defaults.object(forKey: Keys.editorWraps) as? Bool ?? false
@@ -335,6 +360,10 @@ public final class AppConfig {
         queuePaused = defaults.bool(forKey: Keys.queuePaused)
         queueResumeOnLaunch = defaults.bool(forKey: Keys.queueResume)
         subagentsUsePrimary = defaults.object(forKey: Keys.subagentsUsePrimary) as? Bool ?? true
+        daemonMode = defaults.object(forKey: Keys.daemonMode) as? Bool ?? true
+        gitAutoSync = defaults.object(forKey: Keys.gitAutoSync) as? Bool ?? true
+        apiServerEnabled = defaults.bool(forKey: Keys.apiServerEnabled)
+        apiServerPort = defaults.object(forKey: Keys.apiServerPort) as? Int ?? 8337
     }
 
     private func persist() {
@@ -345,6 +374,9 @@ public final class AppConfig {
         defaults.set(activeRoute, forKey: Keys.activeModel)
         defaults.set(preset, forKey: Keys.preset)
         defaults.set(recentProjects, forKey: Keys.recentProjects)
+        if let data = try? JSONEncoder().encode(additionalFolders) {
+            defaults.set(data, forKey: "additionalFolders.v1")
+        }
         defaults.set(editorFontSize, forKey: Keys.editorFontSize)
         defaults.set(editorWraps, forKey: Keys.editorWraps)
         defaults.set(editorLineNumbers, forKey: Keys.editorLineNumbers)
@@ -358,6 +390,10 @@ public final class AppConfig {
         defaults.set(queuePaused, forKey: Keys.queuePaused)
         defaults.set(queueResumeOnLaunch, forKey: Keys.queueResume)
         defaults.set(subagentsUsePrimary, forKey: Keys.subagentsUsePrimary)
+        defaults.set(daemonMode, forKey: Keys.daemonMode)
+        defaults.set(gitAutoSync, forKey: Keys.gitAutoSync)
+        defaults.set(apiServerEnabled, forKey: Keys.apiServerEnabled)
+        defaults.set(apiServerPort, forKey: Keys.apiServerPort)
     }
 }
 
@@ -385,6 +421,8 @@ public extension ProviderProfile {
         case .openAI, .openRouter: return true
         // A Bedrock route signs with an AWS sign-in; only one without a profile uses a Bedrock API key.
         case .bedrock: return awsProfile == nil
+        // Guardian's token is managed by its sign-in, never edited here.
+        case .guardian: return false
         }
     }
 

@@ -27,8 +27,12 @@ public enum ProviderClients {
 
     /// The client for `profile`.
     public static func make(_ profile: ProviderProfile) -> any ProviderClient {
-        guard profile.kind == .bedrock else { return OpenAIClient(profile: profile) }
-        let usesAPIKey = profile.awsProfile == nil && !(profile.apiKey ?? "").isEmpty
-        return BedrockClient(profile: profile, credentials: usesAPIKey ? nil : awsCredentials?(profile))
+        // Guardian is an OpenAI-compatible proxy; its token rides as the API key.
+        guard profile.kind != .bedrock && profile.kind != .guardian else {
+            if profile.kind == .guardian { return OpenAIClient(profile: profile) }
+            let usesAPIKey = profile.awsProfile == nil && !(profile.apiKey ?? "").isEmpty
+            return BedrockClient(profile: profile, credentials: usesAPIKey ? nil : awsCredentials?(profile))
+        }
+        return OpenAIClient(profile: profile)
     }
 }

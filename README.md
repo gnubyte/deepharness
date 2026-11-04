@@ -28,7 +28,9 @@ you → DSHCore.Engine → OpenAI-compatible /chat/completions → tool calls �
 ```
 
 The practical difference is that there is nothing to install alongside it and nothing to keep
-running. Point it at a model and open a folder.
+running. Point it at a model and open a folder — or several: ⌘-select multiple folders in the open
+panel (or **Add Folder to Session…**, ⌘⇧O) and the agent works across all of them; every folder's
+instruction files load, and all of them are inside the permission boundary.
 
 ## Download
 
@@ -137,8 +139,9 @@ server, so two Sparks and Bedrock are still three servers afterwards, in differe
 - Each subagent server is asked which model it is serving *right now*, so a Spark that swapped models is
   still used correctly. A hosted service such as Bedrock serves every model at once, so a cheaper Bedrock
   model can take the side tasks while a stronger one leads.
-- The bar above the composer shows where the running subagents are ("Spark 2 ×2 · Amazon Bedrock ×1")
-  and, expanded, what each is doing; `/agents` lists the servers with how busy each is.
+- The bar above the composer shows where the running subagents are ("Spark 2 ×2 · Amazon Bedrock").
+  A count is printed only when two or more subagents share a server, so a lone Bedrock agent is just
+  "Amazon Bedrock". Expanded, the bar shows what each is doing; `/agents` lists the servers with how busy each is.
 
 ### Using Amazon Bedrock
 
@@ -201,12 +204,20 @@ name for name, so prompts, skills, and habits from that ecosystem carry over:
 | `exit_plan_mode` | hand back a plan instead of doing the work |
 | `agent` | a subagent for a scoped task; `agent_type` picks the kind (`general`, `explore`, `plan`, `review`, `worker`, or your own agent file), `run_in_background` keeps it working while you carry on |
 | `delegate` | hand out a list of independent tasks and get every report back together; with several model servers they run on different machines |
-| `agent` | spawn a subagent for a scoped task |
+| `save_memory` / `read_memory` | the harness's own persistent memory (about the user, people, projects) — stored with the app, never in the code folder |
+| `list_chats` / `read_chat` | peer into the other conversations: what they discussed, decisions, paths |
 
 **Models without function calling still work.** Many Qwen-class models on Ollama or older vLLM emit
 tool calls as XML inside plain text instead of `tool_calls`. When a turn finishes with no native
 calls, the text is run through an XML parser that understands both the `<function=…>` and
 `<tool_name>…` conventions, and the recovered calls execute normally.
+
+### Since 0.8
+
+- **Live processes and the machine** (0.8). `process_start`, `process_read`, `process_write`, `process_stop` and `process_list` talk to a running program. `screenshot`, `list_windows`, `screen_watch`, `ui_tree`, `inspect_process`, `mouse`, `keyboard`, `focus_app` and `view_image` look at and drive the Mac.
+- **Task Queue** (0.9; unattended since 0.10). `queue_task` adds follow-up work; `/queue` runs the queue one task at a time. A model outage retries until the server is back.
+- **Credentials Vault** (0.11). API keys and passwords live in the Keychain. The agent writes `{{vault:NAME}}` and never sees the value; `vault_search` lists names, not secrets.
+- **Background subagents** (0.12). `agent` with `run_in_background` (up to four per chat), plus `agent_status` and `agent_stop`.
 
 ## Code mode
 
@@ -234,21 +245,26 @@ between the text that preceded it and the text that followed, expandable to its 
 renders with headings, fenced code (with copy), lists, task lists, quotes, and tables, including an
 unterminated fence while a response is still streaming.
 
-The composer sends on ↩ and inserts a newline on ⇧↩. Files the turn touched appear as chips that jump
-straight to the editor.
+The composer sends on ↩ and inserts a newline on ⇧↩. The **+** menu attaches an image or a file.
+Files the turn touched appear as chips that jump straight to the editor.
 
 ### Slash commands
 
 | Command | What it does |
 |---|---|
-| `/goal <task>` | Works on the task round after round until the model ends a reply with `GOAL_COMPLETE` (or `GOAL_BLOCKED: …` when it needs you). The goal is restated every round so it survives compaction; capped at 40 rounds; ⌘. stops it. |
-| `/compact [focus]` | Summarizes the conversation now, keeping a short recent tail. Earlier messages stay visible above the divider; the model carries the summary. |
+| `/goal <task>` | Works on the task round after round until the model ends a reply with `GOAL_COMPLETE` (or `GOAL_BLOCKED: …` when it needs you). The goal is restated every round so it survives compaction. There is no round cap. ⌘. stops it, and the completion notice reports the elapsed time. |
+| `/queue` | Starts the task queue. It works queued tasks one at a time, unattended. Tasks take attachments and long prompts (the panel's **+** opens a roomy editor). |
+| `/compact [focus]` | Summarizes the conversation now, keeping a short recent tail. Earlier messages stay visible above the divider; the model carries the summary, and its key facts go to harness memory. |
+| `/git-sync on\|off` | Whether this chat keeps its branch synced with origin before turns. |
 | `/think off\|low\|medium\|high\|max\|default` | Thinking level for this chat. |
-| `/context` | Window size, usage, and where the window figure came from. |
+| `/context` | Window size, usage, and where the figure came from. |
 | `/swap [model]` | Lists the Spark's models, or switches what it serves. |
 | `/agents` | The kinds of subagent, the model servers they run on with how busy each is, and what is running now. |
 | `/skills` · `/skill <name>` · `/skill new <what>` · `/<name> args` | Skills: list, select for this chat, have the model write one, or run one. |
 | `/help` | Lists these. |
+
+New chats are named automatically: the first line stands in at once, then the model names the chat
+from what it turned out to be about. Renaming by hand sticks.
 
 Long chats also compact automatically at 75% of the window (keeping up to ~96K recent tokens verbatim),
 including in the middle of one long tool-heavy turn.
@@ -256,15 +272,68 @@ including in the middle of one long tool-heavy turn.
 ## Memory and knowledge files
 
 Because this app assembles the prompt itself, instruction files are simply read and injected — no
-mirroring into `AGENTS.md`, no managed marker blocks. Any of these in the project root is loaded on
-every turn, in order:
+mirroring into `AGENTS.md`, no managed marker blocks. Any of these in a project root is loaded on
+every turn, in order (multi-folder sessions load them from every folder):
 
 `AGENTS.md` · `QWEN.md` · `CLAUDE.md` · `.claude/CLAUDE.md` · `CLAUDE.local.md` · `.cursorrules` ·
-`DSH.md` · `MEMORY.md` · `memory/YYYY-MM-DD.md`
+`DSH.md` · `MEMORY.md` · `memory/YYYY-MM-DD.md` · `.INFRASTRUCTURE.md`
+
+`.INFRASTRUCTURE.md` is this harness's own convention for **how the project is deployed** —
+pipelines, environments, release steps. It is injected with its own label telling the model to treat
+it as deployment truth.
+
+**Harness memory** lives with the app (`~/Library/Application Support/DSHMac/`), never in the code:
+`MEMORY.md` for durable facts plus a daily log. The model contributes with `save_memory`, and every
+compaction folds the summary's *Key facts* section in. Edit both in **Session ▸ Memory & Skills…**
+(⇧⌘M) ▸ Harness memory.
 
 **Session ▸ Memory & Skills… (⇧⌘M)** edits them and shows the **System prompt** tab — exactly what
 gets sent. **Set Up Memory** scaffolds `MEMORY.md` plus today's daily log. The editor warns past ~100
 lines, because that file costs tokens on every request — detail belongs in a skill.
+
+## Automations (⌘3)
+
+A third mode next to Chats and Code: scheduled prompts that run unattended in their own chat —
+"run the ticket sync every weekday at 8:30", "check the build on Monday". The calendar shows every
+upcoming run for the month; the list edits, disables, and re-runs; each automation keeps its own
+history, and a run is exactly a `/goal` (round after round until it's done), in its own chat with
+its own context window.
+
+Schedules are cron (5-field, with time zone), every-N-minutes, or one-off. OpenClaw's scheduled
+tasks import and export both ways — **Automations ▸ Import OpenClaw jobs.json…** reads the same
+file OpenClaw's cron uses, and the export writes it back, so a library curated here can drive
+OpenClaw and vice versa.
+
+## Keeping git in sync
+
+When the open project has a git remote, the harness keeps the working branch level with origin
+before turns: fetch, fast-forward when the tree is clean, push when ahead (creating the upstream on
+a first push), rebase a clean diverged branch and abort on the first conflict. It never forces,
+never resets, never touches uncommitted work — anything it refuses to guess at is reported into the
+chat instead. Throttled to one attempt per workspace per few minutes; **Settings ▸ General** turns
+it off globally and `/git-sync off` per chat; a prompt that says "don't sync" / "without pulling" /
+"do not touch git" is honored automatically.
+
+## The local API server
+
+**Settings ▸ General ▸ Local API server** exposes the default model on `127.0.0.1` (default port
+8337) for other programs on the same Mac — an OpenAI-shaped `POST /v1/chat/completions`,
+`GET /v1/models`, and `GET /health`. It always serves whatever the main model currently is: change
+the model in the app and the next request follows. The socket is bound to loopback only.
+
+## Daemon mode
+
+Closing the window doesn't quit the app: the task queue, automations, background agents, and the
+API server keep working (Settings ▸ General can turn this off). A brain icon in the menu bar shows
+what's running and brings the window back; so does clicking the dock icon. Unsent prompts are
+drafted to disk every couple of seconds, so even a force-quit loses nothing typed.
+
+## Guardian
+
+**Settings ▸ Models ▸ Guardian** signs in (email + password, TOTP 2FA supported) and every model
+the account may use becomes an ordinary route — coexisting with a local DGX Spark and Bedrock:
+either can lead while the other takes subagent work, and selecting a Spark model never disturbs the
+Guardian selection. The token lives in the Keychain, never in the preferences file.
 
 ## Skills
 
@@ -370,12 +439,20 @@ DSHCore/                   the harness. No AppKit, no SwiftUI — headlessly tes
   CommandTools.swift       run_shell_command, web_fetch, todo_write
   AgentTool.swift          subagents (agent types, failover across servers) and delegate
   Fleet/                   AgentFleet (servers, leases, health), roster, agent definitions, delegate
-  ProviderClients.swift    one factory: OpenAI-compatible routes and Amazon Bedrock
+  ProviderClients.swift    one factory: OpenAI-compatible routes, Guardian, and Amazon Bedrock
   AWS/                     SigV4, event streams, the AWS CLI (run, sign in, install), Bedrock setup
   Bedrock/                 the Converse client, its request mapping and per-model table
-  Permissions.swift        presets, path containment, shell gating
+  Guardian/                the Guardian sign-in client (session, 2FA, the harness v1 endpoint)
+  Permissions.swift        presets, path containment (multi-root), shell gating
   Plugins.swift            JSON manifests → tools
-  ProjectContext.swift     instruction files, memory, skill catalog, prompt assembly
+  ProjectContext.swift     instruction files (incl. .INFRASTRUCTURE.md), memory, skills, prompts
+  HarnessMemory.swift      the harness's own memory (app support) + save_memory/read_memory
+  ChatTools.swift          list_chats / read_chat — peering into adjacent conversations
+  GitSync.swift            fetch / ff-pull / push / rebase-or-report, fakeable git runner
+  Automations.swift        schedules (cron/interval/once), the store, OpenClaw import/export
+  APIServer.swift          the loopback OpenAI-shaped endpoint over the default model
+  TaskQueue.swift          the durable work list (attachments + long prompts ride along)
+  Compaction.swift         the summarizer, with a Key facts section the harness remembers
   PTY.swift                forkpty + a shell
   TerminalEmulator.swift   VT100/xterm-subset screen
   EditorBuffer.swift       open file, dirty tracking, external-change resolution
@@ -383,16 +460,18 @@ DSHCore/                   the harness. No AppKit, no SwiftUI — headlessly tes
   Markdown.swift           block parser (SwiftUI only does inline)
 
 DSHMacApp/                 SwiftUI
-  DSHMacApp.swift          @main, menus, root split view, toolbar
-  AppModel.swift           project, mode, sheets
-  AppTransport.swift       engine per session, events → timeline, plugins, context
+  DSHMacApp.swift          @main, menus, the daemon (window-close stays up), menu-bar brain
+  AppModel.swift           project + extra folders, modes, the automation tick, the API server
+  AppTransport.swift       engine per session, events → timeline, git sync, drafts, auto-naming
+  GuardianService.swift    Guardian sign-in → ordinary routes (token in the Keychain)
   SessionVM.swift          one ordered timeline of messages, tool calls, and todos
   ConversationLog.swift    per-session JSON transcripts
+  AutomationsView.swift    the calendar, the library, and the editor
   SetupWizard.swift        first-run configuration
-  ModelRoutesSettings.swift  Settings › Models: the fleet card and a row per route
+  ModelRoutesSettings.swift  Settings › Models: the fleet card, a row per route, Guardian sign-in
   RouteMenu.swift          the main-model / subagent-server menu shared by toolbar and composer
   Bedrock/                 the Amazon Bedrock guide, its model picker and its backend
-  ChatView.swift           transcript, gates, composer
+  ChatView.swift           transcript, gates, composer (drafts, throttled streaming markdown)
   CodeModeView.swift       tree | editor + terminal | agent
   CodeEditor.swift         NSTextView, line-number ruler
   TerminalView.swift       grid rendering, selection, key encoding
@@ -405,7 +484,7 @@ DSHMacApp/                 SwiftUI
 swift test
 ```
 
-1,110 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
+1,065 tests: the engine loop (tool round-trips, denials, iteration budget, usage accounting,
 cancellation), permission containment, the Qwen XML fallback, glob, markdown, plugin interpolation
 and quoting, prompt assembly, editor-buffer conflict resolution, 34 over the terminal emulator, and 8
 that spawn a real shell on a real pty and assert on what lands on the screen — plus the fleet (server
@@ -431,8 +510,6 @@ Verified on macOS 14+ / Apple Silicon:
 
 - **The terminal is a subset, not a full VT.** Shells, build logs, `git`, and `less` are fine; a
   full-screen curses app that relies on mouse reporting or sixel is not.
-- **No image attachments.** The old client had them against the harness's attachment API; nothing has
-  replaced that here yet.
 - **Amazon Bedrock and the multi-server fleet are covered by tests against fakes** (a scripted AWS CLI,
   stubbed HTTP, two fake model servers); the first run against real AWS and a second real Spark is yours.
 - **Spark model switching (`/swap`) drives one Spark** — the one set up in Settings ▸ Spark. A second Spark

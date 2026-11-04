@@ -239,6 +239,7 @@ struct SetupWizard: View {
         case .openAI: "OpenAI's hosted API. Needs an API key."
         case .openRouter: "Many hosted models behind one API. Needs an API key."
         case .bedrock: "Claude, Amazon Nova, Llama and more through your AWS account. Set up by its own guide."
+        case .guardian: "Your Guardian account's models, through guardian.503cm.com. Set up by signing in (Settings › Models › Sign in to Guardian…)."
         }
     }
 
@@ -314,6 +315,8 @@ struct SetupWizard: View {
             "Paste an API key. It is stored in your login keychain, never in the app's preferences file."
         case .bedrock:
             "Amazon Bedrock is set up by its own guide: Settings ▸ Models ▸ Add Amazon Bedrock…"
+        case .guardian:
+            "Guardian is configured by signing in — no address needed."
         }
     }
 
@@ -324,6 +327,7 @@ struct SetupWizard: View {
         case .openAI: "https://api.openai.com/v1"
         case .openRouter: "https://openrouter.ai/api/v1"
         case .bedrock: "https://bedrock-runtime.us-east-1.amazonaws.com"
+        case .guardian: "guardian.503cm.com (set by sign-in)"
         }
     }
 
@@ -364,6 +368,8 @@ struct SetupWizard: View {
             "Check the key is current and has credit or quota on the account."
         case .bedrock:
             "Sign in to AWS again and check that your account is allowed to use the model."
+        case .guardian:
+            "Sign in again from Settings › Models — the token may have expired."
         }
     }
 
@@ -755,6 +761,8 @@ struct SetupWizard: View {
             host = "https://openrouter.ai/api/v1"; port = ""; modelID = "qwen/qwen3-32b"
         case .bedrock:
             host = "https://bedrock-runtime.us-east-1.amazonaws.com"; port = ""; modelID = ""
+        case .guardian:
+            host = "https://guardian.503cm.com/api/harness/v1"; port = ""; modelID = ""
         }
     }
 

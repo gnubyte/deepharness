@@ -1,6 +1,104 @@
 import SwiftUI
 import DSHCore
 
+/// Guardian (guardian.503cm.com): sign in and every model the account may use
+/// becomes an ordinary route — it coexists with the local DGX Spark and
+/// Bedrock, either one able to lead while the other takes subagent work.
+/// Selecting a Spark model never touches the Guardian selection: they are
+/// independent routes.
+struct GuardianCard: View {
+    @Environment(AppModel.self) private var model
+    @State private var address = GuardianService.defaultURL
+    @State private var email = ""
+    @State private var password = ""
+    @State private var twoFactorCode = ""
+    @State private var busy = false
+
+    var body: some View {
+        @Bindable var guardian = model.guardian
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "shield.lefthalf.filled").foregroundStyle(.tint)
+                    Text("Guardian").font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    if model.guardian.isSignedIn {
+                        Text("Signed in as \(model.guardian.accountEmail ?? "")")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if model.guardian.isSignedIn {
+                    HStack {
+                        Button("Refresh models") {
+                            Task { await model.guardian.refreshModels() }
+                        }
+                        .controlSize(.small)
+                        .disabled(model.guardian.isRefreshing)
+                        if model.guardian.isRefreshing {
+                            ProgressView().controlSize(.small)
+                        }
+                        Spacer()
+                        Button("Sign Out", role: .destructive) { model.guardian.signOut() }
+                            .controlSize(.small)
+                    }
+                    Text("Guardian's models are in the route list below as independent routes — pick any of them as the main model, or flag one for subagents; the local Spark keeps its own selection.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if model.guardian.pendingTwoFactorChallenge != nil {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Enter the 6-digit code from your authenticator app for \(model.guardian.pendingTwoFactorEmail ?? email):")
+                            .font(.caption)
+                        HStack {
+                            TextField("123456", text: $twoFactorCode)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 13, design: .monospaced))
+                                .frame(width: 120)
+                            Button("Verify") {
+                                busy = true
+                                Task {
+                                    _ = await model.guardian.verifyTwoFactor(code: twoFactorCode)
+                                    busy = false
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(twoFactorCode.count != 6 || busy)
+                            Button("Cancel") { model.guardian.cancelTwoFactor() }
+                                .controlSize(.small)
+                        }
+                    }
+                } else {
+                    HStack {
+                        TextField("https://guardian.503cm.com", text: $address)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 200)
+                        TextField("email", text: $email)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 160)
+                        SecureField("password", text: $password)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 120)
+                        Button(busy ? "Signing in…" : "Sign In") {
+                            busy = true
+                            Task {
+                                _ = await model.guardian.signIn(address: address, email: email, password: password)
+                                busy = false
+                                password = ""
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(email.isEmpty || password.isEmpty || busy)
+                    }
+                }
+                if let error = model.guardian.lastError {
+                    Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                }
+            }
+            .padding(8)
+        }
+    }
+}
+
 /// Settings › Models: the routes, which one is the *main model* (the conductor: the chat talks to it
 /// and it hands out subagent tasks), and which ones serve subagents (the fleet). Two DGX Sparks and
 /// Amazon Bedrock can all be at work at once, and swapping who leads is one click.
@@ -23,11 +121,14 @@ struct ProviderSettings: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                ProviderRoutesList(results: results,
-                                   edit: { editing = $0 },
-                                   remove: { removing = $0 },
-                                   report: { status = $0 })
-                    .padding(20)
+                VStack(spacing: 14) {
+                    GuardianCard()
+                    ProviderRoutesList(results: results,
+                                       edit: { editing = $0 },
+                                       remove: { removing = $0 },
+                                       report: { status = $0 })
+                }
+                .padding(20)
             }
             Divider()
             footer
@@ -305,10 +406,17 @@ struct RouteRow: View {
                         .controlSize(.small)
                         .help("Sign in to AWS again — for when the sign-in has run out.")
                 }
-                Button("Edit…", action: edit).controlSize(.small)
-                Button(role: .destructive, action: remove) { Image(systemName: "trash") }
-                    .controlSize(.small)
-                    .help("Remove this route")
+                if provider.kind == .guardian {
+                    // Managed by the Guardian sign-in above: the token lives in
+                    // the Keychain and the model list comes from the account.
+                    Text("Managed by Guardian sign-in")
+                        .font(.caption).foregroundStyle(.tertiary)
+                } else {
+                    Button("Edit…", action: edit).controlSize(.small)
+                    Button(role: .destructive, action: remove) { Image(systemName: "trash") }
+                        .controlSize(.small)
+                        .help("Remove this route")
+                }
             }
         }
         .padding(12)

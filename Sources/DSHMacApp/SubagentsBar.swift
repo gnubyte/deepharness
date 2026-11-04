@@ -3,7 +3,8 @@ import DSHCore
 
 /// Subagents working in this chat, above the composer: how many, on which model servers, and — expanded —
 /// what each is doing right now. With two DGX Sparks and Amazon Bedrock in the fleet this is where the
-/// hardware interleaving is visible: "Spark 2 ×2 · Amazon Bedrock ×1".
+/// hardware interleaving is visible: "Spark 2 ×2 · Amazon Bedrock". A count is printed only
+/// when two or more subagents share a server.
 struct SubagentsBar: View {
     @Environment(AppModel.self) private var model
     let session: SessionVM
@@ -68,7 +69,8 @@ struct SubagentsBar: View {
         return "\(count) \(kind)\(count == 1 ? "" : "s")"
     }
 
-    /// "Spark 2 ×2 · Amazon Bedrock ×1" — where the running subagents are, busiest first.
+    /// "Spark 2 ×2 · Amazon Bedrock" — where the running subagents are, busiest first.
+    /// A count appears only when two or more subagents share a server.
     private func summary(_ runs: [AgentRun]) -> String {
         guard !runs.isEmpty else { return "" }
         var counts: [String: Int] = [:]

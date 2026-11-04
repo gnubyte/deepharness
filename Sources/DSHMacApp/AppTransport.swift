@@ -57,6 +57,24 @@ public final class AppTransport {
     static let maxAutoContinuations = 3
     /// Where the task queue is persisted.
     @ObservationIgnored private let queueFile: URL
+    /// The harness's persistent memory — facts that outlive any one chat,
+    /// stored with the app (never inside a project folder).
+    @ObservationIgnored public let memory: HarnessMemory
+    /// The git-keep-in-sync layer for open projects (fakeable in tests).
+    @ObservationIgnored var gitSync: GitSync?
+    /// Workspace path → when its branch was last auto-synced (throttles the
+    /// fetch to one per few minutes of work, not one per message).
+    @ObservationIgnored private var lastGitSyncAt: [String: Date] = [:]
+    /// Chats where the user (or a prompt) declined the automatic git sync.
+    @ObservationIgnored private var gitSyncDeclined: Set<String> = []
+    /// Chats whose titles the user set by hand — auto-naming never overrides.
+    @ObservationIgnored private var userRenamed: Set<String> = []
+    /// Chats the harness has already auto-named (it names once, not every turn).
+    @ObservationIgnored private var autoNamed: Set<String> = []
+    /// Per-chat unsent prompt drafts, persisted as the user types.
+    @ObservationIgnored private let draftsDirectory: URL
+    /// Automations currently running (by id), so two ticks never double-run.
+    @ObservationIgnored public private(set) var runningAutomations: Set<String> = []
     /// How engines retry model calls that fail transiently (tests shorten it).
     @ObservationIgnored var retryPolicy: RetryPolicy = .standard
     /// Pause before re-running a goal round that failed on an error, by how
@@ -107,6 +125,9 @@ public final class AppTransport {
     @ObservationIgnored private var queueFollowedSession: String?
     /// Per chat, the route a retry switched the engine to mid-run.
     @ObservationIgnored private var retryRoute: [String: ProviderProfile] = [:]
+    /// Per chat, the adjacent-chat snapshot the peer tools read (refreshed
+    /// each turn on the main actor; the tools run on a pool thread).
+    @ObservationIgnored private var chatBoxes: [String: ChatDirectoryBox] = [:]
     /// The runner's loop, while one exists (running, or winding down after Stop).
     private var queueLoop: Task<Void, Never>?
     /// Bumped on every start, so a loop that is still winding down after a
@@ -168,15 +189,20 @@ public final class AppTransport {
 
     public init(config: AppConfig, log: ConversationLog = .shared, systemPrompt: String? = nil,
                 queueFile: URL? = nil, skillLocations: SkillLocations = .standard,
-                vault: CredentialVault? = nil) {
+                vault: CredentialVault? = nil, memory: HarnessMemory? = nil) {
         self.config = config
         self.log = log
         self.basePrompt = systemPrompt ?? Self.defaultSystemPrompt
         self.skillLocations = skillLocations
         self.vault = vault ?? CredentialVault(directory: skillLocations.appSupport)
         self.queueFile = queueFile ?? Self.defaultQueueFile
+        self.memory = memory ?? HarnessMemory(appSupport: skillLocations.appSupport)
+        self.draftsDirectory = skillLocations.appSupport.appendingPathComponent("drafts", isDirectory: true)
+        self.gitSync = GitSync(runner: GitSync.processRunner())
         // Ship-with-the-app skills (godot-debugging, …) refresh on every launch.
         try? SkillBuiltin.install(into: skillLocations.builtinSkills)
+        // Harness memory exists from the first launch; scaffold is cheap.
+        try? self.memory.setUp()
         reload()
         refreshDrafts()
         loadQueue()
@@ -211,19 +237,34 @@ public final class AppTransport {
     - Prefer `edit` over `write_file` for changes to an existing file; rewriting a whole file loses work.
     - Paths are resolved against the project folder. Stay inside it unless the user asks otherwise.
     - When you finish, summarize what changed in a few lines. Reference files as `path:line`.
+    - When you learn something worth keeping — a fact about the user, a person, \
+    a project convention, a decision — save it with `save_memory`. Memory lives with \
+    the harness (all chats, all projects), never in the code folder.
+    - `list_chats` / `read_chat` let you look at the user's other conversations: \
+    when context they already gave elsewhere would answer a question, look instead of asking.
     """
 
     // MARK: - Project
 
+    /// Additional folders the agent works across, alongside the primary root.
+    /// Empty in single-folder sessions.
+    @ObservationIgnored private var additionalRoots: [URL] = []
+
     /// Adopt a project folder: reload its plugins, instructions, and skills.
-    public func adoptProject(_ url: URL?) {
+    /// `additional` are extra folders the agent also works in (multi-folder
+    /// sessions): their instruction files load too, and their paths become
+    /// part of the permission boundary.
+    public func adoptProject(_ url: URL?, additional: [URL] = []) {
         guard let url else {
             projectContext = nil
+            additionalRoots = []
             plugins = []
             pluginErrors = []
             return
         }
-        projectContext = ProjectContext.load(root: url)
+        let extras = additional.filter { $0.standardizedFileURL != url.standardizedFileURL }
+        additionalRoots = extras
+        projectContext = ProjectContext.load(root: url, additionalRoots: extras)
         let loaded = PluginLoader.load(project: url)
         plugins = loaded.plugins
         pluginErrors = loaded.errors
@@ -234,7 +275,7 @@ public final class AppTransport {
 
     /// Re-read instructions, skills, and plugins from disk.
     public func refreshProjectContext() {
-        adoptProject(projectContext?.root)
+        adoptProject(projectContext?.root, additional: additionalRoots)
     }
 
     // MARK: - Sessions
@@ -272,6 +313,7 @@ public final class AppTransport {
             // The next chat may be an archived one whose timeline was released.
             if let next = selected { hydrate(next) }
         }
+        chatBoxes.removeValue(forKey: id)
     }
 
     // MARK: - Task queue
@@ -327,11 +369,12 @@ public final class AppTransport {
     // MARK: Queue CRUD
 
     @discardableResult
-    public func queueAdd(_ title: String, details: String = "", atFront: Bool = false) -> QueueTask {
+    public func queueAdd(_ title: String, details: String = "", atFront: Bool = false,
+                         attachments: [MessageAttachment]? = nil) -> QueueTask {
         // The task runs in the project it was queued in, even if the app has
         // moved on to another project by the time its turn comes.
         let cwd = projectContext?.root.path ?? selected?.cwd
-        let t = queue.add(title, details: details, atFront: atFront, cwd: cwd)
+        let t = queue.add(title, details: details, atFront: atFront, cwd: cwd, attachments: attachments)
         return queue[t.id] ?? t
     }
 
@@ -638,8 +681,9 @@ public final class AppTransport {
     }
 
     /// Post-goal cleanup: reset the session's live state and, if the task was
-    /// cancelled mid-way, put it back in the queue exactly once.
-    private func finishTaskSession(_ vm: SessionVM, taskID: String) {
+    /// cancelled mid-way, put it back in the queue exactly once. `taskID` is
+    /// nil when the session wasn't working a queue task (an automation chat).
+    private func finishTaskSession(_ vm: SessionVM, taskID: String?) {
         vm.running = false
         vm.stopping = false
         vm.goal = nil
@@ -651,11 +695,11 @@ public final class AppTransport {
         queueSessions[vm.id] = nil
         // The task is over: nothing it started in the background keeps going.
         backgroundPools[vm.id]?.stopAll()
-        if queueActiveTaskID == taskID { queueActiveTaskID = nil }
+        if let taskID, queueActiveTaskID == taskID { queueActiveTaskID = nil }
         log.touch(vm.id)
         vm.updatedAt = .now
         sessions.sort { $0.updatedAt > $1.updatedAt }
-        if queue.task(taskID)?.status == .running {
+        if let taskID, queue.task(taskID)?.status == .running {
             queue.markStopped(taskID)
         }
         // The chat was deleted mid-run: the task starts a fresh one next time.
@@ -666,7 +710,8 @@ public final class AppTransport {
     private func runTaskGoal(vm: SessionVM, taskID: String, resuming: Bool) async {
         guard let task = queue.task(taskID) else { return }
         do {
-            let outcome = try await goalLoop(vm, goal: task.goalText, auto: true, resuming: resuming)
+            let outcome = try await goalLoop(vm, goal: task.goalText, auto: true, resuming: resuming,
+                                             attachments: task.attachments ?? [])
             // Deleted (skipped) while the last round finished: keep that verdict.
             guard queue.task(taskID)?.status == .running else { return }
             switch outcome {
@@ -721,7 +766,14 @@ public final class AppTransport {
     }
 
     public func renameSession(_ id: String, to title: String) {
+        renameSession(id, to: title, byUser: true)
+    }
+
+    /// Rename a chat. `byUser: false` is the harness's own auto-naming, which
+    /// a later manual rename may override (and which never overrides one).
+    public func renameSession(_ id: String, to title: String, byUser: Bool) {
         guard let vm = sessions.first(where: { $0.id == id }) else { return }
+        if byUser { userRenamed.insert(id) }
         vm.title = title
         log.touch(id, title: title)
     }
@@ -833,19 +885,28 @@ public final class AppTransport {
     private func engine(for sessionID: String, vm: SessionVM, client: any LLMClient,
                         window: Int, thinking: ThinkingLevel?, skillState: SkillState) -> Engine {
         let workspace = vm.workspaceURL ?? FileManager.default.homeDirectoryForCurrentUser
-        let policy = PermissionPolicy(preset: vm.preset, workspaceRoot: workspace)
+        let extras = additionalRoots
+        let policy = PermissionPolicy(preset: vm.preset, workspaceRoot: workspace, additionalRoots: extras)
         let model = (client as? any ProviderClient)?.profile.model ?? "model"
 
         // Project instructions + skills + plugin tools are what make this a
         // harness rather than a chat window.
-        let context = projectContext?.root == workspace ? projectContext : ProjectContext.load(root: workspace)
-        let environment = ProjectContext.environmentBlock(workspace: workspace, model: model, preset: vm.preset)
+        let context = (projectContext?.root == workspace)
+            ? projectContext
+            : ProjectContext.load(root: workspace, additionalRoots: extras)
+        let environment = ProjectContext.environmentBlock(workspace: workspace, model: model,
+                                                          preset: vm.preset, additionalWorkspaces: extras)
         var prompt = basePrompt
         if let context {
             prompt += "\n\n" + context.promptSupplement(environment: environment, includeSkills: false)
         } else {
             prompt += "\n\n" + environment
         }
+        // The harness's own memory: durable facts about the user and their
+        // projects that outlive any one chat (stored with the app, never in
+        // the code folder).
+        let memoryBlock = memory.promptBlock()
+        if !memoryBlock.isEmpty { prompt += "\n\n" + memoryBlock }
         // Skills: always-on rules, the ones the user selected for this chat,
         // and a catalog the model can load from with `use_skill`.
         if !skillState.result.text.isEmpty { prompt += "\n\n" + skillState.result.text }
@@ -864,6 +925,16 @@ public final class AppTransport {
         var extra: [any ToolExecutor] = PluginLoader.tools(from: plugins, reserved: Set(builtins.names))
         if !skillState.active.isEmpty { extra.append(UseSkillTool(skills: skillState.active)) }
         extra.append(VaultSearchTool(vault: vault))
+        // The harness's memory: the model records what it thinks it will need
+        // (about the user, a person, a project) and can re-read what it knows.
+        extra.append(SaveMemoryTool(memory: memory))
+        extra.append(ReadMemoryTool(memory: memory))
+        // Peering into adjacent chats: a fresh snapshot each turn (see turn()),
+        // read by the tools from a thread-safe box.
+        let chatBox = chatBoxes[sessionID] ?? ChatDirectoryBox()
+        chatBoxes[sessionID] = chatBox
+        extra.append(ListChatsTool(directory: { [chatBox] in chatBox.get() }))
+        extra.append(ReadChatTool(directory: { [chatBox] in chatBox.get() }))
         extra.append(contentsOf: ToolRegistry.backgroundAgentTools())
         if vm.preset != .plan {
             extra.append(QueueAddTool(add: { [weak self] title, details, front, start in
@@ -1221,6 +1292,19 @@ public final class AppTransport {
                 }
             }
 
+        case .gitSync(let arg):
+            let lower = (arg ?? "").lowercased()
+            if lower == "off" || lower == "false" {
+                setGitSync(false, in: vm)
+            } else if lower == "on" || lower == "true" || lower.isEmpty {
+                setGitSync(true, in: vm)
+                if let workspace = vm.workspaceURL, lastGitSyncAt[workspace.path] == nil {
+                    lastGitSyncAt[workspace.path] = .distantPast   // sync on the very next turn
+                }
+            } else {
+                vm.note("Usage: `/git-sync on|off` — syncs the working branch with origin before turns (fetch, fast-forward when clean, push when ahead; never force).")
+            }
+
         case .agents:
             agentsCommand(vm)
 
@@ -1423,9 +1507,11 @@ public final class AppTransport {
     /// round after a pause; only `GoalProtocol.maxConsecutiveErrors` of them
     /// in a row end the goal (thrown). Cancellation throws `CancellationError`
     /// or returns `.stopped`.
-    private func goalLoop(_ vm: SessionVM, goal: String, auto: Bool, resuming: Bool = false) async throws -> GoalOutcome {
+    private func goalLoop(_ vm: SessionVM, goal: String, auto: Bool, resuming: Bool = false,
+                          attachments: [MessageAttachment] = []) async throws -> GoalOutcome {
         var state = SessionVM.GoalState(text: goal, round: 1)
         vm.goal = state
+        let goalStartedAt = Date()
         let awake = keepAwake("Working a goal")
         // Queue turns run outside runTurn, so clean up the same flags it does.
         defer {
@@ -1478,7 +1564,8 @@ public final class AppTransport {
             }
 
             do {
-                let result = try await turn(vm, modelText: modelText, displayText: displayText, attachments: [])
+                let result = try await turn(vm, modelText: modelText, displayText: displayText,
+                                            attachments: round == 1 ? attachments : [])
                 report(round, result.usage)
                 kickedOff = true
                 errorsInARow = 0
@@ -1488,11 +1575,13 @@ public final class AppTransport {
                 if !result.hitIterationLimit {
                     switch GoalProtocol.status(of: result.lastReplyText) {
                     case .complete:
-                        if !auto { notice("✅ Goal complete after \(round) round\(round == 1 ? "" : "s").") }
+                        if !auto {
+                            notice("✅ Goal complete after \(round) round\(round == 1 ? "" : "s") — elapsed \(Date().timeIntervalSince(goalStartedAt).formattedDuration).")
+                        }
                         return .complete
                     case .blocked(let why):
                         if !auto {
-                            notice("⏸ Goal paused — the agent needs you: \(why)\nReply, then send `/goal` to pick it back up.")
+                            notice("⏸ Goal paused after \(Date().timeIntervalSince(goalStartedAt).formattedDuration) — the agent needs you: \(why)\nReply, then send `/goal` to pick it back up.")
                         }
                         return .blocked(why)
                     case .working:
@@ -1558,11 +1647,19 @@ public final class AppTransport {
         }
         let userEntryID = vm.appendMessage(.user, displayText)
         log.recordItem(sessionID, kind: "user", text: displayText, toolName: nil, argSummary: nil, output: nil, isError: false)
-        if vm.title == "New chat" {
+        // A working title immediately (the first line), then the model names
+        // the chat properly once it replies — unless the user renamed it.
+        if vm.title == "New chat", !userRenamed.contains(sessionID) {
             let first = displayText.split(separator: "\n").first.map(String.init) ?? displayText
             let title = String(first.prefix(48))
-            if !title.isEmpty { renameSession(sessionID, to: title) }
+            if !title.isEmpty { renameSession(sessionID, to: title, byUser: false) }
         }
+
+        // Keep the branch level with origin before work begins (unless the
+        // user or the prompt asked us not to).
+        await syncGitIfNeeded(vm, prompt: modelText)
+        // Fresh adjacent-chats snapshot for the peer tools this turn.
+        chatBoxes[sessionID]?.set(chatDirectory(excluding: sessionID))
 
         // Re-read what the server serves right now: the Spark can swap models
         // between turns, and the window/model id must follow.
@@ -1626,6 +1723,13 @@ public final class AppTransport {
         vm.retry = nil
         transcripts[sessionID] = result.messages
         vm.lastUsage = result.usage
+        // Name the chat from what it turned out to be about (async, best-effort;
+        // once per chat, never for a queue task's own 🚀 chat).
+        if queueSessions[sessionID] == nil,
+           let lastAssistant = result.messages.last(where: { $0.role == .assistant && ($0.content ?? "").count > 40 })?.content,
+           !userRenamed.contains(sessionID) {
+            autoNameIfNeeded(vm, userText: modelText, replyText: lastAssistant)
+        }
         // How full the context is now: server-reported prompt tokens when
         // available, otherwise a character-based estimate of the whole
         // request (system prompt + transcript).
@@ -1919,6 +2023,188 @@ public final class AppTransport {
         }
     }
 
+    // MARK: - Adjacent chats
+
+    /// The other conversations, as `list_chats`/`read_chat` show them. The
+    /// current chat is excluded — an agent already knows what it said.
+    func chatDirectory(excluding sessionID: String) -> ChatDirectory {
+        let rows = sessions.filter { $0.id != sessionID }.map { vm -> ChatSummary in
+            ChatSummary(id: vm.id, title: vm.title, project: vm.cwd, updatedAt: vm.updatedAt,
+                        running: vm.running, lastMessage: vm.entries.last(where: { $0.message != nil })
+                            .flatMap { entry -> String? in
+                                guard case .message(let body) = entry.kind,
+                                      body.role == .user || body.role == .assistant else { return nil }
+                                return body.text
+                            })
+        }
+        // Reader: replay a chat's entries to text without touching its model
+        // transcript. A running chat is still readable — it is a snapshot.
+        let reader: @Sendable (String) -> ChatTranscript? = { [weak self] id in
+            guard let self else { return nil }
+            return MainActor.assumeIsolated {
+                guard let vm = self.sessions.first(where: { $0.id == id }) else { return nil }
+                if !vm.loaded { self.hydrate(vm) }
+                var messages: [(role: String, text: String)] = []
+                for entry in vm.entries {
+                    switch entry.kind {
+                    case .message(let body) where body.role == .user || body.role == .assistant:
+                        messages.append((body.role.rawValue, body.text))
+                    case .tool(let activity):
+                        messages.append(("tool", "\(activity.name)(\(activity.preview)) → \(activity.summary ?? "?")"))
+                    default:
+                        continue
+                    }
+                }
+                return ChatTranscript(id: vm.id, title: vm.title, messages: messages)
+            }
+        }
+        return ChatDirectory(chats: rows, reader: reader)
+    }
+
+    // MARK: - Git sync
+
+    /// Keep the workspace's branch level with origin before work begins.
+    /// Throttled to one attempt per workspace per few minutes; skipped when
+    /// the setting is off, the chat declined, or the prompt asked to.
+    func syncGitIfNeeded(_ vm: SessionVM, prompt: String) async {
+        guard config.gitAutoSync, !gitSyncDeclined.contains(vm.id),
+              !GitSync.promptDeclinesSync(prompt),
+              let workspace = vm.workspaceURL,
+              FileManager.default.fileExists(atPath: workspace.appendingPathComponent(".git").path),
+              let gitSync else { return }
+        let path = workspace.path
+        if let last = lastGitSyncAt[path], Date().timeIntervalSince(last) < 300 { return }
+        lastGitSyncAt[path] = Date()
+        let report = await gitSync.check(workspace: workspace)
+        if let notice = report.notice {
+            vm.note(notice)
+            log.recordItem(vm.id, kind: "notice", text: notice, toolName: nil, argSummary: nil,
+                           output: nil, isError: false)
+        }
+    }
+
+    /// `/git-sync off|on` for this chat.
+    public func setGitSync(_ on: Bool, in vm: SessionVM) {
+        if on { gitSyncDeclined.remove(vm.id) } else { gitSyncDeclined.insert(vm.id) }
+        vm.note("Automatic git sync with origin is **\(on ? "on" : "off")** for this chat"
+                + (on ? "." : " — the branch will not be fetched, pulled or pushed before turns."))
+    }
+
+    // MARK: - Drafts
+
+    /// Persist an unsent prompt so a restart (or an accidental window close)
+    /// never loses typing. Called debounced from the composer.
+    public func saveDraft(_ sessionID: String, _ text: String) {
+        let url = draftsDirectory.appendingPathComponent("\(sessionID).txt")
+        if text.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+        } else {
+            try? FileManager.default.createDirectory(at: draftsDirectory, withIntermediateDirectories: true)
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    public func savedDraft(_ sessionID: String) -> String {
+        let url = draftsDirectory.appendingPathComponent("\(sessionID).txt")
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    public func clearDraft(_ sessionID: String) {
+        saveDraft(sessionID, "")
+    }
+
+    // MARK: - Automatic chat names
+
+    /// Name a new chat after the model's reply: a few words describing the
+    /// work, not the first line of the prompt. Runs once per chat (a queue
+    /// task's "🚀" chat and a renamed chat are left alone), and the prefix
+    /// title stands if the naming call fails.
+    func autoNameIfNeeded(_ vm: SessionVM, userText: String, replyText: String) {
+        guard !userRenamed.contains(vm.id), !autoNamed.contains(vm.id) else { return }
+        autoNamed.insert(vm.id)
+        guard let profile = config.activeProvider else { return }
+        let sessionID = vm.id
+        let user = String(userText.prefix(1_500))
+        let reply = String(replyText.prefix(1_500))
+        Task { @MainActor [weak self] in
+            guard let self, !self.userRenamed.contains(sessionID) else { return }
+            let request = LLMRequest(
+                systemPrompt: """
+                You name chat sessions. Reply with a 3-6 word title for the conversation: \
+                plain words, no quotes, no punctuation at the end, no "Chat about". \
+                Name the work, not the greeting.
+                """,
+                messages: [.user("User's first message:\n\(user)\n\nAssistant's reply:\n\(reply)\n\nTitle:")],
+                tools: [], model: profile.model, maxTokens: 24, thinking: .off)
+            var title = ""
+            do {
+                for try await event in ProviderClients.make(profile).stream(request) {
+                    if case .text(let delta) = event { title += delta }
+                }
+            } catch {
+                return  // naming is best-effort; the prefix title stands
+            }
+            var cleaned = title
+                .replacingOccurrences(of: "\"", with: "")
+                .replacingOccurrences(of: "Title:", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ".…-—*#"))
+            cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Multi-line or absurd answers are ignored, not truncated into nonsense.
+            guard cleaned.count >= 3, cleaned.count <= 60, !cleaned.contains("\n") else { return }
+            guard !self.userRenamed.contains(sessionID) else { return }
+            self.renameSession(sessionID, to: cleaned, byUser: false)
+        }
+    }
+
+    // MARK: - Automations
+
+    /// Run one automation now, in its own chat, like a queue task. Called by
+    /// the scheduler when a schedule is due and by a manual "Run now".
+    public func runAutomation(_ automation: Automation) {
+        guard !runningAutomations.contains(automation.id) else { return }
+        runningAutomations.insert(automation.id)
+        let startedAt = Date()
+        let vm = newSession(cwd: automation.projectPath, select: false)
+        renameSession(vm.id, to: "⏰ \(automation.name)", byUser: false)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.runningAutomations.remove(automation.id)
+                self.finishTaskSession(vm, taskID: nil)
+            }
+            do {
+                let outcome = try await self.goalLoop(vm, goal: automation.prompt, auto: true,
+                                                      attachments: automation.attachments ?? [])
+                let duration = Date().timeIntervalSince(startedAt)
+                switch outcome {
+                case .complete:
+                    self.schedulerRecord(automation.id, "complete", duration, vm.id, nil)
+                case .blocked(let why):
+                    self.schedulerRecord(automation.id, "blocked", duration, vm.id, why)
+                case .stopped:
+                    self.schedulerRecord(automation.id, "stopped", duration, vm.id, nil)
+                }
+            } catch {
+                let detail = Self.describe(error)
+                self.schedulerRecord(automation.id, "failed", Date().timeIntervalSince(startedAt), vm.id, detail)
+                if !Task.isCancelled {
+                    vm.note(detail, role: .error)
+                }
+            }
+        }
+        _ = task
+    }
+
+    private func automationDidRecord(_ id: String, _ status: String,
+                                     _ duration: TimeInterval, _ sessionID: String, _ detail: String?) {
+        schedulerRecord(id, status, duration, sessionID, detail)
+    }
+
+    /// The scheduler calls back here to persist a run record; the app layer
+    /// sets this after constructing the scheduler (keeps DSHMacApp decoupled).
+    @ObservationIgnored public var schedulerRecord: (String, String, TimeInterval, String, String?) -> Void = { _, _, _, _, _ in }
+
     // MARK: - Stopping
 
     public func stopSession(_ id: String) {
@@ -2075,12 +2361,18 @@ public final class AppTransport {
             used = recorded
         } else {
             // Fresh session: no turn has run, so estimate from the (empty)
-            // transcript plus whatever the user is about to send. Use the
-            // cached system prompt when the engine has been built; otherwise
-            // the base prompt (project context is added at first turn).
+            // transcript plus whatever the user is about to send. The estimate
+            // is cached until the transcript actually changes — recomputing it
+            // per keystroke would walk the whole transcript while the user types.
             let prompt = systemPrompts[sessionID] ?? basePrompt
-            used = Self.estimateTokens(systemPrompt: prompt,
-                                       messages: transcripts[sessionID] ?? [])
+            let messages = transcripts[sessionID] ?? []
+            let stamp = messages.count * 1_000_003 + messages.reduce(0) { $0 + ($1.content?.count ?? 0) }
+            if cachedEstimate?.0 == sessionID && cachedEstimate?.1 == stamp, let value = cachedEstimate?.2 {
+                used = value
+            } else {
+                used = Self.estimateTokens(systemPrompt: prompt, messages: messages)
+                cachedEstimate = (sessionID, stamp, used)
+            }
         }
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
@@ -2088,6 +2380,9 @@ public final class AppTransport {
         }
         return used
     }
+
+    /// (sessionID, transcript stamp, estimate) — see `contextUsed`.
+    @ObservationIgnored private var cachedEstimate: (String, Int, Int)?
 
     /// Rough token count for a system prompt + message list.
     ///
@@ -2152,6 +2447,11 @@ public final class AppTransport {
         guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
         hydrate(vm)
         transcripts[sessionID] = newMessages
+        // The summary's "Key facts" go to the harness's memory — what one long
+        // conversation learned about the user or project outlives it, and is
+        // offered to every later chat (never written into the code folder).
+        let facts = Compaction.keyFacts(from: summary)
+        if !facts.isEmpty { memory.recordKeyFacts(facts) }
         // Reset the gauge: the model now carries a small context.
         let prompt = systemPrompts[sessionID] ?? basePrompt
         vm.contextUsed = TokenEstimate.request(systemPrompt: prompt, messages: newMessages)

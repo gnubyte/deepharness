@@ -83,6 +83,33 @@ struct SidebarView: View {
                     Button("Close Project") { model.closeProject() }
                 }
             }
+            // Additional folders the agent also works across.
+            ForEach(model.additionalProjects, id: \.standardizedFileURL) { extra in
+                HStack(spacing: 6) {
+                    Image(systemName: "folder").foregroundStyle(.tint.opacity(0.6))
+                    Text(extra.lastPathComponent)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                    Spacer()
+                    Button {
+                        model.removeFolder(extra)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove \(extra.lastPathComponent) from the working set")
+                }
+                .help(extra.path)
+                .contextMenu {
+                    Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([extra]) }
+                    Button("Copy Path") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(extra.path, forType: .string)
+                    }
+                }
+            }
 
             Button {
                 model.chooseProject()
@@ -91,6 +118,17 @@ struct SidebarView: View {
                     .font(.system(size: 12))
             }
             .buttonStyle(.plain)
+
+            if model.project != nil {
+                Button {
+                    model.addFolder()
+                } label: {
+                    Label("Add Folder to Session…", systemImage: "plus.square.on.square")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.plain)
+                .help("Add another folder the agent works across (⌘⇧O)")
+            }
 
             let recents = model.config.liveRecentProjects.filter { $0 != model.project }
             if !recents.isEmpty {
