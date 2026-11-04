@@ -43,6 +43,8 @@ struct SettingsView: View {
 
 private struct GeneralSettings: View {
     @Environment(AppModel.self) private var model
+    @State private var exporting = false
+    @State private var exportStatus: String?
 
     var body: some View {
         Form {
@@ -114,6 +116,23 @@ private struct GeneralSettings: View {
                 }
             }
 
+            Section("Backup & Export") {
+                LabeledContent {
+                    Button(exporting ? "Exporting…" : "Export Everything…") { chooseExportDestination() }
+                        .disabled(exporting)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Full backup: chats, skills, memory, vault, keychain, automations, settings, OpenClaw")
+                        Text("Writes a timestamped folder + zip. Includes both the Vision and DSHMac data folders, keychain secrets, preference plists, and OpenClaw's durable state (skills, memory, secrets, credentials, cron — never the caches).")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let exportStatus {
+                    Text(exportStatus).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             Section("Setup") {
                 LabeledContent("Configuration wizard") {
                     Button("Run Again…") { model.showWizard = true }
@@ -129,6 +148,43 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func chooseExportDestination() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Export Here"
+        panel.message = "Choose where the backup folder and zip are written (a thumb drive works)."
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        exporting = true
+        exportStatus = "Exporting to \(folder.path)…"
+        Task.detached(priority: .userInitiated) {
+            do {
+                let manifest = try BackupExport.exportEverything(to: folder)
+                let mb = ByteCountFormatter.string(fromByteCount: manifest.totalBytes, countStyle: .file)
+                let files = manifest.sections.reduce(0) { $0 + $1.files }
+                var summary = "Done — \(files) files, \(mb)"
+                for section in manifest.sections { summary += "\n· \(section.name): \(section.files) files" }
+                if let zipName = manifest.zippedPath { summary += "\nZip: \(zipName)" }
+                if !manifest.errors.isEmpty { summary += "\n\(manifest.errors.count) warning(s) — see manifest.json" }
+                await MainActor.run {
+                    exporting = false
+                    exportStatus = summary
+                    if let zipName = manifest.zippedPath {
+                        NSWorkspace.shared.activateFileViewerSelecting([folder.appendingPathComponent(zipName)])
+                    } else {
+                        NSWorkspace.shared.activateFileViewerSelecting([folder])
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    exporting = false
+                    exportStatus = "Export failed: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 }
 

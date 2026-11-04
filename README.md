@@ -269,6 +269,20 @@ from what it turned out to be about. Renaming by hand sticks.
 Long chats also compact automatically at 75% of the window (keeping up to ~96K recent tokens verbatim),
 including in the middle of one long tool-heavy turn.
 
+## Backup & export
+
+Settings ▸ General ▸ Backup & Export → "Export Everything…" writes a timestamped
+folder + zip containing: both app-support homes (Vision and DSHMac — chats,
+skills, harness memory, the credential vault, automations, task queue,
+attachments, checkpoints), the keychain items (vault blobs and provider API
+keys, base64 in `keychain/items.json`), the preference plists for both bundle
+IDs, and OpenClaw's durable state from `~/.openclaw` — skills, memory,
+secrets, credentials, service-env, identity, cron, tasks, flows, agents'
+config, and workspace root files + skills. OpenClaw's caches (workspace
+sessions, browser profile, npm, tmp, media, logs) are deliberately excluded.
+A `manifest.json` records every section's file count and size, and any
+keychain items that couldn't be read.
+
 ## Memory and knowledge files
 
 Because this app assembles the prompt itself, instruction files are simply read and injected — no
