@@ -39,7 +39,7 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/DSH.app/Contents/Info.plist)"
+          SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/Vision.app/Contents/Info.plist)"
           # Pad a short version ("0.4") up to a full dotted one ("0.4.0").
           IFS=. read -r major minor patch <<<"$SHORT"
           major="${major:-0}"; minor="${minor:-0}"; patch="${patch:-0}"
@@ -49,14 +49,14 @@ jobs:
           TARGET="$(git rev-parse "${GITHUB_REF#refs/tags/}^{}")"
           echo "full=$FULL" >> "$GITHUB_OUTPUT"
           echo "tag=v$FULL"   >> "$GITHUB_OUTPUT"
-          echo "title=DSH Mac v$FULL" >> "$GITHUB_OUTPUT"
+          echo "title=Vision for macOS v$FULL" >> "$GITHUB_OUTPUT"
           echo "target=$TARGET" >> "$GITHUB_OUTPUT"
 
       - name: Keep the DMG as an artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DeepHarness-${{ steps.meta.outputs.tag }}
-          path: build/DeepHarness.dmg
+          name: Vision-macOS-${{ steps.meta.outputs.tag }}
+          path: build/Vision.dmg
           if-no-files-found: error
 
       - name: Create / update the GitHub release
@@ -82,4 +82,4 @@ jobs:
             --title "${{ steps.meta.outputs.title }}" \
             --target "${{ steps.meta.outputs.target }}" \
             --notes-file "$NOTES" \
-            build/DeepHarness.dmg
+            build/Vision.dmg

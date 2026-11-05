@@ -1,0 +1,57 @@
+name: CI
+
+# Build and test every branch push and pull request on the same runner the
+# release uses (macos-15, its default Xcode), then assemble the app and DMG as
+# a packaging smoke test. Nothing is published. Version tags (v*) are left to
+# release.yml: a push filtered on branches never runs for a tag.
+#
+# No .build cache: the package has no dependencies, and a fresh checkout gives
+# every source a new timestamp, so SwiftPM would rebuild everything anyway.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to the same branch or pull request cancels the older run.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Build tests
+        run: swift build --build-tests
+
+      - name: Run tests
+        run: swift test --skip-build
+
+      - name: Package smoke (bundle.sh release)
+        run: |
+          set -euo pipefail
+          bash bundle.sh release
+          app="$(find build -maxdepth 1 -name '*.app' -type d | head -n 1)"
+          [ -n "$app" ] || { echo "no app bundle in build/" >&2; exit 1; }
+          plutil -lint "$app/Contents/Info.plist"
+          exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          [ -x "$app/Contents/MacOS/$exe" ] || { echo "missing executable $exe" >&2; exit 1; }
+          codesign --verify --deep "$app"
+          ls -lh build/*.dmg
