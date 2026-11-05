@@ -9,7 +9,6 @@ final class ChatArchiveTests: XCTestCase {
     private var archive: ChatArchive!
 
     override func setUp() async throws {
-        try await super.setUp()
         root = FileManager.default.temporaryDirectory.appendingPathComponent("arc-\(UUID().uuidString)", isDirectory: true)
         log = ConversationLog(dir: root.appendingPathComponent("conversations"))
         log.writeDelay = 0
@@ -18,7 +17,6 @@ final class ChatArchiveTests: XCTestCase {
 
     override func tearDown() async throws {
         try? FileManager.default.removeItem(at: root)
-        try await super.tearDown()
     }
 
     private func seed(_ id: String, title: String = "Fix login", text: String = "the zebra word") {
