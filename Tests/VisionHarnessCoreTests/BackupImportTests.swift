@@ -120,7 +120,8 @@ final class BackupImportTests: XCTestCase {
         addTeardownBlock {
             SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
         }
-        XCTAssertTrue(BackupImport.secItemWriter(service, "one", Data("1".utf8)))
+        // A CI runner may have no unlocked Keychain to write to.
+        guard BackupImport.secItemWriter(service, "one", Data("1".utf8)) else { throw XCTSkip("No writable Keychain here.") }
         XCTAssertTrue(BackupImport.secItemWriter(service, "two", Data("2".utf8)))
         let read = try BackupExport.secItemReader(service).sorted { $0.account < $1.account }
         XCTAssertEqual(read.map(\.account), ["one", "two"])
