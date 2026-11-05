@@ -1,7 +1,6 @@
 ## Download
 
-- **`Vision.dmg`** — open it and drag **Vision** into **Applications**. Every
-  release is at https://github.com/phastings503cm/vision-mac/releases.
+- **`Vision.dmg`** — open it and drag **Vision** into **Applications**.
 
 Builds are ad-hoc-signed for Apple Silicon (arm64), macOS 14+. Gatekeeper will
 prompt on first launch — right-click the app and choose **Open**, or run:
@@ -9,6 +8,34 @@ prompt on first launch — right-click the app and choose **Open**, or run:
 ```bash
 xattr -d com.apple.quarantine /Applications/Vision.app
 ```
+
+## What's new in 0.18.0 — worktrees, Agent mode, Guardian's people and local models
+
+- **Chats in their own git worktree.** **New Chat ▾ ▸ New Chat in a Worktree…**
+  (⌘⌥N) gives a chat its own branch and folder. When the work is done,
+  **Merge & Finish** merges it into the branch it came from, deletes the
+  worktree and archives the chat. It refuses rather than guesses, and aborts a
+  merge that conflicts.
+- **A chat archive.** Chats that leave the sidebar are kept on disk as JSON and
+  Markdown. Search, read and restore them from **Chat Archive**.
+- **Extra folders per chat.** **+ ▸ Add Folder to This Chat…** lets one chat
+  work across another project.
+- **A tidier sidebar.** A big green **New Chat** button at the top, search, and
+  chats under collapsible projects, or newest first with **Projects | Recent**.
+- **A searchable model picker,** with filters by where each model comes from.
+- **Agent mode (⌘3).** A long-running conversation that saves what it learns,
+  writes its own skills (or drafts them for approval, in Settings) and can put
+  work on the calendar. Automations moves to ⌘4, and clicking a calendar day
+  shows what ran and what will run.
+- **Guardian's people and local models.** Signed in under **Settings ▸
+  Guardian**, your people appear in the model picker in Agent mode, each with a
+  thread of their own. Local models such as Orbital appear under their host's
+  name. One Guardian's proxy can serve runs this app's tools; any other can talk
+  but can't edit files.
+- **Send to Guardian.** Send a whole chat and files, with a directive, to a
+  person, an AI Coders project, a project board column or a Kanban column. The
+  text goes through the sensitive-data shield by default.
+- **Import a backup** from any DSH or Vision, choosing what to bring over.
 
 ## What's new in 0.15.0 — the app is now called Vision
 

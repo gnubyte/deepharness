@@ -11,7 +11,6 @@ final class AgentModeHostTests: XCTestCase {
     private var transport: AppTransport!
 
     override func setUp() async throws {
-        try await super.setUp()
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("dsh-agent-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         dir = URL(fileURLWithPath: realpath(scratch.path, nil).map { String(cString: $0) } ?? scratch.path, isDirectory: true)
@@ -37,7 +36,6 @@ final class AgentModeHostTests: XCTestCase {
         UserDefaults.standard.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: dir)
         transport = nil
-        try await super.tearDown()
     }
 
     private func folder(_ name: String) -> URL {
