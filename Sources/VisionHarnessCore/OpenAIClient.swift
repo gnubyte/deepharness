@@ -28,10 +28,12 @@ public struct OpenAIClient: LLMClient {
         cfg.timeoutIntervalForRequest = Self.idleTimeout
         // A whole streamed reply may legitimately run for hours on a slow box.
         cfg.timeoutIntervalForResource = 24 * 3_600
-        cfg.waitsForConnectivity = true
+        // Deliberately NOT waitsForConnectivity: a server that refuses (the
+        // Spark asleep, a wrong port) must fail at once so the engine's retry
+        // policy can back off properly — waitsForConnectivity would park the
+        // request for the resource timeout instead.
         if let stubs = Self.protocolClassesForTesting {
             cfg.protocolClasses = stubs + (cfg.protocolClasses ?? [])
-            cfg.waitsForConnectivity = false
         }
         (self.session, self.trust) = Self.sharedSession(cfg, pinned: profile.pinnedCertificate)
     }

@@ -32,12 +32,42 @@ struct VisionMacApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands { AppCommands(model: model) }
+
+        // The daemon's handle: even with no window open (the queue,
+        // automations, background agents and the API server keep working),
+        // this menu shows state and brings the window back.
+        MenuBarExtra {
+            MenuBarExtraContent()
+                .environment(model)
+        } label: {
+            Image(systemName: model.anythingRunning ? "brain.fill" : "brain")
+        }
+        .menuBarExtraStyle(.menu)
     }
 }
 
-/// Keeps the app's lifetime tied to its window and stops agents on the way out.
+/// Keeps the app alive when its last window closes (daemon mode), so the task
+/// queue, automations, background agents and the API server keep working;
+/// clicking the dock icon (or the menu-bar brain) brings the window back.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !MainActor.assumeIsolated { AppConfig.shared.daemonMode }
+    }
+
+    /// Dock click with no window: reopen rather than do nothing.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
+        MainActor.assumeIsolated { Self.openMainWindow() }
+        return true
+    }
+
+    @MainActor
+    static func openMainWindow() {
+        if let window = NSApp.windows.first(where: { $0.canBecomeKey && !$0.isSheet }) ?? NSApp.windows.first {
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -56,6 +86,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+@MainActor
+struct MenuBarExtraContent: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack {
+            Button("Open \(AppIdentity.name)") { AppDelegate.openMainWindow() }
+            Divider()
+            let running = model.transport.runningSessions.count
+            Text(running == 0 ? "No agents running" : running == 1 ? "1 agent running" : "\(running) agents running")
+            let queue = model.transport.queue.stats()
+            Text("Queue: \(queue.queued) waiting · \(queue.completed) done")
+                .disabled(true)
+            if model.apiServerRunning {
+                Text("API server :\(model.apiServerPort ?? model.config.apiServerPort)")
+                    .disabled(true)
+            }
+            Divider()
+            if model.transport.queueRunningNow {
+                Button("Stop Task Queue") { model.transport.stopQueue() }
+            } else if queue.queued > 0 {
+                Button("Start Task Queue") { model.transport.startQueue() }
+            }
+            if !model.automations.currentStore().automations.filter(\.enabled).isEmpty {
+                Text("\(model.automations.currentStore().automations.filter(\.enabled).count) automations scheduled")
+                    .disabled(true)
+            }
+            Divider()
+            Button("Quit \(AppIdentity.name)") { NSApp.terminate(nil) }
+        }
+    }
+}
+
 // MARK: - Menus
 
 struct AppCommands: Commands {
@@ -63,12 +126,18 @@ struct AppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Chat") { model.newChat() }
+            Button("New Chat") { model.select(model.newChat().id) }
                 .keyboardShortcut("n", modifiers: .command)
             Button("New Chat Without a Project") { model.newPlainChat() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+            Button("New Chat in a Worktree…") { model.requestWorktreeChat() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(model.project == nil)
             Button("Open Project Folder…") { model.chooseProject() }
                 .keyboardShortcut("o", modifiers: .command)
+            Button("Add Folder to This Chat…") { model.addFolder() }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(model.project == nil)
             Divider()
             Button("New Terminal") {
                 model.mode = .code
@@ -108,6 +177,9 @@ struct AppCommands: Commands {
             Divider()
             Button("Memory & Skills…") { model.showMemoryAndSkills = true }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+            Button("Chat Archive…") { model.showArchive = true }
+            Button("Send to Guardian…") { model.sendingToGuardian = model.selectedSession }
+                .disabled(model.selectedSession == nil || !model.guardian.isSignedIn)
             Button("Credentials Vault…") { model.showVault = true }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
             Button("Reload Project Context") { model.transport.refreshProjectContext() }
@@ -119,6 +191,10 @@ struct AppCommands: Commands {
                 .keyboardShortcut("1", modifiers: .command)
             Button("Code Mode") { model.mode = .code }
                 .keyboardShortcut("2", modifiers: .command)
+            Button("Agent Mode") { model.mode = .agent }
+                .keyboardShortcut("3", modifiers: .command)
+            Button("Automations Mode") { model.mode = .automations }
+                .keyboardShortcut("4", modifiers: .command)
             Divider()
             Button(model.config.planPanelOpen ? "Hide Plan" : "Show Plan") { model.togglePlan() }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
@@ -180,6 +256,18 @@ struct RootView: View {
         .sheet(isPresented: $model.showVault) {
             VaultView().environment(model)
         }
+        .sheet(isPresented: $model.showArchive) {
+            ChatArchiveView().environment(model)
+        }
+        .sheet(item: $model.worktreeRequest) { request in
+            NewWorktreeSheet(request: request).environment(model)
+        }
+        .sheet(item: $model.finishingWorktree) { session in
+            FinishWorktreeSheet(session: session).environment(model)
+        }
+        .sheet(item: $model.sendingToGuardian) { session in
+            SendToGuardianSheet(session: session).environment(model)
+        }
         .sheet(item: $model.bedrockGuide) { request in
             BedrockGuideView(request: request, appModel: model).environment(model)
         }
@@ -226,7 +314,7 @@ struct RootView: View {
     private var detail: some View {
         switch model.mode {
         case .chat:
-            if let session = model.selectedSession {
+            if let session = model.selectedSession, !session.isAgent {
                 ChatView(session: session)
             } else {
                 EmptyStateView(icon: "sparkles",
@@ -241,6 +329,18 @@ struct RootView: View {
             }
         case .code:
             CodeModeView()
+        case .agent:
+            if let session = model.selectedSession, session.isAgent {
+                ChatView(session: session)
+            } else {
+                EmptyStateView(icon: "brain.head.profile", title: "Agent",
+                               message: "A long-running conversation that remembers you and keeps its own skills.") {
+                    Button("Start") { model.openMainAgentThread() }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        case .automations:
+            AutomationsView()
         }
     }
 
@@ -256,20 +356,52 @@ struct RootView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .help("Chat (⌘1) or Code (⌘2)")
+            .help("Chat (⌘1), Code (⌘2), Agent (⌘3) or Automations (⌘4)")
         }
 
         ToolbarItem(placement: .principal) {
-            Button {
-                model.chooseProject()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "folder")
-                    Text(model.project?.lastPathComponent ?? "No project")
-                        .lineLimit(1)
+            if model.additionalProjects.isEmpty {
+                Button {
+                    model.chooseProject()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "folder")
+                        Text(model.project?.lastPathComponent ?? "No project")
+                            .lineLimit(1)
+                    }
                 }
+                .help(model.project?.path ?? "Open a project folder (⌘O)")
+            } else {
+                // Multi-folder session: the working set, with add/remove.
+                Menu {
+                    Section("Working folders") {
+                        if let project = model.project {
+                            Label(project.lastPathComponent, systemImage: "folder.fill")
+                        }
+                        ForEach(model.additionalProjects, id: \.standardizedFileURL) { extra in
+                            Button {
+                                model.removeFolder(extra)
+                            } label: {
+                                Label("Remove \(extra.lastPathComponent)", systemImage: "folder.badge.minus")
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Add Folder…") { model.addFolder() }
+                    Button("Open Another Project…") { model.chooseProject() }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "folder.badge.plus")
+                        Text(model.project?.lastPathComponent ?? "No project")
+                            .lineLimit(1)
+                        Text("+\(model.additionalProjects.count)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .help("Folders the agent works across")
             }
-            .help(model.project?.path ?? "Open a project folder (⌘O)")
         }
 
         ToolbarItem {
@@ -391,18 +523,11 @@ private struct ModelMenu: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        Menu {
-            RouteMenuSections()
-            Divider()
-            Button("Configure…") {
-                model.settingsTab = .models
-                model.showSettings = true
-            }
-            Button("Run Setup Wizard…") { model.showWizard = true }
-        } label: {
-            Label(model.config.activeProvider?.model ?? "No model", systemImage: "cpu")
+        ModelPickerButton {
+            Label(model.selectedSession?.person?.displayName ?? model.config.activeProvider?.friendlyModel ?? "No model",
+                  systemImage: model.selectedSession?.person != nil ? "person.fill" : "cpu")
+                .labelStyle(.titleAndIcon)
         }
-        .menuStyle(.borderlessButton)
         .fixedSize()
         .help(model.config.activeProvider.map { "Primary: \($0.displayName)" } ?? "No model configured")
     }

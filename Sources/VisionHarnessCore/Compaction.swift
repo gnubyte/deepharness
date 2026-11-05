@@ -191,6 +191,9 @@ public enum Compaction {
         - Work done: files created/edited (with paths), commands run, key results
         - Open items: unfinished steps, unresolved errors, pending questions
         - State: exactly where the conversation stands now and the very next step
+        - Key facts: 0-6 bullets of anything worth remembering across chats — durable facts about the \
+        user, people they work with, project conventions, accounts/tools in play, or preferences the \
+        user stated. Write each as one standalone sentence. Write "None" if there are none.
         \(focusLine)\(prior)
         Be factual and specific (paths, commands, versions, error messages). Omit small talk. \
         Output only the note.
@@ -199,6 +202,44 @@ public enum Compaction {
         \(body)
         </conversation>
         """
+    }
+
+    /// The "Key facts" section of a compaction summary, as standalone lines.
+    /// The harness folds these into its own persistent memory, so what one
+    /// long conversation learned about the user or the project outlives it.
+    public static func keyFacts(from summary: String) -> [String] {
+        // Find the "Key facts" heading (case-insensitive, any markdown: bold,
+        // ## heading, trailing colon), take its lines until the next heading.
+        let lines = summary.components(separatedBy: "\n")
+        var index: Int?
+        for (i, line) in lines.enumerated() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "*", with: "")
+                .replacingOccurrences(of: "#", with: "")
+                .replacingOccurrences(of: ":", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            if t.lowercased() == "key facts" { index = i; break }
+        }
+        guard let start = index else { return [] }
+        var facts: [String] = []
+        for line in lines[(start + 1)...] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { break }
+            let bare = trimmed
+            // A new markdown heading or "Word:" line ends the section.
+            let stripped = bare.replacingOccurrences(of: "*", with: "")
+                .replacingOccurrences(of: "#", with: "")
+                .replacingOccurrences(of: ":", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            if !bare.hasPrefix("-") && !bare.hasPrefix("•") && !bare.hasPrefix("*") &&
+                stripped.count < 30 && !stripped.contains(" ") { break }
+            var fact = bare
+            for prefix in ["- ", "• ", "* "] where fact.hasPrefix(prefix) { fact = String(fact.dropFirst(prefix.count)) }
+            fact = fact.trimmingCharacters(in: .whitespaces)
+            if fact.isEmpty || fact.lowercased() == "none" { continue }
+            facts.append(fact)
+        }
+        return Array(facts.prefix(8))
     }
 
     private static func clip(_ s: String, _ maxChars: Int) -> String {

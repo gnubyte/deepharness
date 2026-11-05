@@ -6,6 +6,11 @@ struct MarkdownView: View {
     let source: String
     /// Tool cards and results are already code; skip block parsing for them.
     var monospaced = false
+    /// Throttle re-parsing to ~3×/second while `source` changes rapidly
+    /// (streaming). A long reply re-parsed per delta is O(n²) on the main
+    /// thread and freezes the whole window; a third of a second of lag on the
+    /// last bubble is invisible. Settled text is always parsed exactly.
+    var throttled = false
 
     var body: some View {
         if monospaced {
@@ -13,6 +18,8 @@ struct MarkdownView: View {
                 .font(Theme.codeFont)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        } else if throttled {
+            StreamingMarkdownBody(source: source)
         } else {
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(Markdown.parse(source)) { block in
@@ -20,6 +27,42 @@ struct MarkdownView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// The streaming bubble: re-parses at most every 300 ms while text pours in,
+/// then catches up to the settled text. Keeps a long reply's incremental cost
+/// linear instead of quadratic.
+private struct StreamingMarkdownBody: View {
+    let source: String
+    @State private var rendered = ""
+    @State private var pending = false
+    @State private var lastParsedAt = Date.distantPast
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(Markdown.parse(rendered)) { block in
+                BlockView(block: block)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { if rendered.isEmpty { rendered = source } }
+        .onChange(of: source) { _, newText in
+            guard !pending else { return }
+            let elapsed = Date().timeIntervalSince(lastParsedAt)
+            if elapsed >= 0.3 {
+                rendered = newText
+                lastParsedAt = Date()
+            } else {
+                pending = true
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(max(0, 0.3 - elapsed) * 1_000_000_000))
+                    pending = false
+                    rendered = source
+                    lastParsedAt = Date()
+                }
+            }
         }
     }
 }

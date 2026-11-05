@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import VisionHarnessCore
+import UniformTypeIdentifiers
 
 /// Settings: model routes, permissions, editor and terminal, and the plugin
 /// catalog. The wizard is the guided path; this is the direct one.
@@ -46,6 +47,9 @@ struct SettingsView: View {
 
 private struct GeneralSettings: View {
     @Environment(AppModel.self) private var model
+    @State private var exporting = false
+    @State private var importing: BackupImport.Contents?
+    @State private var exportStatus: String?
 
     var body: some View {
         Form {
@@ -71,6 +75,54 @@ private struct GeneralSettings: View {
                 }
             }
 
+            Section("Harness") {
+                Toggle(isOn: Binding(
+                    get: { model.config.daemonMode },
+                    set: { model.config.daemonMode = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Keep running when the window is closed (daemon)")
+                        Text("The task queue, automations, background agents and the API server keep working; a brain icon in the menu bar brings the window back.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(isOn: Binding(
+                    get: { model.config.gitAutoSync },
+                    set: { model.config.gitAutoSync = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Keep the working branch synced with origin")
+                        Text("Before turns: fetch, fast-forward when clean, push when ahead — never force, never touch uncommitted work. Per-chat /git-sync overrides this.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(isOn: Binding(
+                    get: { model.config.apiServerEnabled },
+                    set: { newValue in
+                        model.config.apiServerEnabled = newValue
+                        model.apiServerSettingChanged()
+                    })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Local API server (other programs can use the default model)")
+                        Text(model.apiServerRunning
+                             ? "Serving on 127.0.0.1:\(model.apiServerPort ?? model.config.apiServerPort) — POST /v1/chat/completions, GET /v1/models, GET /health"
+                             : "Off. An OpenAI-compatible endpoint on 127.0.0.1 that always serves the current main model.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if model.config.apiServerEnabled {
+                    Stepper(value: Binding(
+                        get: { model.config.apiServerPort },
+                        set: { newValue in
+                            model.config.apiServerPort = newValue
+                            model.apiServerSettingChanged()
+                        }), in: 1024...65_535) {
+                        Text("Port \(model.config.apiServerPort)")
+                            .font(.caption)
+                    }
+                }
+            }
+
+            backupSection
+            agentSection
             Section("Setup") {
                 LabeledContent("Configuration wizard") {
                     Button("Run Again…") { model.showWizard = true }
@@ -86,6 +138,104 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: Binding(get: { importing != nil }, set: { if !$0 { importing = nil } })) {
+            if let importing {
+                BackupImportSheet(contents: importing).environment(model)
+            }
+        }
+    }
+
+    private var backupSection: some View {
+            Section("Backup, Export & Import") {
+                LabeledContent {
+                    Button(exporting ? "Exporting…" : "Export Everything…") { chooseExportDestination() }
+                        .disabled(exporting)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Full backup: chats, skills, memory, vault, keychain, automations, settings, OpenClaw")
+                        Text("Writes a timestamped folder + zip. Includes both the Vision and DSHMac data folders, keychain secrets, preference plists, and OpenClaw's durable state (skills, memory, secrets, credentials, cron — never the caches).")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent {
+                    Button("Import…", action: chooseImport)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Bring in a backup from another DSH or Vision")
+                        Text("Choose what to take from its folder or zip. The backup holds your secrets in readable form, so keep it somewhere safe and delete it when you're done.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let exportStatus {
+                    Text(exportStatus).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+    }
+
+    private var agentSection: some View {
+            Section("Agent Mode") {
+                Toggle(isOn: Binding(get: { model.config.agentSavesSkills },
+                                     set: { model.config.agentSavesSkills = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Let the agent save skills on its own")
+                        Text("On: skills it writes go live straight away. Off: they wait in Skills as drafts for you to approve.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+    }
+
+    private func chooseImport() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.zip, .folder]
+        panel.prompt = "Open Backup"
+        panel.message = "Choose a Vision-Backup folder or zip."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            importing = try BackupImport.inspect(url)
+        } catch {
+            exportStatus = error.localizedDescription
+        }
+    }
+
+    private func chooseExportDestination() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Export Here"
+        panel.message = "Choose where the backup folder and zip are written (a thumb drive works)."
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        exporting = true
+        exportStatus = "Exporting to \(folder.path)…"
+        Task.detached(priority: .userInitiated) {
+            do {
+                let manifest = try BackupExport.exportEverything(to: folder)
+                let mb = ByteCountFormatter.string(fromByteCount: manifest.totalBytes, countStyle: .file)
+                let files = manifest.sections.reduce(0) { $0 + $1.files }
+                var summary = "Done — \(files) files, \(mb)"
+                for section in manifest.sections { summary += "\n· \(section.name): \(section.files) files" }
+                if let zipName = manifest.zippedPath { summary += "\nZip: \(zipName)" }
+                if !manifest.errors.isEmpty { summary += "\n\(manifest.errors.count) warning(s) — see manifest.json" }
+                await MainActor.run {
+                    exporting = false
+                    exportStatus = summary
+                    if let zipName = manifest.zippedPath {
+                        NSWorkspace.shared.activateFileViewerSelecting([folder.appendingPathComponent(zipName)])
+                    } else {
+                        NSWorkspace.shared.activateFileViewerSelecting([folder])
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    exporting = false
+                    exportStatus = "Export failed: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 }
 

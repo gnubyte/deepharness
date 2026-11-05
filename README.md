@@ -34,8 +34,10 @@ Vision owns the agent loop end to end — there is no server process behind it:
 you → VisionHarnessCore.Engine → OpenAI-compatible /chat/completions → tool calls → files & shell → you
 ```
 
-So there is nothing to install alongside it and nothing to keep running. Point it at a model and start
-chatting — or open a folder and it works on your code.
+The practical difference is that there is nothing to install alongside it and nothing to keep
+running. Point it at a model and open a folder — or several: ⌘-select multiple folders in the open
+panel (or **Add Folder to Session…**, ⌘⇧O) and the agent works across all of them; every folder's
+instruction files load, and all of them are inside the permission boundary.
 
 ## Download
 
@@ -318,6 +320,8 @@ name for name, so prompts, skills, and habits from that ecosystem carry over:
 | `exit_plan_mode` | hand back a plan instead of doing the work |
 | `agent` | a subagent for a scoped task; `agent_type` picks the kind (`general`, `explore`, `plan`, `review`, `worker`, or your own agent file), `run_in_background` keeps it working while you carry on, `sensitive` keeps it on a private server |
 | `delegate` | hand out a list of independent tasks and get every report back together; with several model servers they run on different machines |
+| `save_memory` / `read_memory` | the harness's own persistent memory (about the user, people, projects) — stored with the app, never in the code folder |
+| `list_chats` / `read_chat` | peer into the other conversations: what they discussed, decisions, paths |
 | `use_skill` | load one of your skills when the task matches it |
 
 **Models without function calling still work.** Many Qwen-class models on Ollama or older vLLM emit
@@ -329,6 +333,8 @@ calls, the text is run through an XML parser that understands both the `<functio
 
 - **Live processes and the machine** (0.8). `process_start`, `process_read`, `process_write`, `process_stop` and `process_list` talk to a running program. `screenshot`, `list_windows`, `screen_watch`, `ui_tree`, `inspect_process`, `mouse`, `keyboard`, `focus_app` and `view_image` look at and drive the Mac.
 - **Task Queue** (0.9; unattended since 0.10). `queue_task` adds follow-up work; `/queue` runs the queue one task at a time. A model outage retries until the server is back.
+- **Credentials Vault** (0.11). API keys and passwords live in the Keychain. The agent writes `{{vault:NAME}}` and never sees the value; `vault_search` lists names, not secrets.
+- **Background subagents** (0.12). `agent` with `run_in_background` (up to four per chat), plus `agent_status` and `agent_stop`.
 - **Credentials Vault** (0.11). API keys and passwords live in the Keychain. The agent references a secret by its vault name and never sees the value; `vault_search` lists names, not secrets.
 - **Background subagents** (0.12). `agent` with `run_in_background` (up to four per chat), plus `agent_status` and `agent_stop`.
 - **Turn phases** (0.16). Every turn runs Planning → Execution → Validation → Results. Planning drafts the plan live and states an ETA — classified into a small task catalog, scoped to the ask, and blended with how long turns of that kind took before (the cache persists and refines as turns complete; Guardian aggregates the same learning across its users). Execution shows a green working badge with the runtime against the estimate, and every step timestamped when you drill in. When the work ends, validation checks the outcome against the plan the turn set out with and gathers evidence — screenshots, changed files, the closing summary — or loops back to execution when it fails (unlimited by default, cappable). Results shows a green "completed with results" with the evidence. Works with `/goal` and the task queue.
@@ -390,6 +396,13 @@ line. Drag its edge to resize it. It opens by itself when the agent first makes 
 
 | Command | What it does |
 |---|---|
+| `/goal <task>` | Works on the task round after round until the model ends a reply with `GOAL_COMPLETE` (or `GOAL_BLOCKED: …` when it needs you). The goal is restated every round so it survives compaction. There is no round cap. ⌘. stops it, and the completion notice reports the elapsed time. |
+| `/queue` | Starts the task queue. It works queued tasks one at a time, unattended. Tasks take attachments and long prompts (the panel's **+** opens a roomy editor). |
+| `/compact [focus]` | Summarizes the conversation now, keeping a short recent tail. Earlier messages stay visible above the divider; the model carries the summary, and its key facts go to harness memory. |
+| `/git-sync on\|off` | Whether this chat keeps its branch synced with origin before turns. |
+| `/think off\|low\|medium\|high\|max\|default` | Thinking level for this chat. |
+| `/context` | Window size, usage, and where the figure came from. |
+| `/swap [model]` | Lists the Spark's models, or switches what it serves. |
 | `/goal <task>` | Works on the task round after round until the model ends a reply with `GOAL_COMPLETE` (or `GOAL_BLOCKED: …` when it needs you). The goal is restated every round so it survives compaction. There is no round cap. ⌘. stops it. |
 | `/queue` | Starts the task queue. It works queued tasks one at a time, unattended. |
 | `/compact [focus]` | Summarizes the conversation now, keeping a short recent tail. Earlier messages stay visible above the divider; the model carries the summary. |
@@ -400,16 +413,66 @@ line. Drag its edge to resize it. It opens by itself when the agent first makes 
 | `/skills` · `/skill <name>` · `/skill new <what>` · `/<name> args` | Skills: list, select for this chat, have the model write one, or run one. |
 | `/help` | Lists these. |
 
+New chats are named automatically: the first line stands in at once, then the model names the chat
+from what it turned out to be about. Renaming by hand sticks.
+
 Long chats also compact automatically at 75% of the window (keeping up to ~96K recent tokens verbatim),
 including in the middle of one long tool-heavy turn.
+
+### Worktrees and extra folders
+
+**New Chat ▾ ▸ New Chat in a Worktree…** (⌘⌥N) gives a chat its own branch (`dsh/<name>`) and folder
+(`<repo>-worktrees/<name>`), so your checkout isn't touched. A bar above the composer tracks its commits
+and uncommitted files. **Finish…** commits what's left if you say so, merges into the branch it came from,
+deletes the worktree and branch, and archives the chat. It refuses rather than guesses: the main checkout
+must be on that branch with no uncommitted changes, and a conflicting merge is aborted, leaving the base
+unchanged. Git sync skips worktree chats, so their branches stay local.
+
+**+ ▸ Add Folder to This Chat…** (⌘⇧O) lets one chat work across another folder: its instruction files
+load and it's inside the permission boundary, for that chat only.
+
+### The sidebar and the archive
+
+Chats sit under collapsible projects, or newest-first with the **Projects | Recent** switch. **Chat Archive**
+keeps every chat that leaves the sidebar under `archive/` in the data folder: JSON plus a readable Markdown
+copy. Search titles and messages, read them, restore them.
+
+## Backup & export
+
+Settings ▸ General ▸ Backup & Export → "Export Everything…" writes a timestamped
+folder + zip containing: both app-support homes (Vision and DSHMac — chats,
+skills, harness memory, the credential vault, automations, task queue,
+attachments, checkpoints), the keychain items (vault blobs and provider API
+keys, base64 in `keychain/items.json`), the preference plists for both bundle
+IDs, and OpenClaw's durable state from `~/.openclaw` — skills, memory,
+secrets, credentials, service-env, identity, cron, tasks, flows, agents'
+config, and workspace root files + skills. OpenClaw's caches (workspace
+sessions, browser profile, npm, tmp, media, logs) are deliberately excluded.
+A `manifest.json` records every section's file count and size, and any
+keychain items that couldn't be read.
+The backup holds secrets in readable form, so keep it somewhere safe.
+
+**Import…** beside it takes such a folder or zip from any DSH or Vision: pick the modules, and your data
+folder is copied aside first. Files merge (a newer local file is kept); settings and secrets replace what's
+here; OpenClaw is opt-in. The app restarts afterwards.
 
 ## Memory and knowledge files
 
 Because this app assembles the prompt itself, instruction files are simply read and injected — no
-mirroring into `AGENTS.md`, no managed marker blocks. Any of these in the project root is loaded on
-every turn, in order:
+mirroring into `AGENTS.md`, no managed marker blocks. Any of these in a project root is loaded on
+every turn, in order (multi-folder sessions load them from every folder):
 
 `AGENTS.md` · `QWEN.md` · `CLAUDE.md` · `.claude/CLAUDE.md` · `CLAUDE.local.md` · `.cursorrules` ·
+`VISION.md` · `DSH.md` · `MEMORY.md` · `memory/YYYY-MM-DD.md` · `.INFRASTRUCTURE.md`
+
+`.INFRASTRUCTURE.md` is this harness's own convention for **how the project is deployed** —
+pipelines, environments, release steps. It is injected with its own label telling the model to treat
+it as deployment truth.
+
+**Harness memory** lives with the app (`~/Library/Application Support/Vision/`), never in the code:
+`MEMORY.md` for durable facts plus a daily log. The model contributes with `save_memory`, and every
+compaction folds the summary's *Key facts* section in. Edit both in **Session ▸ Memory & Skills…**
+(⇧⌘M) ▸ Harness memory.
 `VISION.md` · `MEMORY.md` · `memory/YYYY-MM-DD.md`
 
 A chat without a project reads the same files from your home folder instead (`~/AGENTS.md`,
@@ -418,6 +481,74 @@ A chat without a project reads the same files from your home folder instead (`~/
 **Session ▸ Memory & Skills… (⇧⌘M)** edits them and shows the **System prompt** tab — exactly what
 gets sent. **Set Up Memory** scaffolds `MEMORY.md` plus today's daily log. The editor warns past ~100
 lines, because that file costs tokens on every request — detail belongs in a skill.
+
+## Agent mode (⌘3)
+
+One long-running conversation that isn't tied to a project. It carries on indefinitely (old turns get
+summarized), saves what it learns with `save_memory` without asking, writes reusable procedures with
+`create_skill` (live at once; **Settings ▸ General ▸ Agent Mode** makes them drafts instead), and puts work
+on the calendar with `schedule_task`. Its scratch folder is `agent/` in the data folder; add project folders
+per thread.
+
+Signed in to Guardian, your **people** appear in the model picker and the sidebar here. Each is a thread of
+their own, running on Guardian with their own prompt, model and tools; the first message carries the harness
+memory as context, through the sensitive-data shield. This app's tools don't run in those threads.
+
+## Automations (⌘4)
+
+A third mode next to Chats and Code: scheduled prompts that run unattended in their own chat —
+"run the ticket sync every weekday at 8:30", "check the build on Monday". The calendar shows every
+upcoming run for the month; the list edits, disables, and re-runs; each automation keeps its own
+history, and a run is exactly a `/goal` (round after round until it's done), in its own chat with
+its own context window. Click a day to see what ran, what will run, and to schedule something on it.
+
+Schedules are cron (5-field, with time zone), every-N-minutes, or one-off. OpenClaw's scheduled
+tasks import and export both ways — **Automations ▸ Import OpenClaw jobs.json…** reads the same
+file OpenClaw's cron uses, and the export writes it back, so a library curated here can drive
+OpenClaw and vice versa.
+
+## Keeping git in sync
+
+When the open project has a git remote, the harness keeps the working branch level with origin
+before turns: fetch, fast-forward when the tree is clean, push when ahead (creating the upstream on
+a first push), rebase a clean diverged branch and abort on the first conflict. It never forces,
+never resets, never touches uncommitted work — anything it refuses to guess at is reported into the
+chat instead. Throttled to one attempt per workspace per few minutes; **Settings ▸ General** turns
+it off globally and `/git-sync off` per chat; a prompt that says "don't sync" / "without pulling" /
+"do not touch git" is honored automatically.
+
+## The local API server
+
+**Settings ▸ General ▸ Local API server** exposes the default model on `127.0.0.1` (default port
+8337) for other programs on the same Mac — an OpenAI-shaped `POST /v1/chat/completions`,
+`GET /v1/models`, and `GET /health`. It always serves whatever the main model currently is: change
+the model in the app and the next request follows. The socket is bound to loopback only.
+
+## Daemon mode
+
+Closing the window doesn't quit the app: the task queue, automations, background agents, and the
+API server keep working (Settings ▸ General can turn this off). A brain icon in the menu bar shows
+what's running and brings the window back; so does clicking the dock icon. Unsent prompts are
+drafted to disk every couple of seconds, so even a force-quit loses nothing typed.
+
+## Guardian
+
+**Settings ▸ Models ▸ Guardian** signs in (email + password, TOTP 2FA supported) and every model
+the account may use becomes an ordinary route — coexisting with a local DGX Spark and Bedrock:
+either can lead while the other takes subagent work, and selecting a Spark model never disturbs the
+Guardian selection. The token lives in the Keychain, never in the preferences file.
+
+### Guardian's local models and people
+
+Signed in under **Settings ▸ Guardian**, every model the account may use becomes a route, and **local models**
+(Orbital, and any AI host added later) appear under their host's name. A local model Guardian's OpenAI-shaped
+proxy lists runs this app's tools like any other route; one it doesn't list runs through Guardian's chat, so it
+can talk but won't edit files, and can't take subagent work.
+
+**Send to Guardian** (the paper plane, or **+**) sends a whole chat plus any files, with a directive, to a
+person, an AI Coders project, a column on a project's delivery board, or a Kanban column. The text goes through
+the shield by default; files can't be checked. Uploads are limited to 50 MB per file. Delivery board cards don't
+hold attachments, so files arrive there as links.
 
 ## Skills
 
@@ -540,6 +671,8 @@ VisionHarnessCore/         the harness. No AppKit, no SwiftUI — headlessly tes
   QwenTools.swift          glob, grep, read_many_files, exit_plan_mode
   CommandTools.swift       run_shell_command, web_fetch, todo_write
   AgentTool.swift          subagents (agent types, failover across servers) and delegate
+  Fleet/                   AgentFleet (servers, leases, health), roster, agent definitions, delegate
+  ProviderClients.swift    one factory: OpenAI-compatible routes, Guardian, and Amazon Bedrock
   Fleet/                   AgentFleet (servers, leases, health, private servers), roster, agent definitions, delegate
   ProviderClients.swift    one factory: OpenAI-compatible routes and Amazon Bedrock, with backups and the shield
   FailoverClient.swift     backups for the primary
@@ -553,9 +686,20 @@ VisionHarnessCore/         the harness. No AppKit, no SwiftUI — headlessly tes
   ChatPrompt.swift         the prompt and scratch folder of a chat without a project
   AWS/                     SigV4, event streams, the AWS CLI (run, sign in, install), Bedrock setup
   Bedrock/                 the Converse client, its request mapping and per-model table
-  Permissions.swift        presets, path containment, shell gating
+  Guardian/                people, local models, uploads, AI Coders, boards, chat streaming
+  Worktree/                a chat's own git worktree: create, status, merge, clean up, discard
+  AgentTools.swift         create_skill, schedule_task, list_scheduled_tasks, cancel_scheduled_task
+  BackupImport.swift       restore a backup into this install
+  Permissions.swift        presets, path containment (multi-root), shell gating
   Plugins.swift            JSON manifests → tools
-  ProjectContext.swift     instruction files, memory, skill catalog, prompt assembly
+  ProjectContext.swift     instruction files (incl. .INFRASTRUCTURE.md), memory, skills, prompts
+  HarnessMemory.swift      the harness's own memory (app support) + save_memory/read_memory
+  ChatTools.swift          list_chats / read_chat — peering into adjacent conversations
+  GitSync.swift            fetch / ff-pull / push / rebase-or-report, fakeable git runner
+  Automations.swift        schedules (cron/interval/once), the store, OpenClaw import/export
+  APIServer.swift          the loopback OpenAI-shaped endpoint over the default model
+  TaskQueue.swift          the durable work list (attachments + long prompts ride along)
+  Compaction.swift         the summarizer, with a Key facts section the harness remembers
   PTY.swift                forkpty + a shell
   TerminalEmulator.swift   VT100/xterm-subset screen
   EditorBuffer.swift       open file, dirty tracking, external-change resolution
@@ -563,22 +707,33 @@ VisionHarnessCore/         the harness. No AppKit, no SwiftUI — headlessly tes
   Markdown.swift           block parser (SwiftUI only does inline)
 
 VisionMacApp/              SwiftUI
+  VisionMacApp.swift       @main, menus, the daemon (window-close stays up), menu-bar brain
+  AppModel.swift           project + extra folders, modes, the automation tick, the API server
+  AppTransport.swift       engine per session, events → timeline, git sync, drafts, auto-naming
+  GuardianService.swift    Guardian sign-in → ordinary routes (token in the Keychain)
+VisionMacApp/              SwiftUI
   VisionMacApp.swift       @main, menus, root split view, toolbar
   AppModel.swift           project, mode, sheets
   AppTransport.swift       engine per session, events → timeline, plugins, context
   SessionVM.swift          one ordered timeline of messages, tool calls, and todos
   ConversationLog.swift    per-session JSON transcripts
+  AutomationsView.swift    the calendar, the library, and the editor
   SetupWizard.swift        first-run configuration
+  ModelRoutesSettings.swift  Settings › Models: the fleet card, a row per route, Guardian sign-in
+  ModelPicker.swift        the searchable model picker shared by toolbar and composer
+  SidebarView.swift        New Chat, search, chats by project or by recency, Agent threads
+  ChatBars.swift           the folder and worktree bars, the finish sheet, the archive browser
+  ChatArchive.swift        chats kept on disk after they leave the sidebar
+  SendToGuardian.swift     send a chat to Guardian; the backup import sheet
   ModelRoutesSettings.swift  Settings › AI Models: a row per route (on, primary, subagent, backup, private)
   SensitiveDataSettings.swift  Settings › AI Models › Sensitive data
   SwapperSettings.swift    Settings › Model Servers: the Swapper boxes
   SparkController.swift    the boxes: status, switching, installs, routes that follow
-  RouteMenu.swift          the primary / subagents / backups menu shared by toolbar and composer
   PlanPanel.swift          the plan panel
   Swapper/                 the "Connect my Spark Swapper" guide
   Plans/                   the subscription plan guide
   Bedrock/                 the Amazon Bedrock guide, its model picker and its backend
-  ChatView.swift           transcript, gates, composer
+  ChatView.swift           transcript, gates, composer (drafts, throttled streaming markdown)
   CodeModeView.swift       tree | editor + terminal | agent
   CodeEditor.swift         NSTextView, line-number ruler
   TerminalView.swift       grid rendering, selection, key encoding
@@ -624,6 +779,10 @@ Verified on macOS 14+ / Apple Silicon:
 
 - **The terminal is a subset, not a full VT.** Shells, build logs, `git`, and `less` are fine; a
   full-screen curses app that relies on mouse reporting or sixel is not.
+- **Amazon Bedrock and the multi-server fleet are covered by tests against fakes** (a scripted AWS CLI,
+  stubbed HTTP, two fake model servers); the first run against real AWS and a second real Spark is yours.
+- **Spark model switching (`/swap`) drives one Spark** — the one set up in Settings ▸ Spark. A second Spark
+  is used through its own route and whatever model it is serving.
 - **Amazon Bedrock, the multi-server fleet, backups and the subscription plans are covered by tests
   against fakes** (a scripted AWS CLI, stubbed HTTP, fake model servers); the Swapper client was also run
   against a local Swapper 2.0 demo. The first run against real AWS, a real plan, and a real second box is

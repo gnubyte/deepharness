@@ -24,10 +24,14 @@ public struct PermissionPolicy: Sendable {
     public var preset: PermissionPreset
     /// Root the write shell is confined to. Everything relative to this.
     public var workspaceRoot: URL
+    /// Additional project roots (multi-folder sessions) the same rules apply
+    /// to: writes inside any of them are treated like writes in the workspace.
+    public var additionalRoots: [URL]
 
-    public init(preset: PermissionPreset, workspaceRoot: URL) {
+    public init(preset: PermissionPreset, workspaceRoot: URL, additionalRoots: [URL] = []) {
         self.preset = preset
         self.workspaceRoot = workspaceRoot.standardizedFileURL
+        self.additionalRoots = additionalRoots.map { $0.standardizedFileURL }
     }
 
     // MARK: - Path containment
@@ -37,12 +41,27 @@ public struct PermissionPolicy: Sendable {
     public func resolve(_ raw: String) -> (url: URL, inside: Bool) {
         let expanded = expand(raw)
         let resolved = URL(fileURLWithPath: expanded).standardizedFileURL
-        let inside = path(resolved)
+        let inside = isContained(resolved)
         return (resolved, inside)
     }
 
-    private func path(_ other: URL) -> Bool {
-        other.path == workspaceRoot.path || other.path.hasPrefix(workspaceRoot.path + "/")
+    private func isContained(_ other: URL) -> Bool {
+        let path = Self.withoutPrivate(other.path)
+        for root in [workspaceRoot] + additionalRoots {
+            let rootPath = Self.withoutPrivate(root.path)
+            if path == rootPath || path.hasPrefix(rootPath + "/") { return true }
+        }
+        return false
+    }
+
+    /// `/tmp`, `/var` and `/etc` are symlinks into `/private`. Foundation's
+    /// standardizing strips that only from paths that exist, so a root and a
+    /// new file inside it could otherwise disagree.
+    static func withoutPrivate(_ path: String) -> String {
+        for link in ["/tmp", "/var", "/etc"] where path == "/private" + link || path.hasPrefix("/private" + link + "/") {
+            return String(path.dropFirst("/private".count))
+        }
+        return path
     }
 
     /// Expand `~` and make relative paths absolute against the workspace.

@@ -36,10 +36,17 @@ public final class AppConfig {
         static let queuePaused = "queue.paused.v1"
         static let queueResume = "queue.resumeOnLaunch.v1"
         static let subagentsUsePrimary = "subagents.usePrimary.v1"
+        static let daemonMode = "daemon.mode.v1"
+        static let gitAutoSync = "git.autoSync.v1"
+        static let apiServerEnabled = "api.server.enabled.v1"
+        static let apiServerPort = "api.server.port.v1"
         static let shield = "shield.v1"
         static let planPanelOpen = "planPanel.open.v1"
         static let planPanelWidth = "planPanel.width.v1"
         static let planPanelAutoOpen = "planPanel.autoOpen.v1"
+        static let agentSavesSkills = "agent.savesSkills.v1"
+        static let sidebarByRecent = "sidebar.byRecent.v1"
+        static let sidebarCollapsed = "sidebar.collapsed.v1"
     }
 
     private let defaults: UserDefaults
@@ -85,6 +92,10 @@ public final class AppConfig {
     public var recentProjects: [String] = [] {
         didSet { persist() }
     }
+    /// Extra folders opened alongside each primary project (multi-folder
+    /// sessions), keyed by the primary project's path — so reopening a project
+    /// restores the whole working set.
+    public var additionalFolders: [String: [String]] = [:] { didSet { persist() } }
     public var wizardCompleted: Bool = false {
         didSet { if !loading { defaults.set(wizardCompleted, forKey: Keys.wizardDone) } }
     }
@@ -127,6 +138,26 @@ public final class AppConfig {
     /// picks up again on launch. Set by Start, cleared by Stop, by a pause
     /// and when the queue runs dry — tasks merely *added* never auto-start.
     public var queueResumeOnLaunch: Bool = false { didSet { persist() } }
+
+    /// Keep running when the last window closes (daemon mode): the task
+    /// queue, automations, the API server and background agents stay alive;
+    /// the menu-bar extra brings the window back.
+    public var daemonMode: Bool = true { didSet { persist() } }
+
+    /// Keep the AI's working branch synced with its git origin before turns
+    /// (fetch, fast-forward when clean, push when ahead — never force).
+    public var gitAutoSync: Bool = true { didSet { persist() } }
+
+    /// Expose the default model on 127.0.0.1 for other programs.
+    public var apiServerEnabled: Bool = false { didSet { persist() } }
+    public var apiServerPort: Int = 8337 { didSet { persist() } }
+    /// In Agent mode, skills the agent writes go live at once. Off: they wait
+    /// as drafts for approval, like every other chat.
+    public var agentSavesSkills: Bool = true { didSet { persist() } }
+    /// The sidebar lists chats newest-first instead of under their projects.
+    public var sidebarByRecent: Bool = false { didSet { persist() } }
+    /// Projects folded shut in the sidebar, by path.
+    public var sidebarCollapsed: Set<String> = [] { didSet { persist() } }
 
     // MARK: - Active route
 
@@ -315,7 +346,8 @@ public final class AppConfig {
     public var workerRoutes: [ProviderProfile] {
         var seen = Set<String>()
         if let main = mainRoute { seen.insert(Self.machineOf(main)) }
-        return flaggedWorkers.filter { seen.insert(Self.machineOf($0)).inserted }
+        // A chat-only route can't run tools, which is all a subagent does.
+        return flaggedWorkers.filter { !$0.isGuardianChatOnly && seen.insert(Self.machineOf($0)).inserted }
     }
 
     /// What counts as "the same server": a self-hosted route is its base URL; a hosted service
@@ -391,7 +423,12 @@ public final class AppConfig {
     }
 
     public func apiKey(for provider: ProviderProfile) -> String {
-        secrets.read(service: Self.keychainService, account: provider.routeID) ?? ""
+        // Guardian routes share the sign-in's token. A route saved by the setup wizard has its own.
+        if provider.kind == .guardian, let token = secrets.read(service: AppIdentity.KeychainService.guardian, account: "token"),
+           !token.isEmpty {
+            return token
+        }
+        return secrets.read(service: Self.keychainService, account: provider.routeID) ?? ""
     }
 
     // MARK: - Projects
@@ -433,6 +470,10 @@ public final class AppConfig {
         }
         preset = defaults.string(forKey: Keys.preset) ?? PermissionPreset.workspaceWrite.rawValue
         recentProjects = defaults.stringArray(forKey: Keys.recentProjects) ?? []
+        if let data = defaults.data(forKey: "additionalFolders.v1"),
+           let decoded = try? JSONDecoder().decode([String: [String]].self, from: data) {
+            additionalFolders = decoded
+        }
         wizardCompleted = defaults.bool(forKey: Keys.wizardDone)
         editorFontSize = defaults.object(forKey: Keys.editorFontSize) as? Double ?? 13
         editorWraps = defaults.object(forKey: Keys.editorWraps) as? Bool ?? false
@@ -450,6 +491,10 @@ public final class AppConfig {
         queuePaused = defaults.bool(forKey: Keys.queuePaused)
         queueResumeOnLaunch = defaults.bool(forKey: Keys.queueResume)
         subagentsUsePrimary = defaults.object(forKey: Keys.subagentsUsePrimary) as? Bool ?? true
+        daemonMode = defaults.object(forKey: Keys.daemonMode) as? Bool ?? true
+        gitAutoSync = defaults.object(forKey: Keys.gitAutoSync) as? Bool ?? true
+        apiServerEnabled = defaults.bool(forKey: Keys.apiServerEnabled)
+        apiServerPort = defaults.object(forKey: Keys.apiServerPort) as? Int ?? 8337
         if let data = defaults.data(forKey: Keys.shield), let decoded = try? JSONDecoder().decode(ShieldSettings.self, from: data) {
             shield = decoded
         }
@@ -457,6 +502,9 @@ public final class AppConfig {
         planPanelOpen = defaults.bool(forKey: Keys.planPanelOpen)
         planPanelWidth = defaults.object(forKey: Keys.planPanelWidth) as? Double ?? 320
         planPanelAutoOpen = defaults.object(forKey: Keys.planPanelAutoOpen) as? Bool ?? true
+        agentSavesSkills = defaults.object(forKey: Keys.agentSavesSkills) as? Bool ?? true
+        sidebarByRecent = defaults.bool(forKey: Keys.sidebarByRecent)
+        sidebarCollapsed = Set(defaults.stringArray(forKey: Keys.sidebarCollapsed) ?? [])
     }
 
     private func persist() {
@@ -467,6 +515,9 @@ public final class AppConfig {
         defaults.set(activeRoute, forKey: Keys.activeModel)
         defaults.set(preset, forKey: Keys.preset)
         defaults.set(recentProjects, forKey: Keys.recentProjects)
+        if let data = try? JSONEncoder().encode(additionalFolders) {
+            defaults.set(data, forKey: "additionalFolders.v1")
+        }
         defaults.set(editorFontSize, forKey: Keys.editorFontSize)
         defaults.set(editorWraps, forKey: Keys.editorWraps)
         defaults.set(editorLineNumbers, forKey: Keys.editorLineNumbers)
@@ -480,6 +531,13 @@ public final class AppConfig {
         defaults.set(queuePaused, forKey: Keys.queuePaused)
         defaults.set(queueResumeOnLaunch, forKey: Keys.queueResume)
         defaults.set(subagentsUsePrimary, forKey: Keys.subagentsUsePrimary)
+        defaults.set(daemonMode, forKey: Keys.daemonMode)
+        defaults.set(gitAutoSync, forKey: Keys.gitAutoSync)
+        defaults.set(apiServerEnabled, forKey: Keys.apiServerEnabled)
+        defaults.set(apiServerPort, forKey: Keys.apiServerPort)
+        defaults.set(agentSavesSkills, forKey: Keys.agentSavesSkills)
+        defaults.set(sidebarByRecent, forKey: Keys.sidebarByRecent)
+        defaults.set(Array(sidebarCollapsed).sorted(), forKey: Keys.sidebarCollapsed)
         persistShield()
         defaults.set(planPanelOpen, forKey: Keys.planPanelOpen)
         defaults.set(planPanelWidth, forKey: Keys.planPanelWidth)

@@ -25,50 +25,76 @@ public struct InstructionFile: Identifiable, Hashable, Sendable {
 /// files are read and injected directly — no managed blocks, no markers.
 public struct ProjectContext: Sendable {
     public let root: URL
+    /// Additional folders the agent works across with the primary root
+    /// (multi-folder sessions). Instructions are loaded from every one; the
+    /// first is the workspace the tools resolve against.
+    public let additionalRoots: [URL]
     public let instructions: [InstructionFile]
     public let skills: [Skill]
 
-    public init(root: URL, instructions: [InstructionFile], skills: [Skill]) {
+    public init(root: URL, additionalRoots: [URL] = [], instructions: [InstructionFile], skills: [Skill]) {
         self.root = root
+        self.additionalRoots = additionalRoots
         self.instructions = instructions
         self.skills = skills
     }
+
+    /// Every folder this context covers, primary first.
+    public var allRoots: [URL] { [root] + additionalRoots }
 
     /// Instruction files are looked for in this order; every one that exists
     /// is loaded. `AGENTS.md` and `QWEN.md` keep us compatible with projects
     /// already set up for other agents.
     /// `.cursorrules`, `.claude/CLAUDE.md` and `CLAUDE.local.md` are the same
     /// idea in Cursor's and Claude Code's layouts.
+    /// `.INFRASTRUCTURE.md` is this harness's own convention: deployment
+    /// pipelines, environments, how the app ships — read and followed like
+    /// any other instruction file.
     public static let instructionNames = ["AGENTS.md", "QWEN.md", "CLAUDE.md", ".claude/CLAUDE.md",
                                           "CLAUDE.local.md", ".cursorrules", AppIdentity.projectInstructionsFileName,
-                                          AppIdentity.Legacy.projectInstructionsFileName, "MEMORY.md"]
+                                          AppIdentity.Legacy.projectInstructionsFileName, "MEMORY.md",
+                                          ".INFRASTRUCTURE.md"]
+    /// The one instruction file that gets its own explanatory label (it
+    /// documents how the project is deployed, not how to code it).
+    public static let infrastructureName = ".INFRASTRUCTURE.md"
 
     public static var userSkillsDirectory: URL { SkillLocations.standard.userSkills }
 
-    /// Read the project's instruction files and skill catalog from disk.
-    public static func load(root: URL, locations: SkillLocations = .standard,
+    /// Read the projects' instruction files and skill catalog from disk.
+    /// `additionalRoots` contributes their instruction files too (labels say
+    /// which folder each came from); skills come from the primary root.
+    public static func load(root: URL, additionalRoots: [URL] = [], locations: SkillLocations = .standard,
                             sources: SkillSources = .all) -> ProjectContext {
-        let instructions = instructionFiles(root: root)
+        // With more than one folder open, label each file with its project so
+        // the model knows which repo a rule belongs to.
+        var instructions = instructionFiles(root: root)
+        for folder in additionalRoots {
+            instructions += instructionFiles(root: folder, labelPrefix: folder.lastPathComponent + "/")
+        }
         let skills = SkillCatalog.load(project: root, locations: locations, sources: sources)
-        return ProjectContext(root: root, instructions: instructions, skills: skills)
+        return ProjectContext(root: root, additionalRoots: additionalRoots, instructions: instructions, skills: skills)
     }
 
     /// The instruction files in a folder (`instructionNames`, then today's daily memory log). In the home folder
     /// these are the user's own, read into every chat without a project.
-    public static func instructionFiles(root: URL) -> [InstructionFile] {
+    public static func instructionFiles(root: URL, labelPrefix prefix: String = "") -> [InstructionFile] {
         var instructions: [InstructionFile] = []
         for name in instructionNames {
             let url = root.appendingPathComponent(name)
             guard let text = try? String(contentsOf: url, encoding: .utf8),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            instructions.append(InstructionFile(url: url, text: text, label: name))
+            var label = prefix + name
+            // The infrastructure file explains *how this project ships* —
+            // say so, so the model treats it as deployment truth.
+            if name == infrastructureName { label += " (deployment pipelines — follow these)" }
+            instructions.append(InstructionFile(url: url, text: text, label: label))
         }
         // Today's daily memory log, if the folder keeps one.
         let today = Self.dayStamp()
         let daily = root.appendingPathComponent("memory/\(today).md")
         if let text = try? String(contentsOf: daily, encoding: .utf8),
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            instructions.append(InstructionFile(url: daily, text: text, label: "memory/\(today).md"))
+            instructions.append(InstructionFile(url: daily, text: text, label: prefix + "memory/\(today).md"))
         }
         return instructions
     }
@@ -129,10 +155,16 @@ public struct ProjectContext: Sendable {
 
     /// Machine facts the model would otherwise guess at.
     public static func environmentBlock(workspace: URL, model: String, preset: PermissionPreset,
+                                        additionalWorkspaces: [URL] = [],
                                         extraLines: [String] = []) -> String {
         var lines = [
             "--- Environment ---",
             "Project folder: \(workspace.path)",
+        ]
+        for extra in additionalWorkspaces {
+            lines.append("Additional folder: \(extra.path)")
+        }
+        lines += [
             "Platform: macOS",
             "Today's date: \(dayStamp())",
             "Model: \(model)",

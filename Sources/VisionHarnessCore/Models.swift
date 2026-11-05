@@ -207,6 +207,9 @@ public struct ProviderProfile: Codable, Hashable, Sendable {
     /// The plan's terms allow only interactive use (the Qwen Coding Plan):
     /// the task queue and other unattended runs don't start on it. Nil = no.
     public var interactiveOnly: Bool?
+    /// A Guardian local model that the deployment's OpenAI-shaped proxy lists, so it runs this app's tools like
+    /// any other route. Nil or false: it can only be reached through Guardian's chat.
+    public var guardianProxied: Bool?
 
     public init(kind: Kind, name: String, baseURL: String, apiKey: String? = nil,
                 model: String, temperature: Double? = nil, maxOutputTokens: Int? = nil,

@@ -120,6 +120,21 @@ public final class SessionVM: Identifiable {
     /// Pinned when the session is created, like the preset a chat runs under.
     public var preset: PermissionPreset
 
+    /// Folders added to just this chat. The agent works across them alongside
+    /// `cwd`: their instruction files load and they're inside the permission
+    /// boundary, in this chat only.
+    public var additionalFolders: [String] = []
+    /// Set when this chat works in its own git worktree (`cwd` is its folder).
+    public var worktree: WorktreeRef?
+    /// What the worktree holds, refreshed after each turn.
+    public var worktreeStatus: WorktreeStatus?
+    /// An Agent mode thread rather than an ordinary chat.
+    public var isAgent = false
+    /// The Guardian person this thread talks to (Agent mode).
+    public var person: GuardianPerson?
+    /// The conversation on Guardian's side, for routes that keep it there.
+    public var guardianChatID: String?
+
     public var entries: [ChatEntry] = []
     /// False while the stored timeline hasn't been read into `entries` (a chat
     /// from a previous launch, or an archived queue chat whose timeline was
@@ -297,7 +312,13 @@ public final class SessionVM: Identifiable {
     public var workFolder: String?
 
     public var projectName: String? {
-        workspaceURL?.lastPathComponent
+        worktree.map { URL(fileURLWithPath: $0.repoPath).lastPathComponent } ?? workspaceURL?.lastPathComponent
+    }
+
+    /// The project this chat files under: a worktree chat belongs to the repo
+    /// it was cut from, not to its temporary folder.
+    public var projectPath: String? {
+        worktree?.repoPath ?? cwd
     }
 
     /// Tool calls still in flight — the composer shows what is happening.

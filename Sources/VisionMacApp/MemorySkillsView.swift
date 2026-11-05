@@ -17,7 +17,7 @@ struct MemorySkillsView: View {
     /// Bumped after a save, so the user's own files are read again.
     @State private var revision = 0
 
-    enum Selection: Hashable { case instructions, skills, prompt }
+    enum Selection: Hashable { case instructions, skills, prompt, harnessMemory }
 
     private var context: ProjectContext? { model.transport.projectContext }
 
@@ -39,6 +39,7 @@ struct MemorySkillsView: View {
             Divider()
             Picker("", selection: $selection) {
                 Text("Instructions").tag(Selection.instructions)
+                Text("Harness memory").tag(Selection.harnessMemory)
                 Text("Skills").tag(Selection.skills)
                 Text("System prompt").tag(Selection.prompt)
             }
@@ -50,6 +51,7 @@ struct MemorySkillsView: View {
             Group {
                 switch selection {
                 case .instructions: instructions
+                case .harnessMemory: harnessMemory
                 case .skills: SkillsManagerView()
                 case .prompt: promptPreview
                 }
@@ -86,6 +88,66 @@ struct MemorySkillsView: View {
             Spacer()
             Button("Done") { dismiss() }
                 .keyboardShortcut(.defaultAction)
+        }
+        .padding(12)
+    }
+
+    // MARK: Harness memory
+
+    /// The harness's own memory (`~/Library/Application Support/Vision/`):
+    /// durable facts + today's log, plus `save_memory`'s output. Lives with
+    /// the app — never inside a project folder — and rides into every chat.
+    @State private var harnessBuffer = ""
+    @State private var harnessLoaded = false
+    @State private var harnessEditingDurable = true
+
+    private var harnessMemory: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("", selection: $harnessEditingDurable) {
+                Text("Durable (MEMORY.md)").tag(true)
+                Text("Today's log").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 320)
+            Text("What the harness knows across all chats and projects — the user, people, conventions, decisions. The model adds to it with `save_memory`; compaction folds in each summary's key facts. Kept short: it rides on every request.")
+                .font(.caption).foregroundStyle(.secondary)
+            if !harnessLoaded {
+                // Load once on first appear.
+                Color.clear.onAppear {
+                    harnessBuffer = harnessEditingDurable ? model.transport.memory.durable() : model.transport.memory.daily()
+                    harnessLoaded = true
+                }
+            }
+            TextEditor(text: $harnessBuffer)
+                .font(.system(size: 12, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Theme.hairline))
+            HStack {
+                Button("Save") {
+                    let target = harnessEditingDurable ? model.transport.memory.memoryFile : model.transport.memory.dailyFile()
+                    try? harnessBuffer.write(to: target, atomically: true, encoding: .utf8)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                Text(harnessEditingDurable
+                     ? model.transport.memory.memoryFile.path
+                     : model.transport.memory.dailyFile().path)
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .lineLimit(1).truncationMode(.head)
+                Spacer()
+                Picker("", selection: $harnessEditingDurable) {
+                    Text("Durable (MEMORY.md)").tag(true)
+                    Text("Today's log").tag(false)
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                .onChange(of: harnessEditingDurable) { _, durable in
+                    harnessBuffer = durable ? model.transport.memory.durable() : model.transport.memory.daily()
+                }
+            }
         }
         .padding(12)
     }

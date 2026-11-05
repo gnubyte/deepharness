@@ -84,6 +84,10 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
     /// app has since switched to another project. Nil for tasks queued before
     /// this was recorded (they run in the current project).
     public var cwd: String?
+    /// Files/images attached to the task (screenshots, a spec, a log). The
+    /// goal loop sends them with the kickoff message exactly like an
+    /// interactive turn's attachments.
+    public var attachments: [MessageAttachment]?
     /// For a task queued from a chat without a project: that chat's scratch folder, which the task works in.
     public var workFolder: String?
     public var log: [QueueLogLine]
@@ -94,6 +98,7 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
                 status: QueueTaskStatus = .queued,
                 enteredAt: Date = .now,
                 cwd: String? = nil,
+                attachments: [MessageAttachment]? = nil,
                 log: [QueueLogLine] = []) {
         self.id = id
         self.title = title
@@ -101,6 +106,7 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
         self.status = status
         self.enteredAt = enteredAt
         self.cwd = cwd
+        self.attachments = (attachments?.isEmpty ?? true) ? nil : attachments
         self.log = log
     }
 
@@ -130,7 +136,7 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, details, status, enteredAt, startedAt, finishedAt, rounds
-        case promptTokens, completionTokens, sessionID, cwd, workFolder, log
+        case promptTokens, completionTokens, sessionID, cwd, attachments, workFolder, log
     }
 
     /// Tolerant decoding: a missing field (a file from an older or newer
@@ -150,6 +156,7 @@ public struct QueueTask: Identifiable, Codable, Hashable, Sendable {
         completionTokens = try c.decodeIfPresent(Int.self, forKey: .completionTokens) ?? 0
         sessionID = try c.decodeIfPresent(String.self, forKey: .sessionID)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        attachments = try c.decodeIfPresent([MessageAttachment].self, forKey: .attachments)
         workFolder = try c.decodeIfPresent(String.self, forKey: .workFolder)
         log = (try? c.decodeIfPresent([QueueLogLine].self, forKey: .log)) ?? []
     }
@@ -242,10 +249,10 @@ public extension TaskQueue {
 public extension TaskQueue {
     @discardableResult
     mutating func add(_ title: String, details: String = "", atFront: Bool = false,
-                      cwd: String? = nil, workFolder: String? = nil) -> QueueTask {
+                      cwd: String? = nil, attachments: [MessageAttachment]? = nil, workFolder: String? = nil) -> QueueTask {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         var task = QueueTask(title: title, details: details.trimmingCharacters(in: .whitespacesAndNewlines),
-                             cwd: (cwd?.isEmpty ?? true) ? nil : cwd)
+                             cwd: (cwd?.isEmpty ?? true) ? nil : cwd, attachments: attachments)
         if task.cwd == nil, let workFolder, !workFolder.isEmpty { task.workFolder = workFolder }
         task.appendLog(.entered, "Entered the queue at #\(atFront ? 1 : queuedCount + 1)")
         if atFront { tasks.insert(task, at: tasks.firstIndex { $0.status == .queued } ?? tasks.endIndex) }

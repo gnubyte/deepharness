@@ -16,10 +16,9 @@ struct QueueView: View {
     @State private var editingDetails = ""
     @State private var isEditing = false
     @State private var showLog = false
-    @State private var adding = false
-    @State private var newTitle = ""
-    @State private var newDetails = ""
-    @State private var newAtFront = false
+    /// The Add Task modal — a roomy editor with attachments, reachable even
+    /// while a chat (or the queue) is spinning.
+    @State private var showingAdd = false
 
     private var transport: AppTransport { model.transport }
     private var queue: TaskQueue { transport.queue }
@@ -35,39 +34,24 @@ struct QueueView: View {
                             stopping: transport.queueStopping,
                             subtitle: subtitle,
                             canStart: queue.nextTask != nil || transport.queueStopping,
-                            onAdd: { beginAdd() },
+                            onAdd: { showingAdd = true },
                             onLog: { showLog = true },
                             onStart: { transport.startQueue() },
                             onStop: { transport.stopQueue() })
             Divider()
-            // The add card lives in the list, so the list shows while adding
-            // even when the queue is still empty.
-            if queue.tasks.isEmpty && !adding {
-                QueueEmptyView(onAdd: { beginAdd() })
+            if queue.tasks.isEmpty {
+                QueueEmptyView(onAdd: { showingAdd = true })
             } else {
                 TaskListPane(
                     tasks: queue.tasks,
                     positions: positionMap,
                     selectedID: selectedTaskID,
-                    adding: adding,
-                    newTitle: $newTitle,
-                    newDetails: $newDetails,
-                    newAtFront: $newAtFront,
                     onSelect: { id in
                         selectedTaskID = id
                         isEditing = false
                     },
                     onMoveOnto: { dragged, target in
                         transport.queueMove(id: dragged, onto: target)
-                    },
-                    onCancelAdd: { adding = false; selectedTaskID = nil },
-                    onAdd: {
-                        guard !newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                        let added = transport.queueAdd(newTitle, details: newDetails, atFront: newAtFront)
-                        newTitle = ""; newDetails = ""; newAtFront = false
-                        adding = false
-                        isEditing = false
-                        selectedTaskID = added.id
                     })
                 Divider()
                 TaskDetailPane(
@@ -95,13 +79,14 @@ struct QueueView: View {
             }
         }
         .sheet(isPresented: $showLog) { QueueLogSheet() }
-    }
-
-    private func beginAdd() {
-        newTitle = ""; newDetails = ""; newAtFront = false
-        isEditing = false
-        adding = true
-        withAnimation { selectedTaskID = "new" }
+        .sheet(isPresented: $showingAdd) {
+            AddTaskSheet { title, details, attachments, atFront in
+                let added = transport.queueAdd(title, details: details, atFront: atFront,
+                                               attachments: attachments.isEmpty ? nil : attachments)
+                selectedTaskID = added.id
+                isEditing = false
+            }
+        }
     }
 
     private var subtitle: String {
@@ -207,14 +192,8 @@ struct TaskListPane: View {
     let tasks: [QueueTask]
     let positions: [String: Int]
     let selectedID: String?
-    let adding: Bool
-    @Binding var newTitle: String
-    @Binding var newDetails: String
-    @Binding var newAtFront: Bool
     let onSelect: (String) -> Void
     let onMoveOnto: (String, String) -> Void
-    let onCancelAdd: () -> Void
-    let onAdd: () -> Void
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -242,11 +221,6 @@ struct TaskListPane: View {
                             onMoveOnto(dragged, task.id)
                             return true
                         }
-                    }
-                    if adding {
-                        NewTaskCard(title: $newTitle, details: $newDetails, atFront: $newAtFront,
-                                    onCancel: onCancelAdd, onAdd: onAdd)
-                            .id("new")
                     }
                 }
                 .padding(6)
@@ -339,38 +313,94 @@ private struct TaskRow: View {
     }
 }
 
+/// The Add Task modal: a title, a roomy prompt editor (long instructions are
+/// the point), attachments, and front-of-queue. Openable while any chat is
+/// spinning — the queue just takes it in order.
 @MainActor
-private struct NewTaskCard: View {
-    @Binding var title: String
-    @Binding var details: String
-    @Binding var atFront: Bool
-    let onCancel: () -> Void
-    let onAdd: () -> Void
+struct AddTaskSheet: View {
+    /// `title`, `details`, `attachments`, `atFront`.
+    let onAdd: (String, String, [MessageAttachment], Bool) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var title = ""
+    @State private var details = ""
+    @State private var attachments: [MessageAttachment] = []
+    @State private var atFront = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Add Task to Queue")
+                .font(.system(size: 14, weight: .semibold))
             TextField("Title (short)", text: $title)
                 .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12))
-                .onSubmit { onAdd() }
+                .onSubmit { if valid { commit() } }
+
             TextEditor(text: $details)
                 .font(.system(size: 12))
-                .frame(minHeight: 60, maxHeight: 120)
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.quaternary))
-            Toggle("Add to the front of the queue", isOn: $atFront)
-                .font(.system(size: 11))
-                .toggleStyle(.checkbox)
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .frame(minWidth: 460, minHeight: 160, maxHeight: 380)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+                .help("The full instructions. Large prompts are fine — the task gets its own chat and context window.")
+
+            if !attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(attachments, id: \.self) { attachment in
+                            HStack(spacing: 4) {
+                                Image(systemName: attachment.kind == .image ? "photo" : "doc")
+                                    .font(.caption2)
+                                Text(attachment.name).font(.system(size: 10)).lineLimit(1)
+                                Button { attachments.removeAll { $0 == attachment } } label: {
+                                    Image(systemName: "xmark.circle.fill").font(.caption2)
+                                }.buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(.quaternary.opacity(0.4), in: Capsule())
+                        }
+                    }
+                }
+            }
+
             HStack {
+                Button {
+                    let panel = NSOpenPanel()
+                    panel.canChooseFiles = true
+                    panel.canChooseDirectories = true
+                    panel.allowsMultipleSelection = true
+                    if panel.runModal() == .OK {
+                        for url in panel.urls {
+                            guard let data = try? Data(contentsOf: url) else { continue }
+                            let kind: MessageAttachment.Kind =
+                                ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"]
+                                    .contains(url.pathExtension.lowercased()) ? .image : .file
+                            attachments.append(MessageAttachment(kind: kind, name: url.lastPathComponent, data: data))
+                        }
+                    }
+                } label: {
+                    Label("Attach Files…", systemImage: "paperclip")
+                }
+                .controlSize(.small)
                 Spacer()
-                Button("Cancel", action: onCancel).controlSize(.small)
-                Button("Add Task", action: onAdd)
+                Toggle("Front of queue", isOn: $atFront)
+                    .toggleStyle(.checkbox).font(.system(size: 11))
+                Button("Cancel") { dismiss() }
+                Button("Add Task") { commit() }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!valid)
             }
         }
-        .padding(8)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+        .padding(16)
+        .frame(width: 540)
+    }
+
+    private var valid: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func commit() {
+        onAdd(title.trimmingCharacters(in: .whitespacesAndNewlines), details, attachments, atFront)
+        dismiss()
     }
 }
 

@@ -16,6 +16,11 @@ struct ChatView: View {
     /// Skills offered in the "/" autocomplete, loaded when the user starts typing a command.
     @State private var slashSkills: [Skill] = []
     @State private var slashSkillsRevision = -1
+    /// Draft autosave: keystrokes land on disk a couple of seconds after the
+    /// last one, so a crash or restart never loses an unsent prompt.
+    @State private var draftSaveTask: Task<Void, Never>?
+    /// A draft restored from disk for this chat (shown with a Clear button).
+    @State private var restoredDraft = false
 
     private var transport: AppTransport { model.transport }
 
@@ -64,11 +69,41 @@ struct ChatView: View {
             insertMention(mention)
             model.code.pendingMention = nil
         }
+        .onAppear {
+            // Restore an unsent draft this chat had when it was last closed.
+            let saved = transport.savedDraft(session.id)
+            if !saved.isEmpty, draft.isEmpty {
+                draft = saved
+                restoredDraft = true
+            }
+        }
+        .onChange(of: draft) { _, text in
+            scheduleDraftSave(text)
+        }
+        .onChange(of: session.id) { _, newID in
+            // Switching chats swaps the draft in (the previous one was saved).
+            let saved = transport.savedDraft(newID)
+            draft = saved
+            restoredDraft = !saved.isEmpty
+        }
         .onChange(of: model.pendingComposerText) { _, text in
             guard let text else { return }
             draft = text
             composerHeight = min(max(ComposerField.minHeight, 90), ComposerField.maxHeight)
             model.pendingComposerText = nil
+        }
+    }
+
+    /// Persist the draft a couple of seconds after typing stops. Sent prompts
+    /// clear it (see `send`).
+    private func scheduleDraftSave(_ text: String) {
+        draftSaveTask?.cancel()
+        let sessionID = session.id
+        draftSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            transport.saveDraft(sessionID, text)
+            if !text.isEmpty { restoredDraft = false }
         }
     }
 
@@ -162,6 +197,7 @@ struct ChatView: View {
     private var composer: some View {
         VStack(spacing: 6) {
             SparkSwapBanner()
+            ChatContextBars(session: session)
             if let goal = session.goal {
                 GoalBanner(goal: goal, session: session)
             }
@@ -194,6 +230,11 @@ struct ChatView: View {
                 Menu {
                     Button("Attach Image…") { attachImage() }
                     Button("Attach File…") { attachFile() }
+                    Divider()
+                    Button("Add Folder to This Chat…") { model.addFolder(to: session) }
+                    if model.guardian.isSignedIn {
+                        Button("Send to Guardian…") { model.sendingToGuardian = session }
+                    }
                 } label: {
                     Image(systemName: "plus.circle.fill")
                         .frame(width: 22, height: 22)
@@ -243,9 +284,44 @@ struct ChatView: View {
                         ModelMenu(session: session)
                         ThinkingMenu(session: session)
                         SkillsButton(session: session)
-                        if let name = session.projectName {
+                        // The unsent prompt is saved every couple of seconds;
+                        // this clears it (and the field) on demand.
+                        if !draft.isEmpty || restoredDraft {
+                            Button {
+                                draft = ""
+                                restoredDraft = false
+                                transport.clearDraft(session.id)
+                            } label: {
+                                Label("Clear draft", systemImage: "eraser")
+                                    .labelStyle(.titleAndIcon)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Clear the unsent prompt (it is saved automatically every few seconds)")
+                        }
+                        if let name = session.projectName, !session.isAgent {
                             Label(name, systemImage: "folder")
                                 .foregroundStyle(.secondary)
+                        }
+                        Button {
+                            model.addFolder(to: session)
+                        } label: {
+                            Label("Add Folder", systemImage: "folder.badge.plus")
+                                .labelStyle(.iconOnly)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Add another folder to this chat, so the agent can work across both")
+                        if model.guardian.isSignedIn {
+                            Button {
+                                model.sendingToGuardian = session
+                            } label: {
+                                Label("Send to Guardian", systemImage: "paperplane")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Send this chat and any files to a person, an AI Coders project or a board in Guardian")
                         }
                     }
                     .fixedSize()
@@ -295,6 +371,8 @@ struct ChatView: View {
         let payload = attachments
         draft = ""
         attachments = []
+        transport.clearDraft(session.id)
+        restoredDraft = false
         model.send(text, in: session, attachments: payload)
     }
 
@@ -352,19 +430,26 @@ struct ChatView: View {
         for url in panel.urls { stage(url, kind: .file) }
     }
 
-    /// Read the file and, for images, re-encode to PNG so any model can see it.
+    /// Read the file and, for images, re-encode to PNG so any model can see
+    /// it. Runs off the main thread — a large screenshot re-encoded on the
+    /// main thread would freeze the window mid-typing.
     private func stage(_ url: URL, kind: MessageAttachment.Kind) {
-        guard let data = try? Data(contentsOf: url) else { return }
-        let name = url.lastPathComponent
-        guard !attachments.contains(where: { $0.name == name && $0.data == data }) else { return }
-        if kind == .image,
-           let image = NSImage(data: data),
-           let png = image.tiffRepresentation,
-           let rep = NSBitmapImageRep(data: png),
-           let out = rep.representation(using: .png, properties: [:]) {
-            attachments.append(MessageAttachment(kind: .image, name: name, data: out))
-        } else {
-            attachments.append(MessageAttachment(kind: kind, name: name, data: data))
+        Task { @MainActor in
+            let staged = await Task.detached(priority: .userInitiated) { () -> MessageAttachment? in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                let name = url.lastPathComponent
+                if kind == .image,
+                   let image = NSImage(data: data),
+                   let png = image.tiffRepresentation,
+                   let rep = NSBitmapImageRep(data: png),
+                   let out = rep.representation(using: .png, properties: [:]) {
+                    return MessageAttachment(kind: .image, name: name, data: out)
+                }
+                return MessageAttachment(kind: kind, name: name, data: data)
+            }.value
+            guard let staged else { return }
+            guard !attachments.contains(where: { $0.name == staged.name && $0.data == staged.data }) else { return }
+            attachments.append(staged)
         }
     }
 
@@ -411,10 +496,14 @@ struct ComposerField: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.parent = self
-        if textView.string != text { textView.string = text }
+        // Only push text and re-measure when the string actually changed:
+        // SwiftUI re-evaluates this view on every keystroke-adjacent update,
+        // and a TextKit layout of a very long draft per update freezes typing.
+        let changed = textView.string != text
+        if changed { textView.string = text }
         textView.isEditable = isEnabled
         textView.textColor = isEnabled ? .labelColor : .disabledControlTextColor
-        context.coordinator.reportHeight(textView)
+        if changed { context.coordinator.reportHeight(textView) }
     }
 
     @MainActor
@@ -470,7 +559,7 @@ private struct EntryRow: View {
     var body: some View {
         switch entry.kind {
         case .message(let body):
-            MessageRow(body: body, at: entry.at, masked: session.masked[entry.id])
+            MessageRow(body: body, at: entry.at, streaming: session.streamingID == entry.id, masked: session.masked[entry.id])
         case .tool(let activity):
             if activity.name == UseSkillTool.name {
                 SkillCard(activity: activity)
@@ -493,12 +582,16 @@ private struct EntryRow: View {
 private struct MessageRow: View {
     let body_: MessageBody
     let at: Date
+    /// True while this bubble is receiving streamed deltas (its markdown
+    /// re-parses throttled rather than per delta).
+    let streaming: Bool
     /// What the shield masked before this answer's request went out.
     let masked: ShieldReport?
 
-    init(body: MessageBody, at: Date, masked: ShieldReport? = nil) {
+    init(body: MessageBody, at: Date, streaming: Bool = false, masked: ShieldReport? = nil) {
         self.body_ = body
         self.at = at
+        self.streaming = streaming
         self.masked = masked
     }
 
@@ -511,6 +604,9 @@ private struct MessageRow: View {
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                } else if streaming {
+                    // The bubble currently receiving deltas: throttled parse.
+                    MarkdownView(source: body_.text, throttled: true)
                 } else {
                     MarkdownView(source: body_.text)
                 }
@@ -1365,10 +1461,11 @@ private struct ContextGaugeView: View {
 }
 
 /// Shown while the agent is busy: what it's doing, and — for reasoning
-/// models — a live tail of its thinking.
+/// models — a live tail of its thinking. The icon is steady (a bouncing
+/// "working" icon reads as motion the user didn't ask for); the countdown
+/// refreshes once a second only while a retry is pending.
 private struct ThinkingRow: View {
     let session: SessionVM
-    @State private var phase = 0.0
     @State private var now = Date()
 
     var body: some View {
@@ -1377,7 +1474,6 @@ private struct ThinkingRow: View {
                 Image(systemName: session.reasoning.isEmpty ? "sparkle" : "brain")
                     .foregroundStyle(.secondary)
                     .frame(width: 18)
-                    .opacity(0.4 + 0.6 * abs(sin(phase)))
                 Text(headline)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -1394,9 +1490,9 @@ private struct ThinkingRow: View {
             }
         }
         .task {
+            // One wake per second, only to keep the retry countdown honest.
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 90_000_000)
-                phase += 0.2
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
                 now = Date()
             }
         }
@@ -1681,42 +1777,23 @@ private struct ModelMenu: View {
     var body: some View {
         let spark = model.spark
         let current = model.transport.activeModelID ?? model.config.activeProvider?.model ?? "No model"
+        let displayed = GuardianLocalModel.modelName(from: current)
         let limit = model.transport.contextLimit()
-        Menu {
-            if spark.isConfigured {
-                ForEach(spark.boxes) { box in
-                    Section("\(box.name) — what it serves") {
-                        if let status = box.status {
-                            ForEach(status.ordered) { m in
-                                Button {
-                                    spark.request(m, on: box)
-                                } label: {
-                                    Label(Self.line(m, status: status),
-                                          systemImage: m.key == status.active ? "checkmark.circle.fill"
-                                              : !m.isInstalled ? "arrow.down.circle"
-                                              : m.running ? "hourglass" : "arrow.triangle.2.circlepath")
-                                }
-                                // Installing happens in Settings ▸ Model Servers, not from here.
-                                .disabled(m.key == status.active || status.isSwitching || !m.isInstalled)
-                            }
-                        } else {
-                            Text(box.lastError ?? "Connecting to \(box.name)…")
-                        }
-                    }
+        ModelPickerButton {
+            HStack(spacing: 4) {
+                if let person = session.person {
+                    PersonAvatar(person: person, size: 14)
+                    Text(person.displayName)
+                } else {
+                    Label("\(displayed) · \(ModelSizes.short(limit))", systemImage: spark.isSwitchingMainModel ? "hourglass" : "cpu")
                 }
-                Button("Refresh") { Task { await spark.refreshAll() } }
-            } else {
-                Button("Connect a Spark Swapper…") { model.showSwapperGuide() }
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
             }
-            RouteMenuSections()
-        } label: {
-            Label("\(current) · \(ModelSizes.short(limit))", systemImage: spark.isSwitchingMainModel ? "hourglass" : "cpu")
         }
-        .menuStyle(.borderlessButton)
         .fixedSize()
         .foregroundStyle(.secondary)
         .disabled(session.running)
-        .help("Model in use and its context window. Pick a model a Spark Swapper box serves to switch it (also /swap), or another configured route.")
+        .help("Model in use and its context window. Pick another, including a model a Spark Swapper box serves (also /swap).")
         .task { if spark.boxes.contains(where: { $0.status == nil }) { await spark.refreshAll() } }
     }
 
