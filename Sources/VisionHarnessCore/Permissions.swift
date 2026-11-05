@@ -46,11 +46,22 @@ public struct PermissionPolicy: Sendable {
     }
 
     private func isContained(_ other: URL) -> Bool {
-        let path = other.path
+        let path = Self.withoutPrivate(other.path)
         for root in [workspaceRoot] + additionalRoots {
-            if path == root.path || path.hasPrefix(root.path + "/") { return true }
+            let rootPath = Self.withoutPrivate(root.path)
+            if path == rootPath || path.hasPrefix(rootPath + "/") { return true }
         }
         return false
+    }
+
+    /// `/tmp`, `/var` and `/etc` are symlinks into `/private`. Foundation's
+    /// standardizing strips that only from paths that exist, so a root and a
+    /// new file inside it could otherwise disagree.
+    static func withoutPrivate(_ path: String) -> String {
+        for link in ["/tmp", "/var", "/etc"] where path == "/private" + link || path.hasPrefix("/private" + link + "/") {
+            return String(path.dropFirst("/private".count))
+        }
+        return path
     }
 
     /// Expand `~` and make relative paths absolute against the workspace.

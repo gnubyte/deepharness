@@ -4,13 +4,14 @@ import VisionHarnessCore
 
 /// Which half of the app the window is showing.
 enum WorkspaceMode: String, CaseIterable, Identifiable {
-    case chat, code, automations
+    case chat, code, agent, automations
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .chat: "Chat"
         case .code: "Code"
+        case .agent: "Agent"
         case .automations: "Automations"
         }
     }
@@ -18,6 +19,7 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
         switch self {
         case .chat: "bubble.left.and.bubble.right"
         case .code: "chevron.left.forwardslash.chevron.right"
+        case .agent: "brain.head.profile"
         case .automations: "clock.badge.checkmark"
         }
     }
@@ -25,6 +27,12 @@ enum WorkspaceMode: String, CaseIterable, Identifiable {
 
 enum SettingsTab: Hashable { case general, models, spark, guardian, skills, computer, plugins, editor, automations }
 enum SkillsAction: Equatable { case generate, importSkills, newManual }
+
+/// A pending "new chat in a worktree", waiting for its name.
+struct WorktreeRequest: Identifiable {
+    let id = UUID()
+    let project: URL
+}
 
 /// A `ProviderProfile?` that the API server's network thread can read while
 /// the main actor updates it.
@@ -48,8 +56,26 @@ final class AppModel {
     let code = CodeWorkspace()
 
     var mode: WorkspaceMode = .chat {
-        didSet { config.lastMode = mode.rawValue }
+        didSet {
+            config.lastMode = mode.rawValue
+            modeChanged(from: oldValue)
+        }
     }
+    /// Where each side left off, so moving between Agent mode and the chats
+    /// comes back to the same conversation.
+    @ObservationIgnored private var lastChatID: String?
+    @ObservationIgnored private var lastAgentID: String?
+    /// Showing the browsable archive of old chats.
+    var showArchive = false
+    /// Asking for the name of a new worktree chat, in this project.
+    var worktreeRequest: WorktreeRequest?
+    /// Finishing this worktree chat: merge, clean up, archive.
+    var finishingWorktree: SessionVM?
+    /// Who this Guardian account may talk to. Here rather than on the service, so views follow it.
+    private(set) var guardianPeople: [GuardianPerson] = []
+    @ObservationIgnored private var lastGuardianRefresh = Date.distantPast
+    /// Sending this chat to someone in Guardian.
+    var sendingToGuardian: SessionVM?
     /// Presented over everything on first run, and on demand afterwards.
     var showWizard = false
     var showSettings = false
@@ -150,6 +176,15 @@ final class AppModel {
         }
         spark.startMonitoring()
 
+        // The agent's scheduling tools work on the same store as the calendar.
+        transport.scheduleFromAgent = { [weak self] automation in self?.saveAutomation(automation) }
+        transport.scheduledList = { [weak self] in self?.automations.currentStore().automations ?? [] }
+        transport.scheduledCancel = { [weak self] id in
+            guard let self, self.automations.currentStore().automation(id: id) != nil else { return false }
+            self.deleteAutomation(id: id)
+            return true
+        }
+
         // The agent's file writes drive the editor's live reload.
         transport.onFilesChanged = { [weak self] changes in
             self?.code.applyExternalChanges(changes)
@@ -186,6 +221,9 @@ final class AppModel {
         // An interrupted task queue (crash, restart, quit) resumes automatically;
         // one the user deliberately stopped does not.
         resumeQueueIfNeeded()
+
+        if mode == .agent { enterAgentMode() }
+        refreshGuardianIfStale()
     }
 
     private func refreshFleetRoutes() {
@@ -269,6 +307,11 @@ final class AppModel {
 
     /// Add one more folder to the current session's working set.
     func addFolder() {
+        // With a chat open, the folder joins that chat alone.
+        if let session = selectedSession {
+            addFolder(to: session)
+            return
+        }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -284,6 +327,18 @@ final class AppModel {
         if let project { transport.adoptProject(project, additional: additionalProjects) }
     }
 
+    /// Add folders to one chat: "integrate this folder with that one".
+    func addFolder(to session: SessionVM) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add to Chat"
+        panel.message = "Folders this chat also works in, alongside \(session.projectName ?? "its own folder")."
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        transport.addFolders(panel.urls, to: session)
+    }
+
     /// Remove one additional folder from the working set.
     func removeFolder(_ url: URL) {
         additionalProjects.removeAll { $0.standardizedFileURL == url.standardizedFileURL }
@@ -293,7 +348,8 @@ final class AppModel {
     /// Adopt `url` as the project: it becomes the agent's working directory,
     /// the permission boundary, and the root of the file tree. `additional`
     /// are extra folders the agent works across.
-    func openProject(_ url: URL, additional: [URL]? = nil, activateSession: Bool = true) {
+    func openProject(_ url: URL, additional: [URL]? = nil, activateSession: Bool = true,
+                     remember: Bool = true) {
         project = url
         if let additional {
             additionalProjects = additional
@@ -302,15 +358,17 @@ final class AppModel {
             additionalProjects = (config.additionalFolders[url.path] ?? []).map { URL(fileURLWithPath: $0) }
                 .filter { FileManager.default.fileExists(atPath: $0.path) }
         }
-        config.additionalFolders[url.path] = additionalProjects.map(\.path)
-        config.touchProject(url.path)
+        if remember {
+            config.additionalFolders[url.path] = additionalProjects.map(\.path)
+            config.touchProject(url.path)
+        }
         transport.adoptProject(url, additional: additionalProjects)
         code.open(root: url)
 
         guard activateSession else { return }
         // Return to this project's most recent chat rather than piling up
         // empty ones.
-        if let existing = transport.sessions.first(where: { $0.cwd == url.path }) {
+        if let existing = transport.sessions.first(where: { $0.cwd == url.path && !$0.isAgent }) {
             select(existing.id)
         } else {
             _ = newChat()
@@ -443,15 +501,122 @@ final class AppModel {
             // Make sure the context gauge has a number before the user asks.
             transport.ensureContextProbe()
             // Following a chat into its project keeps both modes in step.
-            if let cwd = session.cwd, cwd != project?.path {
-                openProject(URL(fileURLWithPath: cwd), activateSession: false)
+            // An Agent thread's folder isn't a project; a worktree is temporary,
+            // so it stays out of the recent projects.
+            if !session.isAgent, let cwd = session.cwd, cwd != project?.path {
+                openProject(URL(fileURLWithPath: cwd), activateSession: false, remember: session.worktree == nil)
+            }
+            if session.worktree != nil {
+                Task { await transport.refreshWorktreeStatus(session) }
             }
         }
     }
 
     @discardableResult
     func newChat() -> SessionVM {
+        if mode == .agent { return newAgentThread() }
         let session = transport.newSession(cwd: project?.path)
+        transport.ensureContextProbe()
+        return session
+    }
+
+    // MARK: - Guardian's models and people
+
+    /// What this account may run, as routes: the proxy's models and each AI host's. A failure leaves what's
+    /// there, so an expired sign-in or a network hiccup never takes the selection away.
+    func refreshGuardian() async {
+        guard let client = guardian.client else { return }
+        lastGuardianRefresh = .now
+        let proxy = (try? await client.models()) ?? []
+        let local = (try? await client.localModels()) ?? []
+        guardianPeople = ((try? await client.people()) ?? []).filter { !$0.isRetired }
+        guard !proxy.isEmpty || !local.isEmpty else { return }
+        let localIDs = Set(local.map(\.modelId))
+        let hosted = proxy.filter { !localIDs.contains($0.id) }
+        let fresh = client.routes(for: hosted) + client.routes(forLocal: local, proxied: Set(proxy.map(\.id)))
+        var routes = config.providers.filter { $0.kind != .guardian }
+        let old = config.providers.filter { $0.kind == .guardian }
+        for var route in fresh {
+            // Keep what the user set on a route they already had.
+            if let existing = old.first(where: { $0.routeID == route.routeID }) {
+                route.subagentWorker = existing.subagentWorker
+                route.subagentParallel = existing.subagentParallel
+                route.enabled = existing.enabled
+                route.backup = existing.backup
+                route.isPrivate = existing.isPrivate
+            }
+            routes.append(route)
+        }
+        // The route in use stays until the user picks another, even if the plan stopped listing it.
+        if let active = old.first(where: { $0.routeID == config.activeRoute }), !fresh.contains(where: { $0.routeID == active.routeID }) {
+            routes.append(active)
+        }
+        config.providers = routes
+    }
+
+    /// At most once a minute, so a new AI host or person shows up without a restart.
+    func refreshGuardianIfStale() {
+        guard guardian.isSignedIn, Date().timeIntervalSince(lastGuardianRefresh) > 60 else { return }
+        Task { await refreshGuardian() }
+    }
+
+    /// Ask for a name, then start a chat in a new worktree of `project`.
+    func requestWorktreeChat(project: URL? = nil) {
+        guard let target = project ?? self.project else {
+            chooseProject()
+            return
+        }
+        worktreeRequest = WorktreeRequest(project: target)
+    }
+
+    func startWorktreeChat(project: URL, title: String) async throws {
+        if mode == .agent || mode == .automations { mode = .code }
+        let session = try await transport.newWorktreeSession(project: project, title: title)
+        select(session.id)
+    }
+
+    // MARK: - Agent mode
+
+    /// The agent's own scratch folder. Not a project.
+    private var agentFolder: URL {
+        let folder = AppPaths.support.appendingPathComponent("agent", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private func modeChanged(from old: WorkspaceMode) {
+        guard old != mode else { return }
+        if mode == .agent {
+            lastChatID = transport.selected.flatMap { $0.isAgent ? nil : $0.id } ?? lastChatID
+            enterAgentMode()
+        } else if old == .agent {
+            lastAgentID = transport.selected.flatMap { $0.isAgent ? $0.id : nil } ?? lastAgentID
+            let chats = transport.sessions.filter { !$0.isAgent }
+            select(chats.first { $0.id == lastChatID }?.id ?? chats.first?.id)
+        }
+    }
+
+    private func enterAgentMode() {
+        let threads = transport.sessions.filter(\.isAgent)
+        if let back = threads.first(where: { $0.id == lastAgentID }) ?? threads.first(where: { $0.person == nil }) {
+            select(back.id)
+        } else {
+            newAgentThread()
+        }
+        refreshGuardianIfStale()
+    }
+
+    @discardableResult
+    func newAgentThread(person: GuardianPerson? = nil) -> SessionVM {
+        let session = transport.newSession(cwd: agentFolder.path)
+        session.isAgent = true
+        session.person = person
+        let title = person?.displayName ?? "Agent"
+        transport.renameSession(session.id, to: title, byUser: person != nil)
+        transport.log.updateMeta(session.id) {
+            $0.kind = "agent"
+            $0.person = person
+        }
         transport.ensureContextProbe()
         return session
     }
@@ -463,6 +628,26 @@ final class AppModel {
         let session = transport.newSession(cwd: nil)
         transport.ensureContextProbe()
         return session
+    }
+
+    /// A person's own ongoing thread, so each keeps their own conversation.
+    func openThread(with person: GuardianPerson) {
+        if mode != .agent { mode = .agent }
+        if let existing = transport.sessions.first(where: { $0.isAgent && $0.person?.id == person.id }) {
+            select(existing.id)
+        } else {
+            let session = newAgentThread(person: person)
+            select(session.id)
+        }
+    }
+
+    /// Back to the main thread after talking to a person.
+    func openMainAgentThread() {
+        if let main = transport.sessions.first(where: { $0.isAgent && $0.person == nil }) {
+            select(main.id)
+        } else {
+            newAgentThread()
+        }
     }
 
     func send(_ text: String, in session: SessionVM, attachments: [MessageAttachment] = []) {

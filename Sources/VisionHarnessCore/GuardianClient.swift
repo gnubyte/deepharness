@@ -93,6 +93,8 @@ public enum GuardianError: LocalizedError, Equatable {
     /// JWT from Guardian — complete the sign-in with `verifyTwoFactor`.
     case twoFactorRequired(String)
     case unauthorized          // token expired or revoked
+    /// Signed in, but this account's role or grants don't allow it.
+    case forbidden(String)
     case server(String)
     case network(String)
 
@@ -106,6 +108,8 @@ public enum GuardianError: LocalizedError, Equatable {
             "This Guardian account uses two-factor sign-in. Enter the 6-digit code from your authenticator app."
         case .unauthorized:
             "The Guardian sign-in has expired — sign in again to keep using it."
+        case .forbidden(let detail):
+            "Your Guardian account can't do that. \(detail)"
         case .server(let detail):
             "Guardian had a problem: \(detail)"
         case .network(let detail):
@@ -124,7 +128,7 @@ public final class GuardianClient: @unchecked Sendable {
 
     /// The HTTP layer.
     public typealias Transport = @Sendable (URLRequest) async throws -> GuardianHTTPResponse
-    private let transport: Transport
+    let transport: Transport
 
     public init(baseURL: String, session: GuardianSession? = nil, transport: Transport? = nil) throws {
         guard let url = URL(string: baseURL.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))),
@@ -452,7 +456,7 @@ public final class GuardianClient: @unchecked Sendable {
 
     // MARK: Wire helpers
 
-    private static let decoder: JSONDecoder = {
+    static let decoder: JSONDecoder = {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
@@ -474,8 +478,10 @@ public final class GuardianClient: @unchecked Sendable {
         return e
     }()
 
-    private func get(path: String) async throws -> Data {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+    func get(path: String) async throws -> Data {
+        // Not appendingPathComponent: it would escape a query string.
+        guard let url = URL(string: baseURL.absoluteString + path) else { throw GuardianError.badURL }
+        var request = URLRequest(url: url)
         if let token = session?.token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let response = try await transport(request)
         let data = response.data
@@ -484,7 +490,7 @@ public final class GuardianClient: @unchecked Sendable {
         return data
     }
 
-    private func post<B: Encodable>(path: String, body: B, token: String?) async throws -> Data {
+    func post<B: Encodable>(path: String, body: B, token: String?) async throws -> Data {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -500,11 +506,14 @@ public final class GuardianClient: @unchecked Sendable {
     /// Status → error, with the body's message when Guardian sent one.
     static func check(_ status: Int, data: Data) throws {
         guard !(200...299).contains(status) else { return }
-        struct Body: Decodable { var error: String?; var message: String? }
-        let detail = (try? JSONDecoder().decode(Body.self, from: data))
-            .flatMap { $0.error ?? $0.message }
+        // Guardian's general routes answer with Nest's {statusCode,message,error}, where `message` is the useful
+        // part and `error` is just "Forbidden"; its harness routes put the reason in `error`.
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let message = object?["message"] as? String ?? (object?["message"] as? [String])?.joined(separator: " ")
+        let detail = message ?? object?["error"] as? String
         switch status {
-        case 401, 403: throw GuardianError.unauthorized
+        case 401: throw GuardianError.unauthorized
+        case 403: throw GuardianError.forbidden(detail ?? "Ask an admin for access.")
         case 400, 422: throw GuardianError.invalidCredentials(detail ?? "The request was refused.")
         default: throw GuardianError.server(detail ?? "HTTP \(status)")
         }

@@ -126,13 +126,16 @@ struct AppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Chat") { model.newChat() }
+            Button("New Chat") { model.select(model.newChat().id) }
                 .keyboardShortcut("n", modifiers: .command)
             Button("New Chat Without a Project") { model.newPlainChat() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+            Button("New Chat in a Worktree…") { model.requestWorktreeChat() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(model.project == nil)
             Button("Open Project Folder…") { model.chooseProject() }
                 .keyboardShortcut("o", modifiers: .command)
-            Button("Add Folder to Session…") { model.addFolder() }
+            Button("Add Folder to This Chat…") { model.addFolder() }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
                 .disabled(model.project == nil)
             Divider()
@@ -174,6 +177,9 @@ struct AppCommands: Commands {
             Divider()
             Button("Memory & Skills…") { model.showMemoryAndSkills = true }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+            Button("Chat Archive…") { model.showArchive = true }
+            Button("Send to Guardian…") { model.sendingToGuardian = model.selectedSession }
+                .disabled(model.selectedSession == nil || !model.guardian.isSignedIn)
             Button("Credentials Vault…") { model.showVault = true }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
             Button("Reload Project Context") { model.transport.refreshProjectContext() }
@@ -185,8 +191,10 @@ struct AppCommands: Commands {
                 .keyboardShortcut("1", modifiers: .command)
             Button("Code Mode") { model.mode = .code }
                 .keyboardShortcut("2", modifiers: .command)
-            Button("Automations Mode") { model.mode = .automations }
+            Button("Agent Mode") { model.mode = .agent }
                 .keyboardShortcut("3", modifiers: .command)
+            Button("Automations Mode") { model.mode = .automations }
+                .keyboardShortcut("4", modifiers: .command)
             Divider()
             Button(model.config.planPanelOpen ? "Hide Plan" : "Show Plan") { model.togglePlan() }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
@@ -248,6 +256,18 @@ struct RootView: View {
         .sheet(isPresented: $model.showVault) {
             VaultView().environment(model)
         }
+        .sheet(isPresented: $model.showArchive) {
+            ChatArchiveView().environment(model)
+        }
+        .sheet(item: $model.worktreeRequest) { request in
+            NewWorktreeSheet(request: request).environment(model)
+        }
+        .sheet(item: $model.finishingWorktree) { session in
+            FinishWorktreeSheet(session: session).environment(model)
+        }
+        .sheet(item: $model.sendingToGuardian) { session in
+            SendToGuardianSheet(session: session).environment(model)
+        }
         .sheet(item: $model.bedrockGuide) { request in
             BedrockGuideView(request: request, appModel: model).environment(model)
         }
@@ -294,7 +314,7 @@ struct RootView: View {
     private var detail: some View {
         switch model.mode {
         case .chat:
-            if let session = model.selectedSession {
+            if let session = model.selectedSession, !session.isAgent {
                 ChatView(session: session)
             } else {
                 EmptyStateView(icon: "sparkles",
@@ -309,6 +329,16 @@ struct RootView: View {
             }
         case .code:
             CodeModeView()
+        case .agent:
+            if let session = model.selectedSession, session.isAgent {
+                ChatView(session: session)
+            } else {
+                EmptyStateView(icon: "brain.head.profile", title: "Agent",
+                               message: "A long-running conversation that remembers you and keeps its own skills.") {
+                    Button("Start") { model.openMainAgentThread() }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
         case .automations:
             AutomationsView()
         }
@@ -326,7 +356,7 @@ struct RootView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .help("Chat (⌘1) or Code (⌘2)")
+            .help("Chat (⌘1), Code (⌘2), Agent (⌘3) or Automations (⌘4)")
         }
 
         ToolbarItem(placement: .principal) {
@@ -493,18 +523,11 @@ private struct ModelMenu: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        Menu {
-            RouteMenuSections()
-            Divider()
-            Button("Configure…") {
-                model.settingsTab = .models
-                model.showSettings = true
-            }
-            Button("Run Setup Wizard…") { model.showWizard = true }
-        } label: {
-            Label(model.config.activeProvider?.model ?? "No model", systemImage: "cpu")
+        ModelPickerButton {
+            Label(model.selectedSession?.person?.displayName ?? model.config.activeProvider?.friendlyModel ?? "No model",
+                  systemImage: model.selectedSession?.person != nil ? "person.fill" : "cpu")
+                .labelStyle(.titleAndIcon)
         }
-        .menuStyle(.borderlessButton)
         .fixedSize()
         .help(model.config.activeProvider.map { "Primary: \($0.displayName)" } ?? "No model configured")
     }

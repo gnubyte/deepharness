@@ -197,6 +197,7 @@ struct ChatView: View {
     private var composer: some View {
         VStack(spacing: 6) {
             SparkSwapBanner()
+            ChatContextBars(session: session)
             if let goal = session.goal {
                 GoalBanner(goal: goal, session: session)
             }
@@ -229,6 +230,11 @@ struct ChatView: View {
                 Menu {
                     Button("Attach Image…") { attachImage() }
                     Button("Attach File…") { attachFile() }
+                    Divider()
+                    Button("Add Folder to This Chat…") { model.addFolder(to: session) }
+                    if model.guardian.isSignedIn {
+                        Button("Send to Guardian…") { model.sendingToGuardian = session }
+                    }
                 } label: {
                     Image(systemName: "plus.circle.fill")
                         .frame(width: 22, height: 22)
@@ -293,9 +299,29 @@ struct ChatView: View {
                             .foregroundStyle(.secondary)
                             .help("Clear the unsent prompt (it is saved automatically every few seconds)")
                         }
-                        if let name = session.projectName {
+                        if let name = session.projectName, !session.isAgent {
                             Label(name, systemImage: "folder")
                                 .foregroundStyle(.secondary)
+                        }
+                        Button {
+                            model.addFolder(to: session)
+                        } label: {
+                            Label("Add Folder", systemImage: "folder.badge.plus")
+                                .labelStyle(.iconOnly)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Add another folder to this chat, so the agent can work across both")
+                        if model.guardian.isSignedIn {
+                            Button {
+                                model.sendingToGuardian = session
+                            } label: {
+                                Label("Send to Guardian", systemImage: "paperplane")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Send this chat and any files to a person, an AI Coders project or a board in Guardian")
                         }
                     }
                     .fixedSize()
@@ -1751,42 +1777,23 @@ private struct ModelMenu: View {
     var body: some View {
         let spark = model.spark
         let current = model.transport.activeModelID ?? model.config.activeProvider?.model ?? "No model"
+        let displayed = GuardianLocalModel.modelName(from: current)
         let limit = model.transport.contextLimit()
-        Menu {
-            if spark.isConfigured {
-                ForEach(spark.boxes) { box in
-                    Section("\(box.name) — what it serves") {
-                        if let status = box.status {
-                            ForEach(status.ordered) { m in
-                                Button {
-                                    spark.request(m, on: box)
-                                } label: {
-                                    Label(Self.line(m, status: status),
-                                          systemImage: m.key == status.active ? "checkmark.circle.fill"
-                                              : !m.isInstalled ? "arrow.down.circle"
-                                              : m.running ? "hourglass" : "arrow.triangle.2.circlepath")
-                                }
-                                // Installing happens in Settings ▸ Model Servers, not from here.
-                                .disabled(m.key == status.active || status.isSwitching || !m.isInstalled)
-                            }
-                        } else {
-                            Text(box.lastError ?? "Connecting to \(box.name)…")
-                        }
-                    }
+        ModelPickerButton {
+            HStack(spacing: 4) {
+                if let person = session.person {
+                    PersonAvatar(person: person, size: 14)
+                    Text(person.displayName)
+                } else {
+                    Label("\(displayed) · \(ModelSizes.short(limit))", systemImage: spark.isSwitchingMainModel ? "hourglass" : "cpu")
                 }
-                Button("Refresh") { Task { await spark.refreshAll() } }
-            } else {
-                Button("Connect a Spark Swapper…") { model.showSwapperGuide() }
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
             }
-            RouteMenuSections()
-        } label: {
-            Label("\(current) · \(ModelSizes.short(limit))", systemImage: spark.isSwitchingMainModel ? "hourglass" : "cpu")
         }
-        .menuStyle(.borderlessButton)
         .fixedSize()
         .foregroundStyle(.secondary)
         .disabled(session.running)
-        .help("Model in use and its context window. Pick a model a Spark Swapper box serves to switch it (also /swap), or another configured route.")
+        .help("Model in use and its context window. Pick another, including a model a Spark Swapper box serves (also /swap).")
         .task { if spark.boxes.contains(where: { $0.status == nil }) { await spark.refreshAll() } }
     }
 

@@ -16,6 +16,14 @@ struct AutomationsView: View {
     @State private var selectedID: String?
     @State private var importResult: String?
     @State private var month: Date = .now
+    @State private var selectedDay: Date?
+
+    /// A new one-off at 9:00 on `day`, or an hour from now if that has passed.
+    private static func draft(on day: Date) -> Automation {
+        let morning = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: day) ?? day
+        let when = morning > .now ? morning : Date().addingTimeInterval(3600)
+        return Automation(name: "", prompt: "", schedule: .once(at: when))
+    }
 
     private var store: AutomationStore { model.automations.currentStore() }
     private var upcoming: [(date: Date, automation: Automation)] {
@@ -30,9 +38,15 @@ struct AutomationsView: View {
                 // Left: the calendar and the next runs.
                 VStack(spacing: 0) {
                     CalendarHeaderView(month: $month)
-                    AutomationCalendar(month: month, upcoming: upcoming, store: store)
+                    AutomationCalendar(month: month, upcoming: upcoming, store: store, selectedDay: $selectedDay)
                     Divider()
-                    UpcomingList(upcoming: upcoming.prefix(8).map { $0 })
+                    if let selectedDay {
+                        DayAgenda(day: selectedDay, upcoming: upcoming, store: store,
+                                  onSchedule: { editing = Self.draft(on: selectedDay) },
+                                  onClose: { self.selectedDay = nil })
+                    } else {
+                        UpcomingList(upcoming: upcoming.prefix(8).map { $0 })
+                    }
                 }
                 .frame(minWidth: 380, maxWidth: 560)
                 // Right: the library.
@@ -132,6 +146,69 @@ struct AutomationsView: View {
 
 // MARK: - Calendar
 
+/// One day: what will run, what ran, and a way to add to it.
+@MainActor
+private struct DayAgenda: View {
+    let day: Date
+    let upcoming: [(date: Date, automation: Automation)]
+    let store: AutomationStore
+    let onSchedule: () -> Void
+    let onClose: () -> Void
+
+    private struct Line: Identifiable {
+        let id = UUID()
+        let at: Date
+        let text: String
+        let done: Bool
+    }
+
+    private var lines: [Line] {
+        let calendar = Calendar.current
+        var out = upcoming.filter { calendar.isDate($0.date, inSameDayAs: day) }
+            .map { Line(at: $0.date, text: $0.automation.name, done: false) }
+        for automation in store.automations {
+            for run in automation.history where calendar.isDate(run.at, inSameDayAs: day) {
+                out.append(Line(at: run.at, text: "\(automation.name) · \(run.status)", done: true))
+            }
+        }
+        return out.sorted { $0.at < $1.at }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(day, format: .dateTime.weekday(.wide).month().day())
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button("Schedule…", action: onSchedule).controlSize(.small)
+                Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 3) {
+                    if lines.isEmpty {
+                        Text("Nothing on this day.").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    ForEach(lines) { line in
+                        HStack(spacing: 6) {
+                            Image(systemName: line.done ? "checkmark.circle" : "clock")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                            Text(line.at, format: .dateTime.hour().minute())
+                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                            Text(line.text).font(.system(size: 11)).lineLimit(1)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxHeight: 180)
+    }
+}
+
 @MainActor
 private struct CalendarHeaderView: View {
     @Binding var month: Date
@@ -173,6 +250,7 @@ private struct AutomationCalendar: View {
     let month: Date
     let upcoming: [(date: Date, automation: Automation)]
     let store: AutomationStore
+    @Binding var selectedDay: Date?
 
     private var counts: [String: Int] {
         var out: [String: Int] = [:]
@@ -200,6 +278,10 @@ private struct AutomationCalendar: View {
             cells.append(DayCell(id: leading + day - 1, day: day, key: String(format: "%@-%02d", prefix, day)))
         }
         return cells
+    }
+
+    private func date(of day: Int) -> Date {
+        Calendar.current.date(bySetting: .day, value: day, of: month) ?? month
     }
 
     struct DayCell: Identifiable {
@@ -237,7 +319,14 @@ private struct AutomationCalendar: View {
                         .frame(maxWidth: .infinity)
                         .background(isToday ? Color.accentColor.opacity(0.10) : .clear,
                                     in: RoundedRectangle(cornerRadius: 5))
-                        .help(count > 0 ? "\(count) scheduled run\(count == 1 ? "" : "s")" : "")
+                        .overlay {
+                            if let selectedDay, Calendar.current.isDate(selectedDay, inSameDayAs: date(of: day)) {
+                                RoundedRectangle(cornerRadius: 5).strokeBorder(Color.accentColor, lineWidth: 1.5)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { selectedDay = date(of: day) }
+                        .help(count > 0 ? "\(count) scheduled run\(count == 1 ? "" : "s")" : "Click to see or schedule this day")
                     } else {
                         Color.clear.frame(minHeight: 30)
                     }

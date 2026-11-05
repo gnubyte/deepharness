@@ -189,6 +189,10 @@ public final class AppTransport {
         var servers: [SubagentServers.Entry]
         /// Unattended work (a queue task, `/goal`): no backups or subagent servers that are interactive-only.
         var unattended: Bool
+        /// Folders added to this chat are in the prompt and the permission boundary.
+        var folders: [String] = []
+        var agentMode = false
+        var agentSkills = false
     }
 
     /// Everything about skills one turn needs: what exists, what's on, and the prompt text.
@@ -256,6 +260,7 @@ public final class AppTransport {
         self.log = log
         self.basePrompt = systemPrompt ?? Self.defaultSystemPrompt
         self.skillLocations = skillLocations
+        self.archive = ChatArchive(directory: skillLocations.appSupport.appendingPathComponent("archive", isDirectory: true))
         self.vault = vault ?? CredentialVault(directory: skillLocations.appSupport)
         self.queueFile = queueFile ?? Self.defaultQueueFile
         self.memory = memory ?? HarnessMemory(appSupport: skillLocations.appSupport)
@@ -359,6 +364,7 @@ public final class AppTransport {
     }
 
     public func deleteSession(_ id: String) {
+        let wasAgent = sessions.first { $0.id == id }?.isAgent ?? false
         // A chat without a project takes its own scratch folder with it — unless tasks it queued still work there:
         // then the folder goes when the last of them is done (`releaseBorrowedFolder`).
         if let vm = sessions.first(where: { $0.id == id }), vm.isPlain {
@@ -384,7 +390,7 @@ public final class AppTransport {
         // Tasks that used this chat start a fresh one next time.
         queue.detachSession(id)
         if selectedID == id {
-            selectedID = sessions.first?.id
+            selectedID = sessions.first { $0.isAgent == wasAgent }?.id
             // The next chat may be an archived one whose timeline was released.
             if let next = selected { hydrate(next) }
         }
@@ -907,11 +913,16 @@ public final class AppTransport {
             if cwd == nil { vm.workFolder = row.scratch }
             vm.updatedAt = row.updatedAt
             vm.loaded = false
+            vm.additionalFolders = row.additionalFolders ?? []
+            vm.worktree = row.worktree
+            vm.isAgent = row.kind == "agent"
+            vm.person = row.person
+            vm.guardianChatID = row.guardianChatID
             return vm
         }
         sessions = stored + sessions
         sessions.sort { $0.updatedAt > $1.updatedAt }
-        if selectedID == nil { selectedID = sessions.first?.id }
+        if selectedID == nil { selectedID = sessions.first(where: { !$0.isAgent })?.id }
         if let selected { hydrate(selected) }
     }
 
@@ -1008,12 +1019,22 @@ public final class AppTransport {
         // A chat without a project works in its own scratch folder, which the permission preset then confines it to
         // exactly as a project folder would.
         let workspace = vm.workspaceURL ?? scratchFolder(for: vm, create: true)
-        let extras = additionalRoots
+        // The project's extra folders, then the ones added to this chat alone.
+        // An Agent thread isn't in a project, so it gets only its own.
+        var extras = vm.isAgent ? [] : additionalRoots
+        for path in vm.additionalFolders {
+            let url = URL(fileURLWithPath: path)
+            if url.standardizedFileURL != workspace.standardizedFileURL,
+               !extras.contains(where: { $0.standardizedFileURL == url.standardizedFileURL }) {
+                extras.append(url)
+            }
+        }
         let policy = PermissionPolicy(preset: vm.preset, workspaceRoot: workspace, additionalRoots: extras)
         let model = (client as? any ProviderClient)?.profile.model ?? "model"
 
         var prompt = Self.basePrompt(for: vm, workspace: workspace, coding: basePrompt, model: model,
-                                     projectContext: projectContext, home: skillLocations.home, additionalRoots: extras)
+                                     projectContext: extras == additionalRoots ? projectContext : nil,
+                                     home: skillLocations.home, additionalRoots: extras)
         // The harness's own memory: durable facts about the user and their
         // projects that outlive any one chat (stored with the app, never in
         // the code folder).
@@ -1034,6 +1055,7 @@ public final class AppTransport {
             Do not modify anything. Research and produce a plan, then call `exit_plan_mode` with it and stop.
             """
         }
+        if vm.isAgent { prompt += "\n\n" + Self.agentPrompt }
         systemPrompts[sessionID] = prompt
 
         let builtins = ToolRegistry.standard(agents: agentCatalog(for: vm), servers: servers.isEmpty ? nil : servers)
@@ -1058,7 +1080,22 @@ public final class AppTransport {
             }))
         }
         if vm.preset != .plan {
-            extra.append(ProposeSkillTool(projectRoot: vm.workspaceURL, locations: skillLocations))
+            if vm.isAgent && config.agentSavesSkills {
+                extra.append(CreateSkillTool(locations: skillLocations, onSaved: { [weak self] slug in
+                    Task { @MainActor [weak self] in self?.note("The agent saved a skill: \(slug)") }
+                }))
+            } else {
+                extra.append(ProposeSkillTool(projectRoot: vm.workspaceURL, locations: skillLocations))
+            }
+            extra.append(ScheduleTaskTool(add: { [weak self] automation in
+                await self?.scheduleFromAgent?(automation)
+            }))
+            extra.append(ListScheduledTasksTool(list: { [weak self] in
+                await self?.scheduledList?() ?? []
+            }))
+            extra.append(CancelScheduledTaskTool(cancel: { [weak self] id in
+                await self?.scheduledCancel?(id) ?? false
+            }))
         }
         // Background processes: the model's own long-running programs (game
         // engines, dev servers, REPLs) that keep running between tool calls.
@@ -1810,6 +1847,9 @@ public final class AppTransport {
             log.touch(sessionID)
             vm.updatedAt = .now
             sessions.sort { $0.updatedAt > $1.updatedAt }
+            if vm.worktree != nil {
+                Task { [weak self] in await self?.refreshWorktreeStatus(vm) }
+            }
         }
 
         do {
@@ -2032,6 +2072,191 @@ public final class AppTransport {
     }
 
     /// One user message → one engine run (which may take many tool steps).
+    /// Chats noted as chat-only this launch (see `turn`).
+    @ObservationIgnored private var chatOnlyNoticed: Set<String> = []
+    /// Agent threads whose last turn did enough to be worth a skill.
+    @ObservationIgnored private var agentSkillNudge: Set<String> = []
+    /// Automations are owned by the app model; the agent's tools reach them here.
+    @ObservationIgnored public var scheduleFromAgent: (@MainActor (Automation) async -> Void)?
+    @ObservationIgnored public var scheduledList: (@MainActor () async -> [Automation])?
+    @ObservationIgnored public var scheduledCancel: (@MainActor (String) async -> Bool)?
+    /// The harness's memory, ahead of the first message to a person. In the message, not the client, so it goes
+    /// through the sensitive-data shield with everything else.
+    private func guardianContext(for vm: SessionVM) -> String {
+        guard vm.person != nil, vm.guardianChatID == nil else { return "" }
+        let block = memory.promptBlock()
+        return block.isEmpty ? "" : "What I keep in my own notes, for context:\n\n\(block)\n\n---\n\n"
+    }
+
+    private static var guardianHarnessBase: String {
+        let address = AppSecrets.keychain.read(service: AppIdentity.KeychainService.guardian, account: "address") ?? ""
+        let base = address.isEmpty ? GuardianService.defaultURL : address
+        return base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/api/harness/v1"
+    }
+
+    private func personRoute(for vm: SessionVM) -> ProviderProfile? {
+        guard let person = vm.person else { return nil }
+        var profile = ProviderProfile(kind: .guardian, name: person.displayName,
+                                      baseURL: Self.guardianHarnessBase,
+                                      model: ProviderProfile.guardianPersonModel(person.id))
+        let key = config.apiKey(for: profile)
+        profile.apiKey = key.isEmpty ? nil : key
+        return profile
+    }
+
+    private func bindGuardianChat(_ client: any ProviderClient, vm: SessionVM, profile: ProviderProfile) {
+        guard let chat = ProviderClients.guardianChat(in: client) else { return }
+        let sessionID = vm.id
+        // A different route means a different Guardian chat; the first message recaps.
+        let key = profile.model
+        let existing = guardianChatRoute[sessionID] == key || guardianChatRoute[sessionID] == nil ? vm.guardianChatID : nil
+        guardianChatRoute[sessionID] = key
+        chat.bind(chatID: existing) { [weak self] id in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                vm.guardianChatID = id
+                self.log.updateMeta(sessionID) { $0.guardianChatID = id }
+            }
+        }
+    }
+    @ObservationIgnored private var guardianChatRoute: [String: String] = [:]
+
+    /// A word to the agent on the turn after a long one, kept out of the transcript.
+    private func agentNudge(for vm: SessionVM) -> String {
+        guard vm.isAgent, agentSkillNudge.remove(vm.id) != nil else { return "" }
+        return "\n\n[Harness note, not from the user: your previous turn took many tool calls. If that procedure is likely to come up again, capture it as a skill before or after answering this message.]"
+    }
+
+    /// The system prompt's Agent mode section.
+    static let agentPrompt = """
+    --- Agent mode ---
+    You are the user's persistent personal agent, not a one-off coding session. This conversation \
+    carries on indefinitely: old turns get summarized, so anything worth keeping belongs in memory or a skill.
+    - Memory: call `save_memory` without asking whenever you learn a lasting fact about the user, the \
+    people they work with, their projects or their preferences. Read what you already know before asking them.
+    - Skills: after finishing a multi-step procedure you'd want to repeat, or when the user corrects how \
+    something should be done, save it. Use `create_skill` if you have it, otherwise `propose_skill`. Improve \
+    an existing skill rather than adding a near-duplicate. Mention what you saved in one line.
+    - Time: use `schedule_task` when the user asks for a reminder or for work later or on a schedule. It \
+    shows on their calendar. Never schedule anything they didn't ask for.
+    - Be direct and take initiative on what they asked for. Your working folder is your own scratch space; \
+    the user can add project folders to this thread.
+    """
+
+    // MARK: - Worktrees and per-chat folders
+
+    /// Add folders to one chat, taking effect on its next turn.
+    public func addFolders(_ urls: [URL], to vm: SessionVM) {
+        var folders = vm.additionalFolders
+        for url in urls where url.path != vm.cwd && !folders.contains(url.path) {
+            folders.append(url.path)
+        }
+        vm.additionalFolders = folders
+        log.updateMeta(vm.id) { $0.additionalFolders = folders }
+    }
+
+    public func removeFolder(_ path: String, from vm: SessionVM) {
+        vm.additionalFolders.removeAll { $0 == path }
+        let folders = vm.additionalFolders
+        log.updateMeta(vm.id) { $0.additionalFolders = folders }
+    }
+
+    /// Start a chat in a new worktree cut from `project`.
+    @discardableResult
+    public func newWorktreeSession(project: URL, title: String) async throws -> SessionVM {
+        let ref = try await worktrees.create(from: project, title: title)
+        let vm = newSession(cwd: ref.worktreePath)
+        vm.worktree = ref
+        vm.title = title
+        userRenamed.insert(vm.id)
+        log.upsert(id: vm.id, cwd: ref.worktreePath, title: title, preset: vm.preset.rawValue)
+        log.updateMeta(vm.id) { $0.worktree = ref }
+        vm.worktreeStatus = WorktreeStatus()
+        return vm
+    }
+
+    public func refreshWorktreeStatus(_ vm: SessionVM) async {
+        guard let ref = vm.worktree else { return }
+        vm.worktreeStatus = await worktrees.status(of: ref)
+    }
+
+    public let worktrees = GitWorktrees()
+
+    // MARK: - Archive
+
+    /// Move a chat out of the sidebar and into the archive on disk.
+    public func archiveSession(_ id: String, reason: String) {
+        guard let vm = sessions.first(where: { $0.id == id }), !vm.running else { return }
+        hydrate(vm)
+        let wasAgent = vm.isAgent
+        resolveAllGates(for: id, with: false)
+        engines[id] = nil
+        engineKeys[id] = nil
+        transcripts[id] = nil
+        systemPrompts[id] = nil
+        backgroundPools.removeValue(forKey: id)?.stopAll()
+        chatBoxes.removeValue(forKey: id)
+        queue.detachSession(id)
+        archive.archive(id, from: log, reason: reason)
+        sessions.removeAll { $0.id == id }
+        if selectedID == id {
+            selectedID = sessions.first { $0.isAgent == wasAgent }?.id
+            if let next = selected { hydrate(next) }
+        }
+    }
+
+    /// Bring an archived chat back. Its worktree is gone, so it reopens in the
+    /// project it came from.
+    public func restoreArchived(_ id: String) {
+        guard archive.restore(id, into: log) != nil else { return }
+        reload()
+        selectedID = id
+        if let vm = selected { hydrate(vm) }
+    }
+
+    public let archive: ChatArchive
+
+    // MARK: - Sending to Guardian
+
+    /// This chat as Markdown, as stored.
+    func transcriptMarkdown(of vm: SessionVM) -> String {
+        hydrate(vm)
+        log.flush()
+        return ChatArchive.render(
+            title: vm.title, project: vm.projectPath, branch: vm.worktree?.branch,
+            rows: log.loadItems(vm.id).map { (kind: $0.kind, text: $0.text, tool: $0.toolName, args: $0.argSummary, output: $0.output) })
+    }
+
+    /// Show and keep a line in this chat's transcript.
+    func recordNote(_ text: String, in vm: SessionVM, error: Bool = false) {
+        vm.note(text, role: error ? .error : .notice)
+        log.recordItem(vm.id, kind: error ? "error" : "notice", text: text, toolName: nil, argSummary: nil, output: nil, isError: error)
+    }
+
+    /// Deliver a task to a person and bring their answer back to this chat.
+    /// Keeps reading after the sheet closes: Guardian's chat streams its reply
+    /// on the same request.
+    func followGuardianReply(client: GuardianClient, chatID: String, content: String, attachmentIDs: [String],
+                             person: GuardianPerson, in vm: SessionVM) {
+        Task { [weak self] in
+            var reply = ""
+            do {
+                for try await event in client.sendChatMessage(chatID: chatID, content: content,
+                                                              attachmentIDs: attachmentIDs, intent: "task") {
+                    switch event {
+                    case .text(let delta): reply += delta
+                    case .failed(let message): throw GuardianError.server(message)
+                    default: break
+                    }
+                }
+                let answer = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+                self?.recordNote(answer.isEmpty ? "\(person.displayName) took the task in Guardian." : "\(person.displayName) replied in Guardian:\n\n\(answer)", in: vm)
+            } catch {
+                self?.recordNote("Sending to \(person.displayName) failed: \((error as? GuardianError)?.errorDescription ?? error.localizedDescription)", in: vm, error: true)
+            }
+        }
+    }
+
     private func turn(_ vm: SessionVM, modelText: String, displayText: String,
                       attachments: [MessageAttachment]) async throws -> RunResult {
         let sessionID = vm.id
@@ -2065,16 +2290,28 @@ public final class AppTransport {
 
         // Re-read what the server serves right now: the Spark can swap models
         // between turns, and the window/model id must follow.
-        guard let profile = await resolveRoute() else { throw LLMError.noModel }
-        let window = contextLimit()
+        // A thread with a Guardian person goes to that person, whatever the main model is.
+        let route = vm.person != nil ? personRoute(for: vm) : await resolveRoute()
+        guard let profile = route else { throw LLMError.noModel }
+        let window = vm.person != nil ? (profile.contextWindow ?? contextLimit()) : contextLimit()
         let thinking = vm.thinking
         let skillState = self.skillState(for: vm)
+        // These routes run on Guardian's side, so this app's tools don't reach them. Once per chat.
+        if profile.isGuardianChatOnly, !chatOnlyNoticed.contains(sessionID), vm.person == nil {
+            chatOnlyNoticed.insert(sessionID)
+            let notice = "`\(profile.name) · \(profile.friendlyModel)` runs through Guardian's chat: it can talk, but it can't use this app's tools, so it won't edit files or run commands here."
+            vm.note(notice)
+            log.recordItem(sessionID, kind: "notice", text: notice, toolName: nil, argSummary: nil, output: nil, isError: false)
+        }
         let unattended = isUnattended(vm)
-        let backups = backupProfiles(unattended: unattended)
+        // Guardian holds a chat-only route's conversation, so it has nothing to fail over to.
+        let backups = profile.isGuardianChatOnly ? [] : backupProfiles(unattended: unattended)
         let key = EngineKey(profile: profile, window: window, thinking: thinking, preset: vm.preset,
                             skills: skillState.signature, computerTools: config.computerToolsEnabled,
                             vision: visionOn(for: profile), vault: vault.revision, agents: agentsStamp(for: vm),
-                            backups: backups, servers: subagentServerEntries, unattended: unattended)
+                            backups: backups, servers: subagentServerEntries, unattended: unattended,
+                            folders: vm.additionalFolders, agentMode: vm.isAgent,
+                            agentSkills: config.agentSavesSkills)
         if let previous = engineKeys[sessionID], previous.profile.model != profile.model {
             vm.note("The server is now serving `\(profile.model)` (was `\(previous.profile.model)`) — switched to it, \(window.formatted())-token window.")
         }
@@ -2082,7 +2319,9 @@ public final class AppTransport {
         if let existing = engines[sessionID], engineKeys[sessionID] == key {
             engine = existing
         } else {
-            engine = self.engine(for: sessionID, vm: vm, client: mainClient(profile, backups: backups, sessionID: sessionID),
+            let client = mainClient(profile, backups: backups, sessionID: sessionID)
+            bindGuardianChat(client, vm: vm, profile: profile)
+            engine = self.engine(for: sessionID, vm: vm, client: client,
                                  window: window, thinking: thinking, skillState: skillState, unattended: unattended)
             engineKeys[sessionID] = key
         }
@@ -2096,7 +2335,8 @@ public final class AppTransport {
         let progress = RunProgress()
         let result: RunResult
         do {
-            result = try await engine.run(messages: input, userText: modelText,
+            let nudged = guardianContext(for: vm) + modelText + agentNudge(for: vm)
+            result = try await engine.run(messages: input, userText: nudged,
                                           userAttachments: attachments, progress: progress) { event in
                 Task { @MainActor in
                     sink.apply(event, sessionID: sessionID)
@@ -2152,6 +2392,12 @@ public final class AppTransport {
         }
         if result.hitIterationLimit, vm.goal == nil {
             vm.note("Paused after \(engine.config.maxIterations) steps. Say “continue” to keep going, or use `/goal` for long tasks.")
+        }
+        if vm.isAgent, vm.person == nil, config.agentSavesSkills {
+            // A long turn is the moment a procedure is worth writing down.
+            let toolsThisTurn = vm.entries.suffix(from: vm.entries.firstIndex { $0.id == userEntryID } ?? vm.entries.startIndex)
+                .filter { $0.tool != nil }.count
+            if toolsThisTurn >= 6 { agentSkillNudge.insert(sessionID) }
         }
         return result
     }
@@ -2525,6 +2771,9 @@ public final class AppTransport {
     /// Throttled to one attempt per workspace per few minutes; skipped when
     /// the setting is off, the chat declined, or the prompt asked to.
     func syncGitIfNeeded(_ vm: SessionVM, prompt: String) async {
+        // A worktree's branch is local until the chat finishes. Syncing would
+        // publish it to origin on the first turn.
+        guard vm.worktree == nil else { return }
         guard config.gitAutoSync, !gitSyncDeclined.contains(vm.id),
               !GitSync.promptDeclinesSync(prompt),
               let workspace = vm.workspaceURL,

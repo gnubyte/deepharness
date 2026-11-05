@@ -41,6 +41,18 @@ public struct LogSession: Identifiable, Hashable, Codable, Sendable {
     /// A chat without a project working in a folder other than its own scratch folder (a queue task from a chat
     /// without a project works in that chat's folder). Nil = its own.
     public var scratch: String?
+    /// Folders added to just this chat, beyond its project.
+    public var additionalFolders: [String]?
+    /// Set when the chat works in its own git worktree.
+    public var worktree: WorktreeRef?
+    /// "agent" for an Agent mode thread; nil for an ordinary chat.
+    public var kind: String?
+    /// The Guardian person this chat talks to.
+    public var person: GuardianPerson?
+    /// The chat on Guardian's side, for routes Guardian holds the history of.
+    public var guardianChatID: String?
+    public var archivedAt: Date?
+    public var archiveReason: String?
 }
 
 private struct StoredItem: Codable {
@@ -107,6 +119,16 @@ public final class ConversationLog {
         rows[id] = row
         persist(id)
     }
+
+    /// Change a chat's stored details (folders, worktree, kind, person…).
+    public func updateMeta(_ id: String, _ change: (inout LogSession) -> Void) {
+        guard var row = rows[id] else { return }
+        change(&row)
+        rows[id] = row
+        persist(id)
+    }
+
+    public func session(_ id: String) -> LogSession? { rows[id] }
 
     public func list() -> [LogSession] {
         rows.values.sorted { $0.updatedAt > $1.updatedAt }
@@ -220,6 +242,28 @@ public final class ConversationLog {
         let url = fileURL(id)
         io.async { try? data.write(to: url, options: .atomic) }
     }
+
+    /// Hand a chat's file over to the archive: written out now, then forgotten
+    /// here. Returns where the file is, so the archive can move it.
+    public func releaseForArchive(_ id: String) -> URL? {
+        guard rows[id] != nil else { return nil }
+        dirty.remove(id)
+        write(id)
+        io.sync {}
+        rows[id] = nil
+        items[id] = nil
+        return fileURL(id)
+    }
+
+    /// Take a restored chat's file back in. The file is already in `dir`.
+    public func adopt(fileAt url: URL) -> LogSession? {
+        guard let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(SessionFile.self, from: data) else { return nil }
+        rows[file.session.id] = file.session
+        return file.session
+    }
+
+    public var directory: URL { dir }
 
     private struct SessionFile: Codable {
         var session: LogSession

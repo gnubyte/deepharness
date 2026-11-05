@@ -44,6 +44,9 @@ public final class AppConfig {
         static let planPanelOpen = "planPanel.open.v1"
         static let planPanelWidth = "planPanel.width.v1"
         static let planPanelAutoOpen = "planPanel.autoOpen.v1"
+        static let agentSavesSkills = "agent.savesSkills.v1"
+        static let sidebarByRecent = "sidebar.byRecent.v1"
+        static let sidebarCollapsed = "sidebar.collapsed.v1"
     }
 
     private let defaults: UserDefaults
@@ -148,6 +151,13 @@ public final class AppConfig {
     /// Expose the default model on 127.0.0.1 for other programs.
     public var apiServerEnabled: Bool = false { didSet { persist() } }
     public var apiServerPort: Int = 8337 { didSet { persist() } }
+    /// In Agent mode, skills the agent writes go live at once. Off: they wait
+    /// as drafts for approval, like every other chat.
+    public var agentSavesSkills: Bool = true { didSet { persist() } }
+    /// The sidebar lists chats newest-first instead of under their projects.
+    public var sidebarByRecent: Bool = false { didSet { persist() } }
+    /// Projects folded shut in the sidebar, by path.
+    public var sidebarCollapsed: Set<String> = [] { didSet { persist() } }
 
     // MARK: - Active route
 
@@ -336,7 +346,8 @@ public final class AppConfig {
     public var workerRoutes: [ProviderProfile] {
         var seen = Set<String>()
         if let main = mainRoute { seen.insert(Self.machineOf(main)) }
-        return flaggedWorkers.filter { seen.insert(Self.machineOf($0)).inserted }
+        // A chat-only route can't run tools, which is all a subagent does.
+        return flaggedWorkers.filter { !$0.isGuardianChatOnly && seen.insert(Self.machineOf($0)).inserted }
     }
 
     /// What counts as "the same server": a self-hosted route is its base URL; a hosted service
@@ -412,7 +423,12 @@ public final class AppConfig {
     }
 
     public func apiKey(for provider: ProviderProfile) -> String {
-        secrets.read(service: Self.keychainService, account: provider.routeID) ?? ""
+        // Guardian routes share the sign-in's token. A route saved by the setup wizard has its own.
+        if provider.kind == .guardian, let token = secrets.read(service: AppIdentity.KeychainService.guardian, account: "token"),
+           !token.isEmpty {
+            return token
+        }
+        return secrets.read(service: Self.keychainService, account: provider.routeID) ?? ""
     }
 
     // MARK: - Projects
@@ -486,6 +502,9 @@ public final class AppConfig {
         planPanelOpen = defaults.bool(forKey: Keys.planPanelOpen)
         planPanelWidth = defaults.object(forKey: Keys.planPanelWidth) as? Double ?? 320
         planPanelAutoOpen = defaults.object(forKey: Keys.planPanelAutoOpen) as? Bool ?? true
+        agentSavesSkills = defaults.object(forKey: Keys.agentSavesSkills) as? Bool ?? true
+        sidebarByRecent = defaults.bool(forKey: Keys.sidebarByRecent)
+        sidebarCollapsed = Set(defaults.stringArray(forKey: Keys.sidebarCollapsed) ?? [])
     }
 
     private func persist() {
@@ -516,6 +535,9 @@ public final class AppConfig {
         defaults.set(gitAutoSync, forKey: Keys.gitAutoSync)
         defaults.set(apiServerEnabled, forKey: Keys.apiServerEnabled)
         defaults.set(apiServerPort, forKey: Keys.apiServerPort)
+        defaults.set(agentSavesSkills, forKey: Keys.agentSavesSkills)
+        defaults.set(sidebarByRecent, forKey: Keys.sidebarByRecent)
+        defaults.set(Array(sidebarCollapsed).sorted(), forKey: Keys.sidebarCollapsed)
         persistShield()
         defaults.set(planPanelOpen, forKey: Keys.planPanelOpen)
         defaults.set(planPanelWidth, forKey: Keys.planPanelWidth)

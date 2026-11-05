@@ -38,7 +38,6 @@ public enum BackupExport {
             kSecAttrService as String: service,
             kSecMatchLimit as String: kSecMatchLimitAll,
             kSecReturnAttributes as String: true,
-            kSecReturnData as String: true,
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -48,9 +47,19 @@ public enum BackupExport {
                           userInfo: [NSLocalizedDescriptionKey: "keychain read failed (status \(status))"])
         }
         guard let items = result as? [[String: Any]] else { return [] }
+        // One read per account: macOS refuses kSecReturnData with kSecMatchLimitAll.
         return items.compactMap { item in
-            guard let account = item[kSecAttrAccount as String] as? String,
-                  let data = item[kSecValueData as String] as? Data else { return nil }
+            guard let account = item[kSecAttrAccount as String] as? String else { return nil }
+            let one: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+                kSecReturnData as String: true,
+            ]
+            var value: AnyObject?
+            guard SecItemCopyMatching(one as CFDictionary, &value) == errSecSuccess,
+                  let data = value as? Data else { return nil }
             return (account, data)
         }
     }
@@ -62,7 +71,8 @@ public enum BackupExport {
         to destination: URL,
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         appSupportFolderNames: [String] = ["Vision", "DSHMac"],
-        keychainServices: [String] = ["Vision.vault", "Vision.provider", "DSHMac.vault", "DSHMac.provider"],
+        keychainServices: [String] = ["Vision.vault", "Vision.provider", "Vision.guardian",
+                                      "DSHMac.vault", "DSHMac.provider", "DSHMac.guardian"],
         defaultsIDs: [String] = ["com.503cm.vision.mac", "dev.local.dsh.mac"],
         includeOpenClaw: Bool = true,
         keychain: KeychainReader? = nil,

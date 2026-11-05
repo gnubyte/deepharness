@@ -56,10 +56,17 @@ public enum ProviderClients {
                               onFailover: events.failover ?? { _ in })
     }
 
+    /// The Guardian chat client inside what `make` returned, to bind a chat to it.
+    public static func guardianChat(in client: any ProviderClient) -> GuardianChatClient? {
+        (client as? GuardianChatClient) ?? ((client as? ShieldClient)?.inner as? GuardianChatClient)
+    }
+
     /// One route's client — behind the shield when the route isn't private and there is something to mask.
     private static func single(_ profile: ProviderProfile, _ events: ClientEvents) -> any ProviderClient {
         let client: any ProviderClient
-        if profile.kind == .bedrock {
+        if profile.isGuardianChatOnly {
+            client = GuardianChatClient(profile: profile)
+        } else if profile.kind == .bedrock {
             let usesAPIKey = profile.awsProfile == nil && !(profile.apiKey ?? "").isEmpty
             client = BedrockClient(profile: profile, credentials: usesAPIKey ? nil : awsCredentials?(profile))
         } else {

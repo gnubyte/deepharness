@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import VisionHarnessCore
+import UniformTypeIdentifiers
 
 /// Settings: model routes, permissions, editor and terminal, and the plugin
 /// catalog. The wizard is the guided path; this is the direct one.
@@ -47,6 +48,7 @@ struct SettingsView: View {
 private struct GeneralSettings: View {
     @Environment(AppModel.self) private var model
     @State private var exporting = false
+    @State private var importing: BackupImport.Contents?
     @State private var exportStatus: String?
 
     var body: some View {
@@ -119,23 +121,8 @@ private struct GeneralSettings: View {
                 }
             }
 
-            Section("Backup & Export") {
-                LabeledContent {
-                    Button(exporting ? "Exporting…" : "Export Everything…") { chooseExportDestination() }
-                        .disabled(exporting)
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Full backup: chats, skills, memory, vault, keychain, automations, settings, OpenClaw")
-                        Text("Writes a timestamped folder + zip. Includes both the Vision and DSHMac data folders, keychain secrets, preference plists, and OpenClaw's durable state (skills, memory, secrets, credentials, cron — never the caches).")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if let exportStatus {
-                    Text(exportStatus).font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
+            backupSection
+            agentSection
             Section("Setup") {
                 LabeledContent("Configuration wizard") {
                     Button("Run Again…") { model.showWizard = true }
@@ -151,6 +138,67 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: Binding(get: { importing != nil }, set: { if !$0 { importing = nil } })) {
+            if let importing {
+                BackupImportSheet(contents: importing).environment(model)
+            }
+        }
+    }
+
+    private var backupSection: some View {
+            Section("Backup, Export & Import") {
+                LabeledContent {
+                    Button(exporting ? "Exporting…" : "Export Everything…") { chooseExportDestination() }
+                        .disabled(exporting)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Full backup: chats, skills, memory, vault, keychain, automations, settings, OpenClaw")
+                        Text("Writes a timestamped folder + zip. Includes both the Vision and DSHMac data folders, keychain secrets, preference plists, and OpenClaw's durable state (skills, memory, secrets, credentials, cron — never the caches).")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent {
+                    Button("Import…", action: chooseImport)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Bring in a backup from another DSH or Vision")
+                        Text("Choose what to take from its folder or zip. The backup holds your secrets in readable form, so keep it somewhere safe and delete it when you're done.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let exportStatus {
+                    Text(exportStatus).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+    }
+
+    private var agentSection: some View {
+            Section("Agent Mode") {
+                Toggle(isOn: Binding(get: { model.config.agentSavesSkills },
+                                     set: { model.config.agentSavesSkills = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Let the agent save skills on its own")
+                        Text("On: skills it writes go live straight away. Off: they wait in Skills as drafts for you to approve.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+    }
+
+    private func chooseImport() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.zip, .folder]
+        panel.prompt = "Open Backup"
+        panel.message = "Choose a Vision-Backup folder or zip."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            importing = try BackupImport.inspect(url)
+        } catch {
+            exportStatus = error.localizedDescription
+        }
     }
 
     private func chooseExportDestination() {

@@ -419,6 +419,24 @@ from what it turned out to be about. Renaming by hand sticks.
 Long chats also compact automatically at 75% of the window (keeping up to ~96K recent tokens verbatim),
 including in the middle of one long tool-heavy turn.
 
+### Worktrees and extra folders
+
+**New Chat ▾ ▸ New Chat in a Worktree…** (⌘⌥N) gives a chat its own branch (`dsh/<name>`) and folder
+(`<repo>-worktrees/<name>`), so your checkout isn't touched. A bar above the composer tracks its commits
+and uncommitted files. **Finish…** commits what's left if you say so, merges into the branch it came from,
+deletes the worktree and branch, and archives the chat. It refuses rather than guesses: the main checkout
+must be on that branch with no uncommitted changes, and a conflicting merge is aborted, leaving the base
+unchanged. Git sync skips worktree chats, so their branches stay local.
+
+**+ ▸ Add Folder to This Chat…** (⌘⇧O) lets one chat work across another folder: its instruction files
+load and it's inside the permission boundary, for that chat only.
+
+### The sidebar and the archive
+
+Chats sit under collapsible projects, or newest-first with the **Projects | Recent** switch. **Chat Archive**
+keeps every chat that leaves the sidebar under `archive/` in the data folder: JSON plus a readable Markdown
+copy. Search titles and messages, read them, restore them.
+
 ## Backup & export
 
 Settings ▸ General ▸ Backup & Export → "Export Everything…" writes a timestamped
@@ -432,6 +450,11 @@ config, and workspace root files + skills. OpenClaw's caches (workspace
 sessions, browser profile, npm, tmp, media, logs) are deliberately excluded.
 A `manifest.json` records every section's file count and size, and any
 keychain items that couldn't be read.
+The backup holds secrets in readable form, so keep it somewhere safe.
+
+**Import…** beside it takes such a folder or zip from any DSH or Vision: pick the modules, and your data
+folder is copied aside first. Files merge (a newer local file is kept); settings and secrets replace what's
+here; OpenClaw is opt-in. The app restarts afterwards.
 
 ## Memory and knowledge files
 
@@ -459,13 +482,25 @@ A chat without a project reads the same files from your home folder instead (`~/
 gets sent. **Set Up Memory** scaffolds `MEMORY.md` plus today's daily log. The editor warns past ~100
 lines, because that file costs tokens on every request — detail belongs in a skill.
 
-## Automations (⌘3)
+## Agent mode (⌘3)
+
+One long-running conversation that isn't tied to a project. It carries on indefinitely (old turns get
+summarized), saves what it learns with `save_memory` without asking, writes reusable procedures with
+`create_skill` (live at once; **Settings ▸ General ▸ Agent Mode** makes them drafts instead), and puts work
+on the calendar with `schedule_task`. Its scratch folder is `agent/` in the data folder; add project folders
+per thread.
+
+Signed in to Guardian, your **people** appear in the model picker and the sidebar here. Each is a thread of
+their own, running on Guardian with their own prompt, model and tools; the first message carries the harness
+memory as context, through the sensitive-data shield. This app's tools don't run in those threads.
+
+## Automations (⌘4)
 
 A third mode next to Chats and Code: scheduled prompts that run unattended in their own chat —
 "run the ticket sync every weekday at 8:30", "check the build on Monday". The calendar shows every
 upcoming run for the month; the list edits, disables, and re-runs; each automation keeps its own
 history, and a run is exactly a `/goal` (round after round until it's done), in its own chat with
-its own context window.
+its own context window. Click a day to see what ran, what will run, and to schedule something on it.
 
 Schedules are cron (5-field, with time zone), every-N-minutes, or one-off. OpenClaw's scheduled
 tasks import and export both ways — **Automations ▸ Import OpenClaw jobs.json…** reads the same
@@ -502,6 +537,18 @@ drafted to disk every couple of seconds, so even a force-quit loses nothing type
 the account may use becomes an ordinary route — coexisting with a local DGX Spark and Bedrock:
 either can lead while the other takes subagent work, and selecting a Spark model never disturbs the
 Guardian selection. The token lives in the Keychain, never in the preferences file.
+
+### Guardian's local models and people
+
+Signed in under **Settings ▸ Guardian**, every model the account may use becomes a route, and **local models**
+(Orbital, and any AI host added later) appear under their host's name. A local model Guardian's OpenAI-shaped
+proxy lists runs this app's tools like any other route; one it doesn't list runs through Guardian's chat, so it
+can talk but won't edit files, and can't take subagent work.
+
+**Send to Guardian** (the paper plane, or **+**) sends a whole chat plus any files, with a directive, to a
+person, an AI Coders project, a column on a project's delivery board, or a Kanban column. The text goes through
+the shield by default; files can't be checked. Uploads are limited to 50 MB per file. Delivery board cards don't
+hold attachments, so files arrive there as links.
 
 ## Skills
 
@@ -639,7 +686,10 @@ VisionHarnessCore/         the harness. No AppKit, no SwiftUI — headlessly tes
   ChatPrompt.swift         the prompt and scratch folder of a chat without a project
   AWS/                     SigV4, event streams, the AWS CLI (run, sign in, install), Bedrock setup
   Bedrock/                 the Converse client, its request mapping and per-model table
-  Guardian/                the Guardian sign-in client (session, 2FA, the harness v1 endpoint)
+  Guardian/                people, local models, uploads, AI Coders, boards, chat streaming
+  Worktree/                a chat's own git worktree: create, status, merge, clean up, discard
+  AgentTools.swift         create_skill, schedule_task, list_scheduled_tasks, cancel_scheduled_task
+  BackupImport.swift       restore a backup into this install
   Permissions.swift        presets, path containment (multi-root), shell gating
   Plugins.swift            JSON manifests → tools
   ProjectContext.swift     instruction files (incl. .INFRASTRUCTURE.md), memory, skills, prompts
@@ -670,12 +720,15 @@ VisionMacApp/              SwiftUI
   AutomationsView.swift    the calendar, the library, and the editor
   SetupWizard.swift        first-run configuration
   ModelRoutesSettings.swift  Settings › Models: the fleet card, a row per route, Guardian sign-in
-  RouteMenu.swift          the main-model / subagent-server menu shared by toolbar and composer
+  ModelPicker.swift        the searchable model picker shared by toolbar and composer
+  SidebarView.swift        New Chat, search, chats by project or by recency, Agent threads
+  ChatBars.swift           the folder and worktree bars, the finish sheet, the archive browser
+  ChatArchive.swift        chats kept on disk after they leave the sidebar
+  SendToGuardian.swift     send a chat to Guardian; the backup import sheet
   ModelRoutesSettings.swift  Settings › AI Models: a row per route (on, primary, subagent, backup, private)
   SensitiveDataSettings.swift  Settings › AI Models › Sensitive data
   SwapperSettings.swift    Settings › Model Servers: the Swapper boxes
   SparkController.swift    the boxes: status, switching, installs, routes that follow
-  RouteMenu.swift          the primary / subagents / backups menu shared by toolbar and composer
   PlanPanel.swift          the plan panel
   Swapper/                 the "Connect my Spark Swapper" guide
   Plans/                   the subscription plan guide
