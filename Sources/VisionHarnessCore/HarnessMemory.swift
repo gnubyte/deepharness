@@ -178,8 +178,15 @@ public struct HarnessMemory: Sendable {
             return ImportReport(filesRead: 0, linesAdded: 0, linesSkipped: 0, target: durable ? memoryFile : dailyFile())
         }
 
-        // Existing durable lines, so an import is idempotent.
-        var known = Set(self.durable().split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
+        // Existing lines (durable file and every dated log), so an import is
+        // idempotent. Keys are normalized; the original text is kept verbatim.
+        var known = Set(self.durable().split(separator: "\n").map { Self.normalizeImportLine(String($0)) })
+        for existing in (try? FileManager.default.contentsOfDirectory(at: memoryDirectory, includingPropertiesForKeys: nil)) ?? []
+        where existing.pathExtension == "md" {
+            if let text = try? String(contentsOf: existing, encoding: .utf8) {
+                text.split(separator: "\n").forEach { known.insert(Self.normalizeImportLine(String($0))) }
+            }
+        }
         var durableBody = self.durable()
         var report = ImportReport(filesRead: 0, linesAdded: 0, linesSkipped: 0, target: memoryFile)
         let dateStamp = Self.dayStamp()
@@ -193,13 +200,14 @@ public struct HarnessMemory: Sendable {
                     // Skip scaffold noise, headers and empties.
                     !line.isEmpty && line != "-" && !line.hasPrefix("#") && !line.hasPrefix("===")
                 }
-            for line in lines {
-                let key = line.lowercased()
-                guard known.insert(key).inserted else {
+            for raw in lines {
+                guard known.insert(Self.normalizeImportLine(raw)).inserted else {
                     report.linesSkipped += 1
                     continue
                 }
-                let entry = "- [imported \(dateStamp)] \(line.replacingOccurrences(of: "\n", with: " "))"
+                var fact = raw
+                while fact.hasPrefix("- ") || fact.hasPrefix("* ") { fact = String(fact.dropFirst(2)) }
+                let entry = "- [imported \(dateStamp)] \(fact)"
                 if file.dated {
                     // Keep the original day: append to that date's log.
                     let day = file.url.deletingPathExtension().lastPathComponent
@@ -236,6 +244,17 @@ public struct HarnessMemory: Sendable {
     static func isDated(_ url: URL) -> Bool {
         let stem = url.deletingPathExtension().lastPathComponent
         return stem.count == 10 && stem.prefix(4).allSatisfy(\.isNumber) && stem.contains("-")
+    }
+
+    /// One imported fact, normalized for comparison: trimmed, lowercased, list
+    /// markers and any earlier "[imported …]" stamp stripped.
+    static func normalizeImportLine(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        while s.hasPrefix("- ") || s.hasPrefix("* ") { s = String(s.dropFirst(2)) }
+        if s.hasPrefix("[imported "), let marker = s.range(of: "] ") {
+            s = String(s[marker.upperBound...])
+        }
+        return s
     }
 }
 
