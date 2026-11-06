@@ -84,6 +84,8 @@ final class AppModel {
     var showQueuePanel = false
     /// The credential vault window.
     var showVault = false
+    /// The durable prompt-history viewer (all modes).
+    var showPromptHistory = false
     /// The Amazon Bedrock guide, when it is open (nil = closed).
     var bedrockGuide: BedrockGuideRequest?
     /// The "Connect my Spark Swapper" guide, when it is open.
@@ -516,6 +518,8 @@ final class AppModel {
     func newChat() -> SessionVM {
         if mode == .agent { return newAgentThread() }
         let session = transport.newSession(cwd: project?.path)
+        // Chat mode keeps its own history: a conversation, even about a project.
+        transport.setBucket(mode == .code ? .code : .chat, of: session)
         transport.ensureContextProbe()
         return session
     }

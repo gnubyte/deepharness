@@ -76,6 +76,9 @@ struct SidebarView: View {
     private var navigation: some View {
         VStack(spacing: 0) {
             navRow("Open Folder…", icon: "folder.badge.plus") { model.chooseProject() }
+            navRow("Prompt History", icon: "clock.arrow.circlepath", count: model.transport.promptHistory.count) {
+                model.showPromptHistory = true
+            }
             navRow("Chat Archive", icon: "archivebox", count: transport.archive.chats.count) { model.showArchive = true }
             navRow("Memory & Skills", icon: "brain") { model.showMemoryAndSkills = true }
         }
@@ -134,8 +137,19 @@ struct SidebarView: View {
 
     // MARK: Which chats
 
+    /// Chat mode and code mode keep separate histories: chat is the
+    /// conversation list (ChatGPT-style, including no-project chats), code is
+    /// project work. Agent mode has its own list above.
     private var chats: [SessionVM] {
-        transport.sessions.filter { !$0.isAgent && matches($0) }
+        transport.sessions.filter { !$0.isAgent && matches($0) && bucketMatches($0) }
+    }
+
+    private func bucketMatches(_ session: SessionVM) -> Bool {
+        switch model.mode {
+        case .chat: return session.historyBucket == .chat || session.isPlain
+        case .code: return session.historyBucket == .code
+        default: return true
+        }
     }
 
     private func matches(_ session: SessionVM) -> Bool {

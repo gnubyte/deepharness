@@ -130,6 +130,11 @@ public final class SessionVM: Identifiable {
     public var worktreeStatus: WorktreeStatus?
     /// An Agent mode thread rather than an ordinary chat.
     public var isAgent = false
+    /// Which history this chat belongs to. Chat mode and code mode keep
+    /// separate histories in the sidebar (chat is the ChatGPT-like
+    /// conversation list; code is project work). Agent threads are their own.
+    public enum HistoryBucket: String, Sendable { case chat, code }
+    public var historyBucket: HistoryBucket = .chat
     /// The Guardian person this thread talks to (Agent mode).
     public var person: GuardianPerson?
     /// The conversation on Guardian's side, for routes that keep it there.
@@ -215,6 +220,8 @@ public final class SessionVM: Identifiable {
         public var turnID: String?
         /// How the turn ended, for the timeline row's chip.
         public var outcome: Outcome
+        /// Wall-clock the turn took, set when it ends.
+        public var duration: TimeInterval?
 
         public enum Outcome: Hashable, Sendable {
             case none                  // still working / never finished
@@ -235,12 +242,13 @@ public final class SessionVM: Identifiable {
         }
 
         public init(id: String = UUID().uuidString, text: String, at: Date = .now,
-                    turnID: String? = nil, outcome: Outcome = .none) {
+                    turnID: String? = nil, outcome: Outcome = .none, duration: TimeInterval? = nil) {
             self.id = id
             self.text = text
             self.at = at
             self.turnID = turnID
             self.outcome = outcome
+            self.duration = duration
         }
     }
 

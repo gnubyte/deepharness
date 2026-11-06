@@ -20,6 +20,13 @@ final class CodeWorkspace {
     var terminalVisible = false
 
     var showTree = true
+    /// How a click in the file tree opens a file. True (the default): a
+    /// single click opens it, like today. False: a single click only selects
+    /// and a double-click opens — for those who navigate a lot and edit
+    /// rarely, or the other way round.
+    var opensOnSingleClick: Bool = (IsolatedRun.defaults.object(forKey: "code.opensOnSingleClick") as? Bool) ?? true {
+        didSet { IsolatedRun.defaults.set(opensOnSingleClick, forKey: "code.opensOnSingleClick") }
+    }
     /// Set when the user asks to mention a file in chat; the composer picks it
     /// up and clears it.
     var pendingMention: String?

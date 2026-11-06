@@ -47,6 +47,9 @@ public struct LogSession: Identifiable, Hashable, Codable, Sendable {
     public var worktree: WorktreeRef?
     /// "agent" for an Agent mode thread; nil for an ordinary chat.
     public var kind: String?
+    /// Which history the chat belongs to: "chat" or "code" (chat mode and
+    /// code mode keep separate histories). Nil = older file; derived from cwd.
+    public var bucket: String?
     /// The Guardian person this chat talks to.
     public var person: GuardianPerson?
     /// The chat on Guardian's side, for routes Guardian holds the history of.

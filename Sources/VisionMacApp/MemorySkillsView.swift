@@ -100,16 +100,24 @@ struct MemorySkillsView: View {
     @State private var harnessBuffer = ""
     @State private var harnessLoaded = false
     @State private var harnessEditingDurable = true
+    /// Result of the last memory import, shown under the editor.
+    @State private var importReport: String?
 
     private var harnessMemory: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("", selection: $harnessEditingDurable) {
-                Text("Durable (MEMORY.md)").tag(true)
-                Text("Today's log").tag(false)
+            HStack(spacing: 8) {
+                Picker("", selection: $harnessEditingDurable) {
+                    Text("Durable (MEMORY.md)").tag(true)
+                    Text("Today's log").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 320)
+                Spacer()
+                Button("Import Memories…") { importMemories() }
+                    .controlSize(.small)
+                    .help("Import memories from another install — OpenClaw's ~/.openclaw/memory, a Vision backup, or any MEMORY.md / memory folder — into the harness's general memory (available in every mode and chat).")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 320)
             Text("What the harness knows across all chats and projects — the user, people, conventions, decisions. The model adds to it with `save_memory`; compaction folds in each summary's key facts. Kept short: it rides on every request.")
                 .font(.caption).foregroundStyle(.secondary)
             if !harnessLoaded {
@@ -148,8 +156,33 @@ struct MemorySkillsView: View {
                     harnessBuffer = durable ? model.transport.memory.durable() : model.transport.memory.daily()
                 }
             }
+            if let importReport {
+                Text(importReport)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
+    }
+
+    /// Pick a file or folder and fold its memories into the harness's general
+    /// memory: date-named logs keep their day, everything else lands in
+    /// durable MEMORY.md (or the daily logs). Lines deduplicate.
+    private func importMemories() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Import"
+        panel.message = "The MEMORY.md or memory/ folder to import — OpenClaw's ~/.openclaw/memory, a Vision backup, or the archive on the drive."
+        if panel.runModal() == .OK, let url = panel.url {
+            let report = model.transport.memory.importMemories(from: url, durable: true)
+            importReport = report.filesRead == 0
+                ? "No readable .md files under \(url.lastPathComponent)."
+                : "Imported \(report.linesAdded) new line\(report.linesAdded == 1 ? "" : "s") from \(report.filesRead) file\(report.filesRead == 1 ? "" : "s") (\(report.linesSkipped) already known)."
+            revision += 1
+        }
     }
 
     // MARK: Instructions

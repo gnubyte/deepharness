@@ -1059,8 +1059,8 @@ struct PhaseCard: View {
                 Circle()
                     .fill(Theme.successTint)
                     .frame(width: 7, height: 7)
-                    .scaleEffect(pulse ? 1.25 : 0.9)
-                    .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
+                    .scaleEffect(pulse ? 1.2 : 0.9)
+                    .animation(.easeInOut(duration: 0.6), value: pulse)
             } else if isDone {
                 Image(systemName: "checkmark")
                     .font(.system(size: 8, weight: .bold))
@@ -1136,12 +1136,15 @@ struct PhaseCard: View {
     private var executionBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
-                // The green, semi-animated working badge.
+                // The green, semi-animated working badge. Pulsed by the 1s
+                // tick below — deliberately NOT a .repeatForever animation,
+                // which re-arms on every tick and makes the icon bounce clean
+                // out of its row (the "bouncing hammer" bug).
                 Image(systemName: "hammer.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.successTint)
                     .opacity(pulse ? 1 : 0.55)
-                    .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+                    .animation(.easeInOut(duration: 0.9), value: pulse)
                 Text("Executing")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Theme.successTint)
@@ -1294,6 +1297,12 @@ struct PromptHistoryView: View {
                         .multilineTextAlignment(.leading)
                     Spacer(minLength: 4)
                     outcomeChip(record)
+                    if let duration = record.duration {
+                        Text(duration.formattedDuration)
+                            .font(Theme.mono(9.5))
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
                     Text(record.at, style: .time)
                         .font(Theme.mono(9.5))
                         .foregroundStyle(.tertiary)

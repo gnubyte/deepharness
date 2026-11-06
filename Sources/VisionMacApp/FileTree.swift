@@ -169,6 +169,19 @@ struct FileTreeView: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("Refresh")
+            // The file-open mode: single click opens (default) or a double
+            // click opens and a single only selects.
+            Button {
+                code.opensOnSingleClick.toggle()
+            } label: {
+                Image(systemName: code.opensOnSingleClick ? "cursorarrow.click" : "cursorarrow.click.2")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help(code.opensOnSingleClick
+                  ? "Files open on a single click — switch to double-click"
+                  : "Files open on a double click — switch to single-click")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -219,6 +232,11 @@ private struct FileRow: View {
         .padding(.leading, CGFloat(depth) * 12)
         .contentShape(Rectangle())
         .tag(node.url)
+        // Double-click first: in double-click mode a single tap selects, a
+        // second opens; in single-click mode the count-1 gesture alone fires.
+        .onTapGesture(count: 2) {
+            if !node.isDirectory, !model.code.opensOnSingleClick { model.code.openFile(node.url) }
+        }
         .onTapGesture { activate() }
         .contextMenu { FileMenu(url: node.url, isDirectory: node.isDirectory) }
     }
@@ -228,8 +246,10 @@ private struct FileRow: View {
             node.load()
             withAnimation(.easeOut(duration: 0.12)) { node.isExpanded.toggle() }
             model.code.selection = node.url
-        } else {
+        } else if model.code.opensOnSingleClick {
             model.code.openFile(node.url)
+        } else {
+            model.code.selection = node.url
         }
     }
 }
@@ -263,7 +283,12 @@ private struct FilterResults: View {
             }
             .contentShape(Rectangle())
             .tag(url)
-            .onTapGesture { model.code.openFile(url) }
+            .onTapGesture(count: 2) {
+                if !model.code.opensOnSingleClick { model.code.openFile(url) }
+            }
+            .onTapGesture {
+                if model.code.opensOnSingleClick { model.code.openFile(url) } else { model.code.selection = url }
+            }
             .contextMenu { FileMenu(url: url, isDirectory: false) }
         }
         .listStyle(.sidebar)

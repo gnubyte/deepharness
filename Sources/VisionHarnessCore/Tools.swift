@@ -176,6 +176,12 @@ extension ToolExecutor {
               let obj = try? JSONSerialization.jsonObject(with: data) else { return [:] }
         return (obj as? [String: Any]) ?? [:]
     }
+    internal static func array(_ json: JSONString, _ key: String) -> [Any] {
+        guard let data = json.raw.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let dict = obj as? [String: Any] else { return [] }
+        return dict[key] as? [Any] ?? []
+    }
 }
 
 /// Argument-reader namespace. Callers holding an `any ToolExecutor` (or a

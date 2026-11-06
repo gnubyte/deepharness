@@ -135,6 +135,108 @@ public struct HarnessMemory: Sendable {
         let body = "Key facts from compaction: " + facts.joined(separator: " · ")
         return append(body, durable: false, at: date)
     }
+
+    // MARK: Importing (OpenClaw, Vision, backups)
+
+    /// What an import found.
+    public struct ImportReport: Sendable, Equatable {
+        public var filesRead: Int
+        public var linesAdded: Int
+        public var linesSkipped: Int
+        public var target: URL
+    }
+
+    /// Import memories from another install — OpenClaw's `~/.openclaw/memory/`,
+    /// a Vision backup's `MEMORY.md` + `memory/`, or any folder or `.md` file —
+    /// into *this* harness's general memory (app support), where every mode
+    /// and every chat reads it. Never into a project folder.
+    ///
+    /// A file named `MEMORY.md` (or any `.md` that isn't a date) goes to the
+    /// durable file when `durable` is true, else to today's log; date-named
+    /// files (`YYYY-MM-DD.md`) go to their own daily log so the timeline stays
+    /// honest either way. Lines are deduplicated against what's already there.
+    @discardableResult
+    public func importMemories(from url: URL, durable: Bool = true) -> ImportReport {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return ImportReport(filesRead: 0, linesAdded: 0, linesSkipped: 0, target: memoryFile)
+        }
+
+        // Collect (sourceURL, destinationKind) pairs.
+        var files: [(url: URL, dated: Bool)] = []
+        if isDirectory.boolValue {
+            let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: nil)
+            for case let file as URL in enumerator ?? NSEnumerator() {
+                guard file.pathExtension == "md" else { continue }
+                files.append((file, Self.isDated(file)))
+            }
+        } else if url.pathExtension == "md" {
+            files = [(url, Self.isDated(url))]
+        }
+        guard !files.isEmpty else {
+            return ImportReport(filesRead: 0, linesAdded: 0, linesSkipped: 0, target: durable ? memoryFile : dailyFile())
+        }
+
+        // Existing durable lines, so an import is idempotent.
+        var known = Set(self.durable().split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
+        var durableBody = self.durable()
+        var report = ImportReport(filesRead: 0, linesAdded: 0, linesSkipped: 0, target: memoryFile)
+        let dateStamp = Self.dayStamp()
+
+        for file in files {
+            guard let text = try? String(contentsOf: file.url, encoding: .utf8) else { continue }
+            report.filesRead += 1
+            let lines = text.split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { line in
+                    // Skip scaffold noise, headers and empties.
+                    !line.isEmpty && line != "-" && !line.hasPrefix("#") && !line.hasPrefix("===")
+                }
+            for line in lines {
+                let key = line.lowercased()
+                guard known.insert(key).inserted else {
+                    report.linesSkipped += 1
+                    continue
+                }
+                let entry = "- [imported \(dateStamp)] \(line.replacingOccurrences(of: "\n", with: " "))"
+                if file.dated {
+                    // Keep the original day: append to that date's log.
+                    let day = file.url.deletingPathExtension().lastPathComponent
+                    let target = memoryDirectory.appendingPathComponent("\(day).md")
+                    try? FileManager.default.createDirectory(at: memoryDirectory, withIntermediateDirectories: true)
+                    var log = (try? String(contentsOf: target, encoding: .utf8)) ?? "# \(day)\n\n"
+                    if !log.hasSuffix("\n") { log += "\n" }
+                    log += entry + "\n"
+                    try? log.write(to: target, atomically: true, encoding: .utf8)
+                    report.target = target
+                } else if durable {
+                    if durableBody.isEmpty { durableBody = "# Harness memory\n" }
+                    if !durableBody.hasSuffix("\n") { durableBody += "\n" }
+                    durableBody += entry + "\n"
+                    report.target = memoryFile
+                } else {
+                    let target = dailyFile()
+                    var log = (try? String(contentsOf: target, encoding: .utf8)) ?? ""
+                    if !log.hasSuffix("\n") { log += "\n" }
+                    log += entry + "\n"
+                    try? log.write(to: target, atomically: true, encoding: .utf8)
+                    report.target = target
+                }
+                report.linesAdded += 1
+            }
+        }
+        if durable, !durableBody.isEmpty {
+            try? durableBody.write(to: memoryFile, atomically: true, encoding: .utf8)
+        }
+        return report
+    }
+
+    /// True when the file's name is a date (`2026-01-31.md`) — a daily log.
+    static func isDated(_ url: URL) -> Bool {
+        let stem = url.deletingPathExtension().lastPathComponent
+        return stem.count == 10 && stem.prefix(4).allSatisfy(\.isNumber) && stem.contains("-")
+    }
 }
 
 // MARK: - The model's memory tools

@@ -182,6 +182,8 @@ struct AppCommands: Commands {
                 .disabled(model.selectedSession == nil || !model.guardian.isSignedIn)
             Button("Credentials Vault…") { model.showVault = true }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
+            Button("Prompt History…") { model.showPromptHistory = true }
+                .keyboardShortcut("p", modifiers: [.command, .control])
             Button("Reload Project Context") { model.transport.refreshProjectContext() }
                 .disabled(model.project == nil)
         }
@@ -258,6 +260,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $model.showArchive) {
             ChatArchiveView().environment(model)
+        }
+        .sheet(isPresented: $model.showPromptHistory) {
+            PromptHistorySheet().environment(model)
         }
         .sheet(item: $model.worktreeRequest) { request in
             NewWorktreeSheet(request: request).environment(model)

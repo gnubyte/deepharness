@@ -62,6 +62,10 @@ public final class AppTransport {
     /// The harness's persistent memory — facts that outlive any one chat,
     /// stored with the app (never inside a project folder).
     @ObservationIgnored public let memory: HarnessMemory
+    /// The durable prompt ledger: every prompt sent in any mode (chat, code,
+    /// agent, automation), with its outcome, duration and artifacts. Backs the
+    /// Prompt History viewer and the model's own introspection tools.
+    @ObservationIgnored public let promptHistory: PromptHistoryStore
     /// The git-keep-in-sync layer for open projects (fakeable in tests).
     @ObservationIgnored var gitSync: GitSync?
     /// Workspace path → when its branch was last auto-synced (throttles the
@@ -264,6 +268,8 @@ public final class AppTransport {
         self.vault = vault ?? CredentialVault(directory: skillLocations.appSupport)
         self.queueFile = queueFile ?? Self.defaultQueueFile
         self.memory = memory ?? HarnessMemory(appSupport: skillLocations.appSupport)
+        self.promptHistory = PromptHistoryStore(
+            fileURL: skillLocations.appSupport.appendingPathComponent("prompt-history.json"))
         self.draftsDirectory = skillLocations.appSupport.appendingPathComponent("drafts", isDirectory: true)
         self.gitSync = GitSync(runner: GitSync.processRunner())
         self.phaseRunner = TurnPhaseRunner(
@@ -356,6 +362,7 @@ public final class AppTransport {
         let id = UUID().uuidString
         let resolved = preset ?? config.asPreset
         let vm = SessionVM(id: id, title: "New chat", cwd: cwd, preset: resolved)
+        vm.historyBucket = cwd == nil ? .chat : .code
         if cwd == nil { vm.workFolder = workFolder }
         sessions.insert(vm, at: 0)
         log.upsert(id: id, cwd: cwd, title: "New chat", preset: resolved.rawValue, scratch: vm.workFolder)
@@ -831,6 +838,11 @@ public final class AppTransport {
         if !resuming {
             phasesBegin(vm, prompt: task.goalText)
             vm.promptHistory.append(.init(text: task.title, turnID: vm.turnPhase?.turnID))
+            // The durable ledger: an unattended task is a prompt like any other.
+            promptHistory.add(.init(chatID: vm.id, chatTitle: vm.title,
+                                    mode: promptMode(for: vm), text: task.goalText,
+                                    turnID: vm.turnPhase?.turnID,
+                                    attachments: (task.attachments ?? []).map { $0.name }))
         }
         do {
             let outcome = try await goalLoop(vm, goal: task.goalText, auto: true, resuming: resuming,
@@ -902,6 +914,13 @@ public final class AppTransport {
         if byUser { userRenamed.insert(id) }
         vm.title = title
         log.touch(id, title: title)
+        promptHistory.retitle(chatID: id, title: title)
+    }
+
+    /// Which history a chat files under (chat mode vs code mode). Persists.
+    public func setBucket(_ bucket: SessionVM.HistoryBucket, of vm: SessionVM) {
+        vm.historyBucket = bucket
+        log.updateMeta(vm.id) { $0.bucket = bucket.rawValue }
     }
 
     public func reload() {
@@ -918,6 +937,12 @@ public final class AppTransport {
             vm.isAgent = row.kind == "agent"
             vm.person = row.person
             vm.guardianChatID = row.guardianChatID
+            if let bucket = row.bucket {
+                vm.historyBucket = bucket == "code" ? .code : .chat
+            } else {
+                // Older files: project work was code, the rest chat.
+                vm.historyBucket = cwd == nil ? .chat : .code
+            }
             return vm
         }
         sessions = stored + sessions
@@ -1062,6 +1087,25 @@ public final class AppTransport {
         var extra: [any ToolExecutor] = PluginLoader.tools(from: plugins, reserved: Set(builtins.names))
         if !skillState.active.isEmpty { extra.append(UseSkillTool(skills: skillState.active)) }
         extra.append(VaultSearchTool(vault: vault))
+        // The harness's self-tools: the model can manage the vault, run an
+        // automation, search every chat history, and pull memories in from
+        // other installs. Vault writes bump the revision so views and the
+        // next turn's prompt follow.
+        let vaultChanged: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor [weak self] in self?.vaultDidChange() }
+        }
+        if vm.preset != .plan {
+            extra.append(VaultAddTool(vault: vault, onChange: vaultChanged))
+            extra.append(VaultUpdateTool(vault: vault, onChange: vaultChanged))
+            extra.append(VaultDeleteTool(vault: vault, onChange: vaultChanged))
+            extra.append(AutomationRunTool(run: { [weak self] id, name in
+                await self?.runAutomationByIdOrName(id, name) ?? false
+            }))
+        }
+        extra.append(SearchChatsTool(directory: skillLocations.appSupport.appendingPathComponent("conversations", isDirectory: true)))
+        extra.append(ImportMemoryTool(memory: memory))
+        extra.append(HarnessInfoTool(memory: memory, vault: vault, promptHistory: promptHistory,
+                                     scheduled: { [weak self] in await self?.scheduledList?() ?? [] }))
         // The harness's memory: the model records what it thinks it will need
         // (about the user, a person, a project) and can re-read what it knows.
         extra.append(SaveMemoryTool(memory: memory))
@@ -1784,8 +1828,29 @@ public final class AppTransport {
     private func recordTurnOutcome(_ vm: SessionVM, turnID: String, outcome: SessionVM.PromptRecord.Outcome) {
         guard let index = vm.promptHistory.lastIndex(where: { $0.turnID == turnID }) else { return }
         vm.promptHistory[index].outcome = outcome
+        // The turn's wall-clock, for the timeline row.
+        if let state = vm.turnPhase, let start = state.startedAt {
+            vm.promptHistory[index].duration = (state.finishedAt ?? Date()).timeIntervalSince(start)
+        }
+        // Mirror into the durable ledger with the turn's wall-clock and what
+        // it produced. The phases' finishedAt is the honest end of the turn.
+        var duration: TimeInterval?
+        if let state = vm.turnPhase, let start = state.startedAt {
+            duration = (state.finishedAt ?? Date()).timeIntervalSince(start)
+        }
+        promptHistory.finish(turnID: turnID,
+                             outcome: PromptHistoryRecord.Outcome(outcome),
+                             duration: duration,
+                             changedFiles: vm.changedFiles.map { $0.url.lastPathComponent },
+                             model: config.activeProvider.map(effective)?.model)
     }
 
+    /// Which surface of the app a chat's prompts belong to in the ledger.
+    private func promptMode(for vm: SessionVM) -> PromptHistoryRecord.Mode {
+        if vm.isAgent { return .agent }
+        if queueSessions[vm.id] != nil { return vm.historyBucket == .code ? .code : .chat }
+        return vm.historyBucket == .code ? .code : .chat
+    }
     static func countProjectFiles(_ root: URL) -> Int {
         let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])
         guard let enumerator else { return 0 }
@@ -1834,6 +1899,11 @@ public final class AppTransport {
             vm.promptHistory.append(record)
             // Signed into Guardian: the prompt goes to the account's history.
             if let guardianSync { guardianSync(record, sessionID) }
+            // The durable ledger (every mode), with attachments carried in.
+            promptHistory.add(.init(chatID: sessionID, chatTitle: vm.title,
+                                    mode: promptMode(for: vm), text: text,
+                                    turnID: vm.turnPhase?.turnID,
+                                    attachments: attachments.map { $0.name }))
         }
         defer {
             vm.running = false
@@ -2132,8 +2202,16 @@ public final class AppTransport {
     --- Agent mode ---
     You are the user's persistent personal agent, not a one-off coding session. This conversation \
     carries on indefinitely: old turns get summarized, so anything worth keeping belongs in memory or a skill.
-    - Memory: call `save_memory` without asking whenever you learn a lasting fact about the user, the \
-    people they work with, their projects or their preferences. Read what you already know before asking them.
+    - Memory: you sit on top of the harness's general memory — durable facts about the user, the \
+    people they work with, their projects and preferences — and it is yours in every conversation. \
+    Call `save_memory` without asking whenever you learn a lasting fact. Before asking the user \
+    anything, check `read_memory` (all: true reaches further back), and `chat_search` finds what \
+    other conversations already established. Assume the memory is there; use it.
+    - The harness itself: `harness_info` shows what it has (vault, automations, prompt history, \
+    data folder); `vault_add`/`vault_update`/`vault_delete` manage credentials (the user may hand \
+    you a secret or a file of them to import — never ask for one already stored); \
+    `import_memory` pulls memories in from other installs (OpenClaw, Vision backups) into the \
+    general memory so they're available everywhere; `automation_run` fires a scheduled job now.
     - Skills: after finishing a multi-step procedure you'd want to repeat, or when the user corrects how \
     something should be done, save it. Use `create_skill` if you have it, otherwise `propose_skill`. Improve \
     an existing skill rather than adding a near-duplicate. Mention what you saved in one line.
@@ -2874,11 +2952,20 @@ public final class AppTransport {
         let startedAt = Date()
         let vm = newSession(cwd: automation.projectPath, select: false)
         renameSession(vm.id, to: "⏰ \(automation.name)", byUser: false)
+        // The durable prompt ledger: an automation run is a prompt from the
+        // Automations surface, with its outcome and duration stamped after.
+        let ledgerRecord = promptHistory.add(.init(
+            chatID: vm.id, chatTitle: vm.title, mode: .automation, text: automation.prompt,
+            attachments: (automation.attachments ?? []).map { $0.name }))
         let task = Task { [weak self] in
             guard let self else { return }
             defer {
                 self.runningAutomations.remove(automation.id)
                 self.finishTaskSession(vm, taskID: nil)
+            }
+            func stamp(_ outcome: PromptHistoryRecord.Outcome, _ duration: TimeInterval) {
+                self.promptHistory.finishRecord(id: ledgerRecord.id, outcome: outcome, duration: duration,
+                                                changedFiles: vm.changedFiles.map { $0.url.lastPathComponent })
             }
             do {
                 let outcome = try await self.goalLoop(vm, goal: automation.prompt, auto: true,
@@ -2886,15 +2973,20 @@ public final class AppTransport {
                 let duration = Date().timeIntervalSince(startedAt)
                 switch outcome {
                 case .complete:
+                    stamp(.completed(evidence: vm.turnPhase?.evidence.count ?? 0), duration)
                     self.schedulerRecord(automation.id, "complete", duration, vm.id, nil)
                 case .blocked(let why):
+                    stamp(.blocked(reason: why), duration)
                     self.schedulerRecord(automation.id, "blocked", duration, vm.id, why)
                 case .stopped:
+                    stamp(.stopped, duration)
                     self.schedulerRecord(automation.id, "stopped", duration, vm.id, nil)
                 }
             } catch {
                 let detail = Self.describe(error)
-                self.schedulerRecord(automation.id, "failed", Date().timeIntervalSince(startedAt), vm.id, detail)
+                let duration = Date().timeIntervalSince(startedAt)
+                stamp(.failed(reason: detail), duration)
+                self.schedulerRecord(automation.id, "failed", duration, vm.id, detail)
                 if !Task.isCancelled {
                     vm.note(detail, role: .error)
                 }
@@ -2906,6 +2998,17 @@ public final class AppTransport {
     private func automationDidRecord(_ id: String, _ status: String,
                                      _ duration: TimeInterval, _ sessionID: String, _ detail: String?) {
         schedulerRecord(id, status, duration, sessionID, detail)
+    }
+
+    /// `automation_run`: find a scheduled automation by id or name and run it
+    /// now. False when nothing matches.
+    private func runAutomationByIdOrName(_ id: String, _ name: String) async -> Bool {
+        let list = scheduledList?() ?? []
+        let match = list.first { $0.id == id }
+            ?? list.first { !name.isEmpty && $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        guard let automation = match else { return false }
+        runAutomation(automation)
+        return true
     }
 
     /// The scheduler calls back here to persist a run record; the app layer
@@ -3293,5 +3396,19 @@ public final class AppTransport {
             return llm.errorDescription ?? "\(llm)"
         }
         return error.localizedDescription
+    }
+}
+
+/// The per-chat outcome chip and the durable ledger's outcome are the same
+/// vocabulary; the ledger's shape is Codable (its file outlives the app).
+extension PromptHistoryRecord.Outcome {
+    init(_ outcome: SessionVM.PromptRecord.Outcome) {
+        switch outcome {
+        case .none: self = .working
+        case .completed(let evidence): self = .completed(evidence: evidence)
+        case .blocked(let reason): self = .blocked(reason: reason)
+        case .failed(let reason): self = .failed(reason: reason)
+        case .stopped: self = .stopped
+        }
     }
 }
