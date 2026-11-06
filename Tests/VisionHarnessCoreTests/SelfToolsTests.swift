@@ -89,13 +89,13 @@ final class PromptHistoryStoreTests: XCTestCase {
             history.finish(turnID: "t1", outcome: .stopped, duration: 12)
         }
         // The write lands off-thread; a new store over the same file reads it.
-        var reloaded: PromptHistoryStore?
+        var reloadedCount = 0
         for _ in 0..<40 {
-            reloaded = store()
-            if reloaded?.count == 1 { break }
+            reloadedCount = store().count
+            if reloadedCount == 1 { break }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        XCTAssertEqual(reloaded?.count, 1)
+        XCTAssertEqual(reloadedCount, 1)
         XCTAssertEqual(reloaded.all.first?.text, "hello")
         if case .stopped? = reloaded.all.first?.outcome {} else {
             XCTFail("outcome did not survive the round-trip")
