@@ -2963,7 +2963,9 @@ public final class AppTransport {
                 self.runningAutomations.remove(automation.id)
                 self.finishTaskSession(vm, taskID: nil)
             }
-            let stamp = { @MainActor (outcome: PromptHistoryRecord.Outcome, duration: TimeInterval) in
+            // The Task body runs on the main actor; the ledger itself is
+            // thread-safe, so the stamp closure stays plain.
+            let stamp: (PromptHistoryRecord.Outcome, TimeInterval) -> Void = { outcome, duration in
                 self.promptHistory.finishRecord(id: ledgerRecord.id, outcome: outcome, duration: duration,
                                                 changedFiles: vm.changedFiles.map { $0.url.lastPathComponent })
             }
