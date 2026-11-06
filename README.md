@@ -329,6 +329,31 @@ tool calls as XML inside plain text instead of `tool_calls`. When a turn finishe
 calls, the text is run through an XML parser that understands both the `<function=…>` and
 `<tool_name>…` conventions, and the recovered calls execute normally.
 
+### Since 0.19
+
+- **Prompt history, everywhere** (0.19). Every prompt — chat, code, agent, automations, the task
+  queue — lands in one durable ledger with how its turn ended, how long it took, what came in as
+  attachments and what files it produced. **Session ▸ Prompt History…** (⌃⌘P, and a sidebar row)
+  searches it all; the per-chat timeline now shows each turn's duration too.
+- **The harness manages itself** (0.19). New self-tools let the model work on Vision from inside any
+  conversation: `vault_add` / `vault_update` / `vault_delete` (full vault CRUD, alongside
+  `vault_search`), `automation_run` (fire a scheduled job now), `chat_search` (full-text search
+  across every chat's transcript), `harness_info` (what the harness has and where it keeps it), and
+  `import_memory`. Say "import my OpenClaw secrets into the vault" or "find the chat where we set up
+  the DNS" and it just does it.
+- **Memory import** (0.19). **Memory & Skills ▸ Import Memories…** (or `import_memory`) pulls
+  memories in from another install — OpenClaw's `~/.openclaw/memory`, a Vision backup, any
+  `MEMORY.md` or `memory/` folder — into the harness's *general* memory: durable facts to
+  `MEMORY.md`, dated logs keep their day, everything deduplicated, available in every mode.
+- **Separate chat and code histories** (0.19). Chat mode keeps its own conversation list (ChatGPT-style,
+  no-project chats included); code mode lists project work; agent threads stay their own. Chats
+  remember which side they belong to across launches.
+- **File-open mode** (0.19). A toggle in the code-mode tree header: open files on a single click
+  (as before) or require a double-click and let a single click just select. Remembered.
+- **The phase card doesn't bounce** (0.19). The working hammer and the green phase dot pulsed with
+  a `repeatForever` animation that re-armed every second and could fling the icon out of its row.
+  They pulse from the card's one-second tick now — steady, contained.
+
 ### Since 0.8
 
 - **Live processes and the machine** (0.8). `process_start`, `process_read`, `process_write`, `process_stop` and `process_list` talk to a running program. `screenshot`, `list_windows`, `screen_watch`, `ui_tree`, `inspect_process`, `mouse`, `keyboard`, `focus_app` and `view_image` look at and drive the Mac.
