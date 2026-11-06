@@ -237,11 +237,11 @@ final class SelfToolsTests: XCTestCase {
         try? FileManager.default.createDirectory(at: conversations, withIntermediateDirectories: true)
         let chat: [String: Any] = [
             "session": ["id": "chat-1", "title": "Parser work"],
-            "items": [["seq": 0, "kind": "user", "text": "How does the scopeScale estimator work?", "at": Date()]],
+            "items": [["seq": 0, "kind": "user", "text": "How does the scopeScale estimator work?", "at": 770000000.0]],
         ]
         let agent: [String: Any] = [
             "session": ["id": "chat-2", "title": "Agent"],
-            "items": [["seq": 0, "kind": "assistant", "text": "The scopeScale blends words, steps and project files.", "at": Date()]],
+            "items": [["seq": 0, "kind": "assistant", "text": "The scopeScale blends words, steps and project files.", "at": 770000000.0]],
         ]
         for (name, object) in [("chat-1.json", chat), ("chat-2.json", agent)] {
             let data = try! JSONSerialization.data(withJSONObject: object)
