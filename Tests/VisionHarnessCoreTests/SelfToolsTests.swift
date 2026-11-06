@@ -96,6 +96,7 @@ final class PromptHistoryStoreTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.1)
         }
         XCTAssertEqual(reloadedCount, 1)
+        let reloaded = store()
         XCTAssertEqual(reloaded.all.first?.text, "hello")
         if case .stopped? = reloaded.all.first?.outcome {} else {
             XCTFail("outcome did not survive the round-trip")
