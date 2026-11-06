@@ -2963,7 +2963,7 @@ public final class AppTransport {
                 self.runningAutomations.remove(automation.id)
                 self.finishTaskSession(vm, taskID: nil)
             }
-            func stamp(_ outcome: PromptHistoryRecord.Outcome, _ duration: TimeInterval) {
+            let stamp = { @MainActor (outcome: PromptHistoryRecord.Outcome, duration: TimeInterval) in
                 self.promptHistory.finishRecord(id: ledgerRecord.id, outcome: outcome, duration: duration,
                                                 changedFiles: vm.changedFiles.map { $0.url.lastPathComponent })
             }
@@ -3003,7 +3003,7 @@ public final class AppTransport {
     /// `automation_run`: find a scheduled automation by id or name and run it
     /// now. False when nothing matches.
     private func runAutomationByIdOrName(_ id: String, _ name: String) async -> Bool {
-        let list = scheduledList?() ?? []
+        let list = await scheduledList?() ?? []
         let match = list.first { $0.id == id }
             ?? list.first { !name.isEmpty && $0.name.caseInsensitiveCompare(name) == .orderedSame }
         guard let automation = match else { return false }
