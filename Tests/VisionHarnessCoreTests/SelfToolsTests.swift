@@ -88,12 +88,14 @@ final class PromptHistoryStoreTests: XCTestCase {
             history.add(.init(chatID: "a", chatTitle: "T", mode: .chat, text: "hello", turnID: "t1"))
             history.finish(turnID: "t1", outcome: .stopped, duration: 12)
         }
-        // A new store over the same file reads what was written.
-        let reloaded = store()
-        let wait = expectation(description: "async persist lands")
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) { wait.fulfill() }
-        waitForExpectations(timeout: 2)
-        XCTAssertEqual(reloaded.count, 1)
+        // The write lands off-thread; a new store over the same file reads it.
+        var reloaded: PromptHistoryStore?
+        for _ in 0..<40 {
+            reloaded = store()
+            if reloaded?.count == 1 { break }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        XCTAssertEqual(reloaded?.count, 1)
         XCTAssertEqual(reloaded.all.first?.text, "hello")
         if case .stopped? = reloaded.all.first?.outcome {} else {
             XCTFail("outcome did not survive the round-trip")
@@ -128,6 +130,13 @@ final class PromptHistoryStoreTests: XCTestCase {
 
 // MARK: - Self tools (the harness managing itself)
 
+final class ChangeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func bump() { lock.lock(); n += 1; lock.unlock() }
+    var count: Int { lock.withLock { n } }
+}
+
 final class SelfToolsTests: XCTestCase {
     private var dir: URL!
     private var vault: CredentialVault!
@@ -157,14 +166,14 @@ final class SelfToolsTests: XCTestCase {
     }
 
     func testVaultAddUpdateDeleteLifecycle() async {
-        var changed = 0
-        let add = VaultAddTool(vault: vault, onChange: { changed += 1 })
+        let changed = ChangeCounter()
+        let add = VaultAddTool(vault: vault, onChange: { changed.bump() })
         let result = await add.execute(args: """
             {"name":"TEST_API_KEY","value":"sk-supersecret","kind":"apiKey",
              "description":"for tests","tags":["test"],"access":"allowed"}
             """, in: context)
         XCTAssertTrue(result.output.contains("Stored"), result.output)
-        XCTAssertEqual(changed, 1)
+        XCTAssertEqual(changed.count, 1)
         XCTAssertEqual(vault.entry(named: "test_api_key")?.placeholder
                            .contains("TEST_API_KEY"), true)
 
@@ -172,19 +181,19 @@ final class SelfToolsTests: XCTestCase {
         let dup = await add.execute(args: #"{"name":"TEST_API_KEY","value":"x"}"#, in: context)
         XCTAssertTrue(dup.output.contains("Error:"), dup.output)
 
-        let update = VaultUpdateTool(vault: vault, onChange: { changed += 1 })
+        let update = VaultUpdateTool(vault: vault, onChange: { changed.bump() })
         let updated = await update.execute(args: """
             {"name":"TEST_API_KEY","description":"rotated","access":"ask"}
             """, in: context)
         XCTAssertTrue(updated.output.contains("Updated"), updated.output)
-        XCTAssertEqual(changed, 2)
+        XCTAssertEqual(changed.count, 2)
         XCTAssertEqual(vault.entry(named: "TEST_API_KEY")?.access, .ask)
         XCTAssertEqual(vault.entry(named: "TEST_API_KEY")?.description, "rotated")
 
-        let delete = VaultDeleteTool(vault: vault, onChange: { changed += 1 })
+        let delete = VaultDeleteTool(vault: vault, onChange: { changed.bump() })
         let deleted = await delete.execute(args: #"{"name":"TEST_API_KEY"}"#, in: context)
         XCTAssertTrue(deleted.output.contains("Deleted"), deleted.output)
-        XCTAssertEqual(changed, 3)
+        XCTAssertEqual(changed.count, 3)
         XCTAssertTrue(vault.all.isEmpty)
 
         let missing = await delete.execute(args: #"{"name":"NOPE"}"#, in: context)
@@ -268,11 +277,11 @@ final class SelfToolsTests: XCTestCase {
 
         let memory = HarnessMemory(appSupport: dir.appendingPathComponent("support"))
         let tool = ImportMemoryTool(memory: memory)
-        let first = await tool.execute(args: #"{"path":"\#(source.path)"}"#, in: context)
+        let first = await tool.execute(args: JSONString("{\"path\":\"\(source.path)\"}"), in: context)
         XCTAssertTrue(first.output.contains("3 new lines"), first.output)
 
         // Idempotent: importing again adds nothing.
-        let second = await tool.execute(args: #"{"path":"\#(source.path)"}"#, in: context)
+        let second = await tool.execute(args: JSONString("{\"path\":\"\(source.path)\"}"), in: context)
         XCTAssertTrue(second.output.contains("0 new lines"), second.output)
 
         // The durable file holds the non-dated lines.
