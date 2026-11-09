@@ -88,11 +88,13 @@ final class PromptHistoryStoreTests: XCTestCase {
             history.add(.init(chatID: "a", chatTitle: "T", mode: .chat, text: "hello", turnID: "t1"))
             history.finish(turnID: "t1", outcome: .stopped, duration: 12)
         }
-        // The write lands off-thread; a new store over the same file reads it.
+        // The writes land off-thread; a new store over the same file reads them. Wait for the second one (the
+        // finish), not just the first (the add): a reload between the two has the record but not its outcome.
         var reloadedCount = 0
-        for _ in 0..<40 {
-            reloadedCount = store().count
-            if reloadedCount == 1 { break }
+        for _ in 0..<80 {
+            let fresh = store()
+            reloadedCount = fresh.count
+            if reloadedCount == 1, fresh.all.first?.duration != nil { break }
             Thread.sleep(forTimeInterval: 0.1)
         }
         XCTAssertEqual(reloadedCount, 1)
