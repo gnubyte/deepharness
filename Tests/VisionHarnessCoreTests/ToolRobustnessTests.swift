@@ -491,11 +491,11 @@ final class ToolRobustnessTests: XCTestCase {
 
     // MARK: Arguments that are nearly JSON
 
+    /// What a tool would read from `raw` once the engine has repaired it. (Some inputs, such as a trailing comma,
+    /// newer Foundation parsers accept as they are; then there is nothing to repair, and that is fine too.)
     private func repairedObject(_ raw: String, file: StaticString = #filePath, line: UInt = #line) -> [String: Any] {
-        guard let fixed = ToolArguments.repaired(raw) else {
-            XCTFail("not repaired: \(raw)", file: file, line: line)
-            return [:]
-        }
+        let fixed = ToolArguments.repaired(raw) ?? raw
+        XCTAssertNil(ToolArguments.problem(fixed), "still not a JSON object: \(raw)", file: file, line: line)
         guard let value = try? JSONSerialization.jsonObject(with: Data(fixed.utf8)) as? [String: Any] else {
             XCTFail("repair is not a JSON object: \(fixed)", file: file, line: line)
             return [:]
