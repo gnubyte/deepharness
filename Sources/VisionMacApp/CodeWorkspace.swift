@@ -53,9 +53,13 @@ final class CodeWorkspace {
 
     // MARK: - Project lifecycle
 
+    /// The workspace whose editors are open, for the quit check (the app has one).
+    static weak var current: CodeWorkspace?
+
     func open(root url: URL) {
         guard url != root else { return }
         close()
+        Self.current = self
         root = url
         let node = FileNode(url: url, isDirectory: true)
         node.load()
@@ -67,7 +71,37 @@ final class CodeWorkspace {
         restoreState(for: url)
     }
 
+    /// Editors with unsaved changes are about to go away (another project, the project closing, the app
+    /// quitting): ask what to do with them. Returns false only when the user chose Cancel — offered when
+    /// `allowCancel`, that is, when what is happening can still be called off — or when a save failed and there is
+    /// still something to lose.
+    @discardableResult
+    func resolveUnsaved(allowCancel: Bool, reason: String) -> Bool {
+        let dirty = buffers.filter { $0.isDirty }
+        guard !dirty.isEmpty else { return true }
+        let alert = NSAlert()
+        alert.messageText = dirty.count == 1 ? "Save changes to \(dirty[0].name)?"
+                                             : "Save changes to \(dirty.count) files?"
+        alert.informativeText = "\(reason) Your changes will be lost if you don't save them."
+        alert.addButton(withTitle: dirty.count == 1 ? "Save" : "Save All")
+        alert.addButton(withTitle: "Discard")
+        if allowCancel { alert.addButton(withTitle: "Cancel") }
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            saveAll()
+            // A save that failed leaves its editor unsaved (`errorMessage` says why): don't go on to close it
+            // when there is still a way back.
+            return allowCancel ? !hasUnsavedChanges : true
+        case .alertSecondButtonReturn:
+            return true
+        default:
+            return false
+        }
+    }
+
     func close() {
+        // Unsaved edits were once dropped here without a word — opening a chat from another project was enough.
+        resolveUnsaved(allowCancel: false, reason: root.map { "\($0.lastPathComponent) is closing." } ?? "The project is closing.")
         for terminal in terminals { terminal.terminate() }
         terminals = []
         activeTerminalID = nil
@@ -333,9 +367,15 @@ final class CodeWorkspace {
             if let buffer = buffers.firstIndex(where: { $0.url == url }) {
                 // A buffer's url is immutable; reopen at the new path.
                 let wasActive = activeBufferID == buffers[buffer].id
+                let previouslyActive = activeBufferID
+                // Unsaved edits ride along to the renamed file's editor (reopening from disk dropped them).
+                let unsaved = buffers[buffer].isDirty ? buffers[buffer].text : nil
                 buffers.remove(at: buffer)
                 openFile(destination)
-                if !wasActive { activeBufferID = buffers.last?.id }
+                if let unsaved, let reopened = buffers.first(where: { $0.url == destination }) {
+                    reopened.text = unsaved
+                }
+                if !wasActive { activeBufferID = previouslyActive }
             }
             refreshTree()
         } catch {

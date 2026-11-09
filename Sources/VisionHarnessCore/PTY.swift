@@ -167,28 +167,49 @@ public final class PTY: @unchecked Sendable {
                                   maxCapture: Int = 200_000,
                                   onOutput: (@Sendable (Data) -> Void)? = nil)
                                   async -> (output: Data, exitStatus: Int32, timedOut: Bool) {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: Self.runCommandBlocking(
-                    command, cwd: cwd, cols: cols, rows: rows,
-                    timeout: timeout, maxCapture: maxCapture, onOutput: onOutput))
+        // Cancelling the task (the user pressed Stop, or the engine's watchdog fired) kills the command: without
+        // this the command ran on to its own timeout, still changing files, while the run looked stopped.
+        let cancel = BoolBox()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: Self.runCommandBlocking(
+                        command, cwd: cwd, cols: cols, rows: rows,
+                        timeout: timeout, maxCapture: maxCapture, onOutput: onOutput, cancel: cancel))
+                }
             }
+        } onCancel: {
+            cancel.set(true)
         }
+    }
+
+    /// What a one-shot command's environment adds to the app's own. Nothing ever types into its terminal, so
+    /// anything that would wait for a keypress is told not to: pagers print straight through (`git log` and
+    /// `git diff` otherwise stop at the first screen in `less` until the idle limit kills them), and git fails
+    /// instead of asking for a username. A value the user already set is kept.
+    static func commandEnvironment(base: [String: String]) -> [String: String] {
+        var env = base
+        env["TERM"] = "xterm-256color"
+        env["COLORTERM"] = "truecolor"
+        env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
+        for (key, value) in ["PAGER": "cat", "GIT_PAGER": "cat", "MANPAGER": "cat", "SYSTEMD_PAGER": "",
+                             "GH_PAGER": "cat", "AWS_PAGER": "", "GIT_TERMINAL_PROMPT": "0"] where env[key] == nil {
+            env[key] = value
+        }
+        return env
     }
 
     private static func runCommandBlocking(_ command: String, cwd: URL,
                                            cols: UInt16, rows: UInt16,
                                            timeout: TimeInterval,
                                            maxCapture: Int,
-                                           onOutput: (@Sendable (Data) -> Void)?)
+                                           onOutput: (@Sendable (Data) -> Void)?,
+                                           cancel: BoolBox)
                                            -> (output: Data, exitStatus: Int32, timedOut: Bool) {
         // Everything the child touches between fork and exec must be allocated
         // beforehand: no Swift allocation is safe on the child side.
         let argv = makeCArray(["/bin/bash", "-c", command])
-        var env = ProcessInfo.processInfo.environment
-        env["TERM"] = "xterm-256color"
-        env["COLORTERM"] = "truecolor"
-        env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
+        let env = commandEnvironment(base: ProcessInfo.processInfo.environment)
         let envp = makeCArray(env.map { "\($0.key)=\($0.value)" })
         let cwdPath = strdup(cwd.path)
 
@@ -258,6 +279,9 @@ public final class PTY: @unchecked Sendable {
         var timedOut = false
         while true {
             let now = Date()
+            if cancel.get() {
+                killCommandGroup(child); break
+            }
             if now.timeIntervalSince(totalStart) > timeout {
                 killCommandGroup(child); timedOut = true; break
             }

@@ -247,6 +247,24 @@ public struct OpenAIClient: LLMClient {
         return nil
     }
 
+    /// Whether an error says the request overflowed the context window without naming the limit — llama.cpp's
+    /// "the request exceeds the available context size", an OpenAI-style `context_length_exceeded` code,
+    /// "prompt is too long". Such an error used to pass as an ordinary HTTP 400 and end the run; as an overflow
+    /// it makes the engine compact the conversation and try again.
+    static func saysOverflow(_ body: String) -> Bool {
+        let text = body.lowercased()
+        return ["context_length_exceeded", "exceeds the available context size", "exceed the context window",
+                "exceeds the context window", "prompt is too long", "context window exceeded",
+                "maximum context length", "input is too long for the model"].contains { text.contains($0) }
+    }
+
+    /// The overflow an error body describes, if it describes one: with the limit when it names it, else 0.
+    static func overflow(in body: String) -> LLMError? {
+        if let limit = overflowLimit(in: body) { return .overflow(limit: limit, detail: body) }
+        if saysOverflow(body) { return .overflow(limit: 0, detail: String(body.prefix(600))) }
+        return nil
+    }
+
     /// Pull a context-window figure out of the assorted field names servers use.
     static func contextWindow(from entry: [String: Any]) -> Int? {
         if let v = entry["context"] as? Int, v > 0 { return v }                 // Ollama
@@ -306,9 +324,7 @@ public struct OpenAIClient: LLMClient {
             }
             // SGLang / vLLM report a context-overflow 400 as
             // "This model's maximum context length is N tokens; however, you requested M ...".
-            if let limit = Self.overflowLimit(in: body) {
-                throw LLMError.overflow(limit: limit, detail: body)
-            }
+            if let overflow = Self.overflow(in: body) { throw overflow }
             // A proxy in front of the model (nginx's client_max_body_size)
             // refusing the body: the conversation must shrink, like an overflow.
             if http.statusCode == 413 {
@@ -424,9 +440,7 @@ public struct OpenAIClient: LLMClient {
         // An error reported mid-stream (vLLM: {"object":"error",…}; others:
         // {"error":{…}}) — surface it instead of ending with an empty reply.
         if obj["error"] != nil || obj["choices"] == nil, let (code, message) = Self.streamError(in: obj) {
-            if let limit = Self.overflowLimit(in: message) {
-                throw LLMError.overflow(limit: limit, detail: message)
-            }
+            if let overflow = Self.overflow(in: message) { throw overflow }
             throw LLMError.http(code, message)
         }
 
@@ -468,7 +482,7 @@ public struct OpenAIClient: LLMClient {
         guard let data = body.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         if obj["choices"] == nil, let (code, message) = Self.streamError(in: obj) {
-            if let limit = Self.overflowLimit(in: message) { throw LLMError.overflow(limit: limit, detail: message) }
+            if let overflow = Self.overflow(in: message) { throw overflow }
             throw LLMError.http(code == 500 ? (status ?? 500) : code, message)
         }
         guard let choices = obj["choices"] as? [[String: Any]], let first = choices.first,

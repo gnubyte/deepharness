@@ -133,7 +133,14 @@ Swapper (DGX Spark or Strix Halo)** in the wizard, or **Add ▸ Spark Swapper (c
 
 **Settings ▸ Model Servers** lists every box: whether it's online, what it serves and its context, its
 Swapper version and its models — installed or not, with **Install on <box>** — plus **Open Its Web
-Page**, **Rename…** and **Remove**. A Swapper older than 2.0 (no Connect tab) connects there with
+Page**, **Rename…** and **Remove**. With Swapper 2.2 a box's row also shows its memory, a **Context window**
+menu on models that can be served with more than one (Qwen3.8 Flash Next: 256K or 512K — it asks first, since a
+serving model restarts), a **Pictures** switch for Qwen-Image next to the model with what's in the way when a
+picture can't be made, and the box's **Recent activity**. From Swapper 2.1.2, **Add a model from Hugging Face**
+checks a link first — what the model is, how big, whether this box can run it — and then adds it and follows
+its install (the connection must belong to an admin of the box). A box that stops answering says since when and offers
+**Try Again**; one that drops off the network in the middle of a switch no longer holds every chat's Send
+hostage. A Swapper older than 2.0 (no Connect tab) connects there with
 **Connect with an address and login instead** (the guide has the same link); its password goes to the
 Keychain. A Spark set up in Settings ▸ Spark before 0.14 is carried over as the first box.
 
@@ -323,11 +330,49 @@ name for name, so prompts, skills, and habits from that ecosystem carry over:
 | `save_memory` / `read_memory` | the harness's own persistent memory (about the user, people, projects) — stored with the app, never in the code folder |
 | `list_chats` / `read_chat` | peer into the other conversations: what they discussed, decisions, paths |
 | `use_skill` | load one of your skills when the task matches it |
+| `model_server` | with a Spark Swapper box connected: what each box serves, its models, memory and speed; switch models, change the context window, turn pictures on or off, install a model, look a Hugging Face model up or add it, read the box's activity. Anything that changes a box asks first (unless the chat has full access), never runs in plan mode, and is the main agent's alone |
 
 **Models without function calling still work.** Many Qwen-class models on Ollama or older vLLM emit
 tool calls as XML inside plain text instead of `tool_calls`. When a turn finishes with no native
 calls, the text is run through an XML parser that understands both the `<function=…>` and
 `<tool_name>…` conventions, and the recovered calls execute normally.
+
+### Sturdier tools
+
+- **Stop stops the command.** Stopping a turn (or the tool watchdog firing) kills the shell command that is
+  running instead of waiting out its timeout; a command's own `timeout` (up to 600s) is honoured.
+- **No pagers, no prompts.** One-shot commands run with `PAGER=cat`, `GIT_PAGER=cat` and
+  `GIT_TERMINAL_PROMPT=0` (your own values win), so `git log` and `git diff` return instead of sitting in `less`.
+  Their output reaches the model without colour codes and redrawn progress bars.
+- **Long results keep both ends**, with the gap marked — never the tail alone.
+- **Searches skip dependency folders** (`node_modules`, `Pods`, `DerivedData`, `target`, `dist`, virtualenvs…),
+  walk in a stable order, say when they stopped early, and `grep` reports the right line in CRLF files and files
+  with emoji. A bare `glob` pattern (`*.json`) finds files at any depth.
+- **`edit` doesn't guess.** A wrong path is an error, not a new file; a block that isn't found says why when it
+  can (line-number prefixes copied from `read_file`, or the same lines with different indentation — and where).
+- **Numbers and booleans written as text** (`"120"`, `"true"`) are read, as XML-style tool calls send them.
+- **A call cut off by the output limit runs nothing** and tells the model to send a smaller one; the same
+  failing call a third time in a row is told to change course.
+- **A file that changed since the agent read it isn't overwritten.** `write_file` refuses until the file is
+  read again (you saved it in the editor, another chat's agent edited it, a formatter ran); an `edit` still
+  applies — it only touches text that matches now — and says the rest of the file has moved on.
+- **A blank reply mid-task isn't the end.** A model that has been working with tools and sends back nothing
+  is asked (twice at most) to carry on or to say what it did.
+- **Compaction keeps up with the real window.** The size estimate is corrected by the prompt size the server
+  reports, and an overflow error that names no limit (llama.cpp, `context_length_exceeded`) compacts and
+  retries instead of ending the run.
+
+### Sturdier app
+
+- **Nothing typed is lost.** A prompt the app couldn't take stays in the box; drafts are saved when you switch
+  chats; attachments stay with their chat. A failed turn has **Try Again** and **Edit and Resend** under it.
+- **Unsaved editor changes ask first** — when another project opens, the project closes, or the app quits
+  (Save All / Discard / Cancel) — and survive a rename.
+- **Save failures are said out loud**: a chat, the task queue, a draft or the automations that couldn't be
+  written raises the banner with the reason, and chat files that couldn't be read at launch are named
+  instead of silently missing.
+- **Deleting a chat asks first** (and offers Archive); a chat waiting for permission shows a shield in the
+  sidebar; the transcript follows new output only while you are at the bottom.
 
 ### Since 0.19
 

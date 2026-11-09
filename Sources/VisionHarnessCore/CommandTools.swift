@@ -30,9 +30,14 @@ public struct RunShellCommandTool: ToolExecutor {
         // deadline stops the run and `timedOut` is set.
         let result = await PTY.runCommand(command, cwd: context.workspace,
                                           timeout: TimeInterval(timeoutSec))
-        let text = String(decoding: result.output, as: UTF8.self)
+        // The terminal's control bytes (colours, cursor moves, a progress bar redrawn a thousand times) are noise
+        // to a model and crowd out the error at the end: clean first, then fit.
+        let text = PTYText.clean(String(decoding: result.output, as: UTF8.self))
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        if Task.isCancelled {
+            return .init(output: "Error: the command was stopped before it finished.\n\(Self.terminalText(text))")
+        }
         if result.timedOut {
             let idle = Int(PTY.idleLimit(TimeInterval(timeoutSec)))
             let note: String
@@ -52,10 +57,11 @@ public struct RunShellCommandTool: ToolExecutor {
         return .init(output: "Command exited with code \(result.exitStatus).\n\(Self.terminalText(text))")
     }
 
-    /// Keep the tail of long output, capped like before (~16 KB).
-    private static func terminalText(_ s: String, limit: Int = 16_000) -> String {
-        guard s.count > limit else { return s }
-        return "… [truncated \(s.count - limit) chars] …\n" + String(s.suffix(limit))
+    /// Fit long output (~16 KB): the start, where a command says what it is doing, and most of all the end,
+    /// where it says what went wrong.
+    static func terminalText(_ s: String, limit: Int = 16_000) -> String {
+        OutputBudget.middleOut(s, head: limit / 4, tail: limit - limit / 4,
+                               hint: "rerun with the output filtered (grep, tail) to see it")
     }
 }
 

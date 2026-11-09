@@ -226,6 +226,8 @@ public struct Engine: Sendable {
     public let roster: AgentRoster?
     /// The kinds of subagent this chat offers.
     public let agentTypes: AgentCatalog?
+    /// What this chat's agent has read and written (persists across engine rebuilds when the host passes one in).
+    public let fileLedger: FileLedger
 
     public init(client: any LLMClient,
                 registry: ToolRegistry,
@@ -243,7 +245,9 @@ public struct Engine: Sendable {
                 backgroundAgents: BackgroundAgents? = nil,
                 fleet: AgentFleet? = nil,
                 roster: AgentRoster? = nil,
-                agentTypes: AgentCatalog? = nil) {
+                agentTypes: AgentCatalog? = nil,
+                fileLedger: FileLedger = FileLedger()) {
+        self.fileLedger = fileLedger
         self.client = client
         self.registry = registry
         self.systemPrompt = systemPrompt
@@ -304,6 +308,20 @@ public struct Engine: Sendable {
         var lastReplyText = ""
         var lastPromptTokens: Int? = nil
         var compacted = 0
+        // The same failing call made again and again (the same edit that doesn't match, the same command that
+        // fails): after the third identical failure in a row the result says so, which is usually what it takes
+        // for a model to change course instead of spending the whole step budget.
+        var repeatedFailure = ""
+        var repeatedFailures = 0
+        // A model that has been working with tools and then sends back nothing at all (reasoning only, or a tool
+        // call so malformed it didn't parse) hasn't finished: it is asked once or twice to carry on or to say
+        // what it did, instead of the run ending as if a blank were the answer.
+        var ranTools = false
+        var emptyReplies = 0
+        // How far the rough size estimate (characters / 4) is under what the server counts. Code and JSON run
+        // nearer three characters a token, and the tool list isn't in the estimate at all: every reply's real
+        // prompt size corrects it, so compaction starts before the window is full rather than after.
+        var estimateScale = 1.0
         // The route can change under a long run: a retry after the Spark
         // swapped models continues on whatever it serves now.
         var client = self.client
@@ -322,7 +340,7 @@ public struct Engine: Sendable {
                         fleet: fleet, roster: roster, agentTypes: agentTypes,
                         retry: config.retry, visionEnabled: config.visionEnabled,
                         temperature: config.temperature, maxOutputTokens: config.maxOutputTokens,
-                        unattended: config.unattended)
+                        unattended: config.unattended, fileLedger: fileLedger)
         }
 
         for iteration in 0..<config.maxIterations {
@@ -333,6 +351,8 @@ public struct Engine: Sendable {
             var calls: [ToolCall] = []
             var turnUsage: LLMUsage? = nil
             var providerState: String? = nil
+            var finishReason: String? = nil
+            var estimatedAtCall = 0
             var failures = 0
             // HTTP 500s get a bounded number of tries of their own — counted
             // apart from outage retries, so a 500 after a long outage still
@@ -346,7 +366,7 @@ public struct Engine: Sendable {
                 // still need it, and a failed summarizer gets another chance.
                 if let window = config.contextWindow, window > 0,
                    compaction != nil, compacted < config.maxCompactions {
-                    let used = TokenEstimate.request(systemPrompt: systemPrompt, messages: messages)
+                    let used = Int(Double(TokenEstimate.request(systemPrompt: systemPrompt, messages: messages)) * estimateScale)
                     if used >= Int(Double(window) * Compaction.triggerFraction) {
                         do {
                             let out = try await compaction!(used, messages)
@@ -364,6 +384,7 @@ public struct Engine: Sendable {
                 if Task.isCancelled { throw CancellationError() }
 
                 Self.pruneToolImages(&messages, keep: config.maxToolImageMessages)
+                estimatedAtCall = TokenEstimate.request(systemPrompt: systemPrompt, messages: messages)
 
                 let request = LLMRequest(
                     systemPrompt: systemPrompt,
@@ -379,6 +400,7 @@ public struct Engine: Sendable {
                 calls = []
                 turnUsage = nil
                 providerState = nil
+                finishReason = nil
                 do {
                     for try await event in client.stream(request) {
                         if Task.isCancelled { throw CancellationError() }
@@ -388,8 +410,9 @@ public struct Engine: Sendable {
                             sink(.textDelta(d))
                         case .reasoning(let r):
                             sink(.reasoningDelta(r))
-                        case .done(let c, _, let u, let state):
+                        case .done(let c, let finish, let u, let state):
                             calls = c
+                            finishReason = finish
                             turnUsage = u
                             providerState = state
                         }
@@ -441,8 +464,22 @@ public struct Engine: Sendable {
 
             usage = LLMUsage.sum(usage, turnUsage)
             if let u = turnUsage { lastPromptTokens = u.promptTokens }
+            estimateScale = Self.estimateScale(estimated: estimatedAtCall, counted: turnUsage?.promptTokens, current: estimateScale)
             finalText = text
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { lastReplyText = text }
+
+            // Nothing came back, in the middle of the work, and the model has said nothing all run: ask again
+            // (the blank itself is left out of the transcript — some servers refuse an empty assistant turn).
+            if calls.isEmpty, ranTools, emptyReplies < 2, lastReplyText.isEmpty,
+               text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                emptyReplies += 1
+                messages.append(LLMMessage(
+                    role: .user,
+                    content: "[Automatic message, not from the user: your last reply was empty. If the work is done, say in a sentence or two what you did and what the result is. If it isn't, carry on with the next step.]",
+                    imageSource: "empty reply"))
+                progress?.update(messages)
+                continue
+            }
 
             let assistantID = "m\(iteration)"
             // The provider's opaque state (signed reasoning) rides on the
@@ -461,6 +498,7 @@ public struct Engine: Sendable {
             }
 
             // -- Tool turns --
+            ranTools = true
             var toolImages: [(tool: String, images: [MessageAttachment])] = []
 
             // Everything that happens once a call has a result: todos, redaction, images, file
@@ -483,9 +521,20 @@ public struct Engine: Sendable {
                 if !result.files.isEmpty {
                     sink(.filesChanged(result.files))
                 }
-                let truncated = resultOutput.count > 40_000
-                    ? String(resultOutput.suffix(40_000)) + "\n[result truncated]"
-                    : resultOutput
+                if resultOutput.hasPrefix("Error:") {
+                    let signature = call.name + "\u{0}" + call.arguments.raw + "\u{0}" + resultOutput
+                    repeatedFailures = signature == repeatedFailure ? repeatedFailures + 1 : 1
+                    repeatedFailure = signature
+                    if repeatedFailures >= 3 {
+                        resultOutput += "\n\n[This exact call has now failed \(repeatedFailures) times in a row with the same error. Making it again will not help: change the approach (re-read the file, use different arguments or another tool), or tell the user what is in the way.]"
+                    }
+                } else {
+                    repeatedFailure = ""
+                    repeatedFailures = 0
+                }
+                // The start and the end, with the gap marked — never the end alone, which dropped the top of a
+                // file or the first search hits without saying so.
+                let truncated = OutputBudget.middleOut(resultOutput, head: 26_000, tail: 14_000)
                 messages.append(.toolResult(id: call.id, name: call.name, output: truncated))
                 progress?.update(messages)
                 sink(.toolFinished(id: call.id, name: call.name,
@@ -520,6 +569,18 @@ public struct Engine: Sendable {
                 if Task.isCancelled { throw CancellationError() }
                 let preview = Self.preview(of: call)
                 sink(.toolStarted(id: call.id, name: call.name, preview: preview))
+
+                // The reply ran into the output-token limit in the middle of this call: its arguments are half
+                // a JSON object. Running it would fail with "x is required" and the model would send the same
+                // oversized call again; say what happened instead, and run nothing.
+                if finishReason == "length", call.id == calls.last?.id, Self.argumentsWereCutOff(call.arguments.raw) {
+                    let msg = "Error: this tool call was cut off by the output-token limit before its arguments were complete, so nothing ran. Send a smaller call: write a large file in several parts, or use edit to change a file instead of rewriting it."
+                    messages.append(.toolResult(id: call.id, name: call.name, output: msg))
+                    progress?.update(messages)
+                    sink(.toolFinished(id: call.id, name: call.name, ok: false,
+                                       summary: "Cut off by the output limit", output: msg))
+                    continue
+                }
 
                 let (ok, denyReason) = await checkPermission(call: call)
                 // Stop resolves a pending question as "no": that is not the
@@ -792,12 +853,34 @@ public struct Engine: Sendable {
     /// Run one call's executor (after the permission and vault checks) with the timeout that fits it.
     private func runTool(_ call: ToolCall, arguments: JSONString, context: ToolContext) async -> ToolResult {
         guard let executor = registry.tool(named: call.name) else {
-            return ToolResult(output: "Error: unknown tool '\(call.name)'.")
+            return ToolResult(output: "Error: unknown tool '\(call.name)'. The tools are: \(registry.names.sorted().joined(separator: ", ")).")
         }
         // A (foreground) subagent — or a batch of them — is a whole task, not a quick tool call.
-        let timeout = call.name == AgentTool.name || call.name == DelegateTool.name
+        var timeout = call.name == AgentTool.name || call.name == DelegateTool.name
             ? max(config.toolTimeout, 3_600) : config.toolTimeout
+        // A shell command has a timeout of its own, which the model may set as high as 600s: the watchdog waits
+        // a little longer than that, so the command's real output comes back instead of a bare "timed out".
+        if call.name == RunShellCommandTool.name {
+            let asked = min(600, max(5, JSONArgs.int(arguments, "timeout", default: 120)))
+            timeout = max(timeout, TimeInterval(asked + 15))
+        }
         return await executeWithTimeout(executor, args: arguments, context: context, timeout: timeout)
+    }
+
+    /// The factor to multiply the rough estimate by, after a reply whose real prompt size the server reported.
+    /// Only ever scales up (an estimate that is too high just compacts a little early), never past 1.6 (a short
+    /// chat's ratio is dominated by the tool list, which doesn't grow with the conversation), and keeps the
+    /// current factor when the server reported nothing.
+    static func estimateScale(estimated: Int, counted: Int?, current: Double) -> Double {
+        guard let counted, counted > 0, estimated > 0 else { return current }
+        return min(1.6, max(1.0, Double(counted) / Double(estimated)))
+    }
+
+    /// Whether a tool call's arguments stop mid-way: not empty, and not JSON.
+    static func argumentsWereCutOff(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return false }
+        return (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) == nil
     }
 
     private func executeWithTimeout(_ executor: any ToolExecutor,

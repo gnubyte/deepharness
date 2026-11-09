@@ -74,6 +74,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Quitting with unsaved edits in the editor asks first: Save All, Discard, or Cancel the quit.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard let code = CodeWorkspace.current else { return .terminateNow }
+            let proceed = code.resolveUnsaved(allowCancel: true, reason: "\(AppIdentity.name) is quitting.")
+            return proceed ? .terminateNow : .terminateCancel
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Background processes the agent started (game engines, servers) must
         // not outlive the app that owns their ptys.
