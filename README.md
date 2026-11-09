@@ -339,6 +339,10 @@ calls, the text is run through an XML parser that understands both the `<functio
 
 ### Sturdier tools
 
+- **Nearly-JSON arguments are fixed, not dropped.** A tool call whose arguments come wrapped in a ```json fence
+  or a sentence, with a trailing comma, Python's `True`/`None`, a raw line break inside a string, a regex
+  backslash such as `\d`, or the whole object sent as a string, is repaired before it runs (and in the
+  transcript). Arguments that still aren't a JSON object get a clear error, and the tool doesn't run with none.
 - **Stop stops the command.** Stopping a turn (or the tool watchdog firing) kills the shell command that is
   running instead of waiting out its timeout; a command's own `timeout` (up to 600s) is honoured.
 - **No pagers, no prompts.** One-shot commands run with `PAGER=cat`, `GIT_PAGER=cat` and

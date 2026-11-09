@@ -481,6 +481,14 @@ public struct Engine: Sendable {
                 continue
             }
 
+            // Arguments that are nearly JSON (a fence, a trailing comma, a raw line break in a string…) are fixed
+            // before anything reads them — and before they go into the transcript, which some servers' chat
+            // templates parse again on the next request.
+            calls = calls.map { call in
+                guard let fixed = ToolArguments.repaired(call.arguments.raw) else { return call }
+                return ToolCall(id: call.id, name: call.name, arguments: fixed)
+            }
+
             let assistantID = "m\(iteration)"
             // The provider's opaque state (signed reasoning) rides on the
             // message so the next request can send it back.
@@ -579,6 +587,14 @@ public struct Engine: Sendable {
                     progress?.update(messages)
                     sink(.toolFinished(id: call.id, name: call.name, ok: false,
                                        summary: "Cut off by the output limit", output: msg))
+                    continue
+                }
+
+                // Arguments that are not a JSON object even after repair: every tool would read them as none,
+                // and asking permission for "Run command: " would be no better. Say so, and run nothing.
+                if let problem = ToolArguments.problem(call.arguments.raw) {
+                    let msg = ToolArguments.message(tool: call.name, problem: problem)
+                    record(call, ToolResult(output: msg))
                     continue
                 }
 
@@ -854,6 +870,9 @@ public struct Engine: Sendable {
     private func runTool(_ call: ToolCall, arguments: JSONString, context: ToolContext) async -> ToolResult {
         guard let executor = registry.tool(named: call.name) else {
             return ToolResult(output: "Error: unknown tool '\(call.name)'. The tools are: \(registry.names.sorted().joined(separator: ", ")).")
+        }
+        if let problem = ToolArguments.problem(arguments.raw) {
+            return ToolResult(output: ToolArguments.message(tool: call.name, problem: problem))
         }
         // A (foreground) subagent — or a batch of them — is a whole task, not a quick tool call.
         var timeout = call.name == AgentTool.name || call.name == DelegateTool.name

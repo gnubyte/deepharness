@@ -488,4 +488,83 @@ final class ToolRobustnessTests: XCTestCase {
             args: JSONString(#"{"file_path":"f.txt","old_string":"beta","new_string":"BETA"}"#), in: ctx)
         XCTAssertEqual(plain.output, "Edited f.txt: replaced 1 occurrence.")
     }
+
+    // MARK: Arguments that are nearly JSON
+
+    private func repairedObject(_ raw: String, file: StaticString = #filePath, line: UInt = #line) -> [String: Any] {
+        guard let fixed = ToolArguments.repaired(raw) else {
+            XCTFail("not repaired: \(raw)", file: file, line: line)
+            return [:]
+        }
+        guard let value = try? JSONSerialization.jsonObject(with: Data(fixed.utf8)) as? [String: Any] else {
+            XCTFail("repair is not a JSON object: \(fixed)", file: file, line: line)
+            return [:]
+        }
+        return value
+    }
+
+    func testArgumentsThatAreNearlyJSONAreRepaired() {
+        XCTAssertEqual(repairedObject("```json\n{\"a\": 1}\n```")["a"] as? Int, 1, "a fence")
+        XCTAssertEqual(repairedObject("```\r\n{\"a\": 2}\r\n```")["a"] as? Int, 2, "a fence with CR LF lines")
+        let trailing = repairedObject(#"{"a": [1, 2,], "b": "x",}"#)
+        XCTAssertEqual(trailing["a"] as? [Int], [1, 2])
+        XCTAssertEqual(trailing["b"] as? String, "x")
+        let python = repairedObject(#"{"recursive": True, "hidden": False, "limit": None}"#)
+        XCTAssertEqual(python["recursive"] as? Bool, true)
+        XCTAssertEqual(python["hidden"] as? Bool, false)
+        XCTAssertTrue(python["limit"] is NSNull)
+        XCTAssertEqual(repairedObject("{\"content\": \"line one\nline two\tindented\"}")["content"] as? String,
+                       "line one\nline two\tindented", "raw line breaks and tabs inside a string")
+        XCTAssertEqual(repairedObject(#"{"pattern": "\d+\.swift"}"#)["pattern"] as? String, #"\d+\.swift"#,
+                       "a regex backslash that is not a JSON escape")
+        XCTAssertEqual(repairedObject(#""{\"path\": \"a.txt\"}""#)["path"] as? String, "a.txt", "the object sent as a string")
+        XCTAssertEqual(repairedObject("Here are the arguments: {\"x\": 2} — that's all.")["x"] as? Int, 2, "words around it")
+        XCTAssertEqual(repairedObject(#"{"note": "True, None, False", "n": 1,}"#)["note"] as? String, "True, None, False",
+                       "words inside strings are left alone")
+    }
+
+    func testArgumentsThatAreFineOrBeyondRepairAreLeftAlone() {
+        XCTAssertNil(ToolArguments.repaired(#"{"a": 1}"#), "already a JSON object")
+        XCTAssertNil(ToolArguments.repaired(""), "no arguments")
+        XCTAssertNil(ToolArguments.repaired("null"))
+        XCTAssertNil(ToolArguments.repaired(#"{"file_path": "a", "content": "abc"#), "cut off")
+        XCTAssertNil(ToolArguments.repaired("[1, 2]"), "an array is not made into an object")
+        XCTAssertNil(ToolArguments.repaired("ls -la"))
+
+        XCTAssertNil(ToolArguments.problem(#"{"a": 1}"#))
+        XCTAssertNil(ToolArguments.problem(""))
+        XCTAssertNil(ToolArguments.problem("  null "))
+        XCTAssertEqual(ToolArguments.problem("[1]"), "a JSON array, not an object")
+        XCTAssertEqual(ToolArguments.problem(#""path""#), "a JSON string, not an object")
+        XCTAssertEqual(ToolArguments.problem("42"), "a single value, not an object")
+        XCTAssertEqual(ToolArguments.problem("ls -la"), "not valid JSON")
+    }
+
+    func testARepairableCallRunsWithItsArguments() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // A real line break inside the content string, and a trailing comma: what local models often send.
+        let sloppy = ToolCall(id: "c1", name: "write_file", arguments: "{\"file_path\": \"notes.txt\", \"content\": \"one\ntwo\",}")
+        let client = FinishingClient([.init(calls: [sloppy]), .init(text: "wrote it")])
+        let result = try await engine(client, tools: [WriteFileTool()], root: root).run(messages: [], userText: "go") { _ in }
+        let written = try String(contentsOf: root.appendingPathComponent("notes.txt"), encoding: .utf8)
+        XCTAssertTrue(written.hasPrefix("one\ntwo"), written)
+        XCTAssertEqual(result.finalText, "wrote it")
+        // The transcript carries the repaired arguments, so the next request is valid JSON too.
+        let sent = try XCTUnwrap(result.messages.first { $0.role == .assistant && $0.toolCalls != nil }?.toolCalls?.first)
+        XCTAssertNil(ToolArguments.problem(sent.arguments.raw), sent.arguments.raw)
+    }
+
+    func testACallWithUnusableArgumentsRunsNothingAndSaysWhy() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let broken = ToolCall(id: "c1", name: "write_file", arguments: "file_path=notes.txt content=hello")
+        let client = FinishingClient([.init(calls: [broken]), .init(text: "sorry")])
+        let result = try await engine(client, tools: [WriteFileTool()], root: root).run(messages: [], userText: "go") { _ in }
+        let outputs = toolOutputs(result)
+        XCTAssertEqual(outputs.count, 1)
+        XCTAssertTrue(outputs[0].hasPrefix("Error: the arguments for write_file were not valid JSON, so nothing ran."), outputs[0])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("notes.txt").path))
+        XCTAssertEqual(result.finalText, "sorry")
+    }
 }
