@@ -121,6 +121,8 @@ public struct PromptHistoryRecord: Codable, Identifiable, Hashable, Sendable {
 /// well under a megabyte).
 public final class PromptHistoryStore: @unchecked Sendable {
     private let lock = NSLock()
+    /// Writes happen here, one at a time, in the order they were asked for.
+    private static let io = DispatchQueue(label: "vision.PromptHistory.io", qos: .utility)
     private let fileURL: URL?
     private var records: [PromptHistoryRecord]
     /// How many records to keep. The oldest fall off the front.
@@ -149,8 +151,10 @@ public final class PromptHistoryStore: @unchecked Sendable {
         let url = fileURL
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(capped) {
-            // Off the caller's thread (often the main actor): the write is idempotent.
-            DispatchQueue.global(qos: .utility).async {
+            // Off the caller's thread (often the main actor), but in order: each write is a snapshot of the whole
+            // ledger, and on a concurrent queue an older snapshot could land after a newer one — the record
+            // was there after a restart, its outcome and duration were not.
+            Self.io.async {
                 try? data.write(to: url, options: .atomic)
             }
         }

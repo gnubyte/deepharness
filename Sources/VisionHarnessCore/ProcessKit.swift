@@ -259,11 +259,19 @@ public enum PTYText {
             }
         }
         // Collapse progress-bar spam: many \r-split fragments per line.
-        var lines = out.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        // A terminal ends its lines with CR LF, and to Swift that pair is one Character — equal to neither "\n" nor
+        // "\r". Splitting by Character therefore never split such output into lines at all, and one stray CR
+        // anywhere in it was then taken for a spinner: everything before it was thrown away. So the line ends
+        // become plain LF first (in a loop: "\r\r\n" leaves a new pair behind), and the text is cut literally.
+        var normalized = out
+        while normalized.contains("\r\n") {
+            normalized = normalized.replacingOccurrences(of: "\r\n", with: "\n")
+        }
+        var lines = normalized.components(separatedBy: "\n")
         lines = lines.map { line in
             // Keep only the last fragment of CR-overwritten lines (spinners).
-            if line.contains("\r") { return String(line.split(separator: "\r").last ?? "") }
-            return line
+            guard line.contains("\r") else { return line }
+            return line.components(separatedBy: "\r").last { !$0.isEmpty } ?? ""
         }
         // Collapse >2 blank runs.
         var collapsed: [String] = []

@@ -21,6 +21,11 @@ struct ChatView: View {
     @State private var draftSaveTask: Task<Void, Never>?
     /// A draft restored from disk for this chat (shown with a Clear button).
     @State private var restoredDraft = false
+    /// Attachments queued in other chats, kept while this view shows a different one.
+    @State private var attachmentStash: [String: [MessageAttachment]] = [:]
+    /// Whether the end of the transcript is on screen. New output follows the bottom only then: someone who
+    /// scrolled up to read is left where they are.
+    @State private var atBottom = true
 
     private var transport: AppTransport { model.transport }
 
@@ -56,7 +61,7 @@ struct ChatView: View {
         .alert(sparkConfirmTitle, isPresented: sparkConfirmShown) {
             Button("Switch") {
                 if let target = model.spark.confirmTarget {
-                    Task { await model.spark.swap(target.box, to: target.model.key) }
+                    Task { await model.spark.swapReporting(target.box, to: target.model.key) }
                 }
                 model.spark.confirmTarget = nil
             }
@@ -80,11 +85,23 @@ struct ChatView: View {
         .onChange(of: draft) { _, text in
             scheduleDraftSave(text)
         }
-        .onChange(of: session.id) { _, newID in
-            // Switching chats swaps the draft in (the previous one was saved).
+        .onChange(of: session.id) { oldID, newID in
+            // The chat changed under this view. What was typed for the previous chat is saved now — the autosave
+            // that was pending for it is about to be replaced by the new chat's — and its queued attachments wait
+            // with it instead of going out with the next chat's message.
+            draftSaveTask?.cancel()
+            transport.saveDraft(oldID, draft)
+            attachmentStash[oldID] = attachments.isEmpty ? nil : attachments
             let saved = transport.savedDraft(newID)
             draft = saved
+            attachments = attachmentStash[newID] ?? []
             restoredDraft = !saved.isEmpty
+            atBottom = true
+        }
+        .onDisappear {
+            // Leaving the view (another mode, the window closing): don't wait for the autosave.
+            draftSaveTask?.cancel()
+            transport.saveDraft(session.id, draft)
         }
         .onChange(of: model.pendingComposerText) { _, text in
             guard let text else { return }
@@ -100,7 +117,7 @@ struct ChatView: View {
         draftSaveTask?.cancel()
         let sessionID = session.id
         draftSaveTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 700_000_000)
             guard !Task.isCancelled else { return }
             transport.saveDraft(sessionID, text)
             if !text.isEmpty { restoredDraft = false }
@@ -127,7 +144,7 @@ struct ChatView: View {
                     // while a turn runs; the finished one stays until the
                     // next turn replaces it.
                     if let phase = session.turnPhase {
-                        PhaseCard(state: phase)
+                        PhaseCard(state: phase, live: session.running)
                             .padding(.leading, Theme.gutter)
                             .id("phase-\(phase.turnID)")
                     }
@@ -141,15 +158,40 @@ struct ChatView: View {
                     if !session.changedFiles.isEmpty {
                         ProducedFilesRow(session: session)
                     }
+                    // In the lazy stack this exists only while the end of the transcript is on screen, which is
+                    // exactly what `atBottom` needs to know.
                     Color.clear.frame(height: 1).id(bottomAnchor)
+                        .onAppear { atBottom = true }
+                        .onDisappear { atBottom = false }
                 }
                 .padding(.horizontal, Theme.contentPadding)
                 .padding(.vertical, 20)
                 .frame(maxWidth: Theme.maxTranscriptWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
-            .onChange(of: session.entries.count) { _, _ in scroll(proxy) }
-            .onChange(of: lastEntryLength) { _, _ in scroll(proxy) }
+            .overlay(alignment: .bottom) {
+                if !atBottom, !session.entries.isEmpty {
+                    Button {
+                        atBottom = true
+                        scroll(proxy)
+                    } label: {
+                        Label(session.running ? "Jump to Latest" : "Jump to End", systemImage: "arrow.down")
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(.regularMaterial, in: Capsule())
+                            .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, 8)
+                    .help("Scroll to the end of the chat")
+                }
+            }
+            .onChange(of: session.entries.count) { _, _ in
+                // Your own message always comes into view; the agent's output only follows the bottom.
+                if session.entries.last?.message?.role == .user { atBottom = true }
+                if atBottom { scroll(proxy) }
+            }
+            .onChange(of: lastEntryLength) { _, _ in if atBottom { scroll(proxy) } }
             .onChange(of: session.id) { _, _ in
                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
             }
@@ -169,7 +211,8 @@ struct ChatView: View {
 
     /// Streaming text changes the last entry without changing the count.
     private var lastEntryLength: Int {
-        session.entries.last?.message?.text.count ?? 0
+        // (utf8.count is constant-time for native strings; `count` walked the whole reply on every token.)
+        session.entries.last?.message?.text.utf8.count ?? 0
     }
 
     private func scroll(_ proxy: ScrollViewProxy) {
@@ -242,6 +285,7 @@ struct ChatView: View {
                 .menuStyle(.borderlessButton)
                 .frame(width: 28)
                 .help("Attach an image or file")
+                .accessibilityLabel("Attach an image or file")
                 .disabled(session.running)
 
                 ComposerField(text: $draft, height: $composerHeight,
@@ -264,6 +308,7 @@ struct ChatView: View {
                     .tint(.red)
                     .disabled(session.stopping)
                     .help(session.stopping ? "Stopping…" : "Stop the agent (⌘.)")
+                    .accessibilityLabel(session.stopping ? "Stopping" : "Stop the agent")
                 } else {
                     Button(action: send) {
                         Image(systemName: "arrow.up")
@@ -272,6 +317,7 @@ struct ChatView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
                     .help("Send (↩)")
+                    .accessibilityLabel("Send")
                 }
             }
 
@@ -368,12 +414,15 @@ struct ChatView: View {
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty, !session.running else { return }
-        let payload = attachments
+        // Only a prompt that was taken leaves the box: when the model's server is switching (or the agent is
+        // busy after all), the chat says so and what was typed — and attached — stays put.
+        guard model.send(text, in: session, attachments: attachments) else { return }
+        draftSaveTask?.cancel()
         draft = ""
         attachments = []
         transport.clearDraft(session.id)
         restoredDraft = false
-        model.send(text, in: session, attachments: payload)
+        atBottom = true
     }
 
     /// The queued attachments as removable chips.
@@ -403,6 +452,7 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Remove attachment")
+                    .accessibilityLabel("Remove \(attachment.name)")
                 }
             }
             .padding(.bottom, 2)
@@ -560,6 +610,22 @@ private struct EntryRow: View {
         switch entry.kind {
         case .message(let body):
             MessageRow(body: body, at: entry.at, streaming: session.streamingID == entry.id, masked: session.masked[entry.id])
+            // A turn that ended in an error leaves the way back right under it, instead of a prompt to retype.
+            if body.role == .error, !session.running, entry.id == session.entries.last?.id,
+               let prompt = session.promptHistory.last, !prompt.text.isEmpty {
+                HStack(spacing: 8) {
+                    Button {
+                        model.send(prompt.text, in: session)
+                    } label: {
+                        Label("Try Again", systemImage: "arrow.clockwise")
+                    }
+                    .help("Send the same prompt again (attachments aren't sent again — use Edit and Resend to add them)")
+                    Button("Edit and Resend") { model.pendingComposerText = prompt.text }
+                        .help("Put the prompt back in the box to change it first")
+                }
+                .controlSize(.small)
+                .padding(.leading, Theme.gutter)
+            }
         case .tool(let activity):
             if activity.name == UseSkillTool.name {
                 SkillCard(activity: activity)
@@ -721,7 +787,8 @@ private struct ToolCard: View {
 
             if expanded, let output = activity.output, !output.isEmpty {
                 Divider().padding(.vertical, 6)
-                ScrollView(.horizontal, showsIndicators: false) {
+                // Both ways: a long result is read by scrolling down, not just the first twenty lines of it.
+                ScrollView([.horizontal, .vertical]) {
                     Text(output)
                         .font(Theme.mono(11))
                         .textSelection(.enabled)
@@ -957,7 +1024,7 @@ private struct CompactionCard: View {
 
             if expanded, !note.summary.isEmpty {
                 Divider().padding(.vertical, 6)
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView([.horizontal, .vertical]) {
                     Text(note.summary)
                         .font(Theme.mono(11))
                         .textSelection(.enabled)
@@ -990,6 +1057,9 @@ private struct CompactionCard: View {
 /// so and returns to the execution badge.
 struct PhaseCard: View {
     let state: TurnPhaseState
+    /// Whether the turn is still running. A turn that was stopped, or that failed, leaves its card in whatever
+    /// phase it had reached: it then says so, instead of "Executing" with a spinner and a runtime that counts on.
+    var live = true
     /// Keeps the runtime ticking and the badge animating.
     @State private var tick = Date()
     @State private var pulse = false
@@ -1008,21 +1078,36 @@ struct PhaseCard: View {
                 chevron
                 phaseChip(.results)
                 Spacer()
-                if state.phase != .results { runtime }
+                if ended {
+                    Text("Ended early").font(Theme.mono(10)).foregroundStyle(.secondary)
+                } else if state.phase != .results {
+                    runtime
+                }
             }
             .padding(.horizontal, 10)
             .padding(.top, 10)
             .padding(.bottom, 8)
 
-            switch state.phase {
-            case .planning:
-                planningBody
-            case .execution:
-                executionBody
-            case .validation:
-                validationBody
-            case .results:
-                resultsBody
+            if ended {
+                // The last step recorded is why it ended (stopped, or the error).
+                Text(state.steps.last?.text ?? "This turn ended before it finished.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+            } else {
+                switch state.phase {
+                case .planning:
+                    planningBody
+                case .execution:
+                    executionBody
+                case .validation:
+                    validationBody
+                case .results:
+                    resultsBody
+                }
             }
         }
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
@@ -1030,15 +1115,18 @@ struct PhaseCard: View {
             RoundedRectangle(cornerRadius: Theme.corner)
                 .strokeBorder(outline, lineWidth: 1)
         )
-        .task(id: state.phase) {
-            // One timer per phase: the runtime line and the pulsing badge.
-            while !Task.isCancelled, state.phase != .results {
+        .task(id: "\(state.phase)-\(live)") {
+            // One timer per phase: the runtime line and the pulsing badge. Nothing ticks once the turn is over.
+            while !Task.isCancelled, live, state.phase != .results {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 tick = Date()
                 pulse.toggle()
             }
         }
     }
+
+    /// The turn is over without having reached its results.
+    private var ended: Bool { !live && state.phase != .results }
 
     // MARK: Pieces
 
@@ -1049,7 +1137,7 @@ struct PhaseCard: View {
     }
 
     private func phaseChip(_ phase: TurnPhaseState.Phase) -> some View {
-        let isLive = phase == state.phase
+        let isLive = phase == state.phase && !ended
         let isDone = state.phase == .results ||
             (state.phase == .validation && phase == .planning) ||
             (state.phase == .validation && phase == .execution && false) ||
@@ -1078,7 +1166,7 @@ struct PhaseCard: View {
         Group {
             if let start = state.startedAt {
                 let elapsed = Int(Date().timeIntervalSince(start))
-                Text("runtime \(elapsed)m\(elapsed % 60 < 10 ? "0" : "")\(elapsed % 60)s")
+                Text("runtime \(elapsed / 60)m\(elapsed % 60 < 10 ? "0" : "")\(elapsed % 60)s")
                     .font(Theme.mono(10))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()

@@ -176,6 +176,9 @@ final class AppModel {
         transport.onSwapCommand = { arg, vm in
             Task { @MainActor in await spark.handleCommand(arg, in: vm) }
         }
+        transport.modelServerConfigured = { spark.isConfigured }
+        transport.modelServerDescribe = { request in spark.describe(request) }
+        transport.modelServerPerform = { request in await spark.perform(request) }
         spark.startMonitoring()
 
         // The agent's scheduling tools work on the same store as the calendar.
@@ -398,7 +401,11 @@ final class AppModel {
     }
 
     private func persistAutomations() {
-        try? AutomationFile.save(automations.currentStore(), to: automationFile)
+        do {
+            try AutomationFile.save(automations.currentStore(), to: automationFile)
+        } catch {
+            transport.reportSaveFailure("your automations", error.localizedDescription)
+        }
     }
 
     /// The 20-second tick: any schedule that has come due runs in its own
@@ -654,7 +661,9 @@ final class AppModel {
         }
     }
 
-    func send(_ text: String, in session: SessionVM, attachments: [MessageAttachment] = []) {
+    /// Returns whether the prompt was taken (see `AppTransport.send`).
+    @discardableResult
+    func send(_ text: String, in session: SessionVM, attachments: [MessageAttachment] = []) -> Bool {
         transport.send(text, sessionID: session.id, attachments: attachments)
     }
 

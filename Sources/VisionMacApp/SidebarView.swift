@@ -9,6 +9,8 @@ struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @State private var renaming: String?
     @State private var renameText = ""
+    /// The chat whose deletion is waiting for "Delete".
+    @State private var deleting: SessionVM?
     @State private var search = ""
     /// `search`, a moment after typing stops.
     @State private var query = ""
@@ -46,6 +48,23 @@ struct SidebarView: View {
             .listStyle(.sidebar)
         }
         .safeAreaInset(edge: .bottom) { footer }
+        .confirmationDialog("Delete “\(deleting?.title ?? "this chat")”?",
+                            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if let session = deleting { transport.deleteSession(session.id) }
+                deleting = nil
+            }
+            if let session = deleting, !session.running {
+                Button("Archive Instead") {
+                    transport.archiveSession(session.id, reason: "Archived from the sidebar")
+                    deleting = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { deleting = nil }
+        } message: {
+            Text(deleting.map(deleteMessage) ?? "")
+        }
         .task(id: search) {
             try? await Task.sleep(nanoseconds: 180_000_000)
             if !Task.isCancelled { query = search }
@@ -323,8 +342,20 @@ struct SidebarView: View {
         } else {
             Button("Archive") { transport.archiveSession(session.id, reason: "Archived from the sidebar") }
                 .disabled(session.running)
-            Button("Delete", role: .destructive) { transport.deleteSession(session.id) }
+            // Deleting is for good (and takes a chat's own folder with it): it asks first.
+            Button("Delete…", role: .destructive) { deleting = session }
         }
+    }
+
+    /// What deleting `session` takes with it, for the confirmation.
+    private func deleteMessage(_ session: SessionVM) -> String {
+        var parts = ["The conversation is deleted for good."]
+        if session.running { parts.append("The agent is still working in it and will be stopped.") }
+        if session.isPlain, !session.isAgent {
+            parts.append("Its own folder goes too, with any files the agent made there.")
+        }
+        parts.append("Archive keeps it out of the sidebar and lets you restore it later.")
+        return parts.joined(separator: " ")
     }
 
     private func commitRename(_ session: SessionVM) {
@@ -541,7 +572,15 @@ private struct SessionRow: View {
 
     @ViewBuilder
     private var icon: some View {
-        if session.running {
+        if !session.pendingGates.isEmpty {
+            // Waiting on a yes or no: not the same as working, and easy to miss in a chat that isn't open.
+            Image(systemName: "exclamationmark.shield.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.noticeTint)
+                .frame(width: 12)
+                .help("Waiting for your permission")
+                .accessibilityLabel("Waiting for your permission")
+        } else if session.running {
             ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12)
         } else if let person = session.person {
             PersonAvatar(person: person, size: 16)

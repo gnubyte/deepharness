@@ -71,7 +71,52 @@ public struct SwapperStatus: Decodable, Sendable, Equatable {
         public var install: Install?
         /// How long switching to it takes ("about 11 minutes").
         public var eta: String?
+        // Swapper 2.1 and 2.2 (absent before; read leniently, so a later Swapper reshaping one of them never
+        // costs the whole status):
+        /// The windows the box can serve it with (Swapper 2.2, Qwen3.8 Flash Next's recipe: 256K or 512K).
+        public var contexts: Lenient<[ContextChoice]>? = nil
+        /// Added from Hugging Face, or otherwise not a recipe the catalog vouches for.
+        public var experimental: Lenient<Bool>? = nil
+        /// Added on this box from a Hugging Face link.
+        public var custom: Lenient<Bool>? = nil
+        /// The catalog's pick for this kind of box.
+        public var recommended: Lenient<Bool>? = nil
+        /// What it takes on the box's disk, in bytes (nil until the Swapper has measured it).
+        public var disk_bytes: Lenient<Double>? = nil
         public var id: String { key }
+
+        /// One window a model can be served with.
+        public struct ContextChoice: Decodable, Sendable, Equatable, Identifiable {
+            public var tokens: Int
+            /// "256K"
+            public var label: String?
+            /// "the model's native window — leaves room for pictures"
+            public var detail: String?
+            /// Whether pictures (Qwen-Image) fit next to the model at this window.
+            public var pictures: Bool?
+            public var id: Int { tokens }
+
+            public init(tokens: Int, label: String? = nil, detail: String? = nil, pictures: Bool? = nil) {
+                self.tokens = tokens
+                self.label = label
+                self.detail = detail
+                self.pictures = pictures
+            }
+
+            /// "256K" — the Swapper's own label, else one made from the number.
+            public var name: String {
+                if let label, !label.trimmingCharacters(in: .whitespaces).isEmpty { return label }
+                return SwapperStatus.shortWindow(tokens)
+            }
+        }
+
+        /// The windows it can be switched between; empty when there is no choice to make.
+        public var contextChoices: [ContextChoice] {
+            let choices = contexts?.value ?? []
+            return choices.count > 1 ? choices : []
+        }
+
+        public var isExperimental: Bool { experimental?.value ?? false }
 
         public struct Install: Decodable, Sendable, Equatable {
             public var size_gb: Double?
@@ -219,6 +264,52 @@ public struct SwapperStatus: Decodable, Sendable, Equatable {
     public var hostname: String?
     /// The install running now (or finished in the last few minutes).
     public var install_job: Job?
+    // Swapper 2.1 and 2.2 (read leniently, like the models' newer fields):
+    /// The box's memory, in GiB.
+    public var memory: Lenient<Memory>? = nil
+    /// Pictures (Qwen-Image) next to the model: whether they are on and can be made now (Swapper 2.2).
+    public var pictures: Lenient<SwapperPictures>? = nil
+    /// Vision Server on the box — the assistant that replaces OpenClaw there (Swapper 2.1.1).
+    public var vision: Lenient<VisionServer>? = nil
+
+    /// The box's memory, in GiB.
+    public struct Memory: Decodable, Sendable, Equatable {
+        public var total: Double?
+        public var available: Double?
+        public var free: Double?
+
+        public init(total: Double? = nil, available: Double? = nil, free: Double? = nil) {
+            self.total = total
+            self.available = available
+            self.free = free
+        }
+
+        /// How much is in use, 0…1; nil when the box didn't say.
+        public var usedFraction: Double? {
+            guard let total, total > 0, let available else { return nil }
+            return min(1, max(0, (total - available) / total))
+        }
+
+        /// "97 of 128 GiB free"
+        public var summary: String? {
+            guard let total, total > 0, let available else { return nil }
+            return "\(Int(available.rounded())) of \(Int(total.rounded())) GiB free"
+        }
+    }
+
+    /// Vision Server on the box: its HTTPS port and whether it answers.
+    public struct VisionServer: Decodable, Sendable, Equatable {
+        public var port: Int?
+        public var up: Bool?
+    }
+
+    /// "1M", "512K" — a context window in a few characters.
+    public static func shortWindow(_ tokens: Int) -> String {
+        if tokens >= 1_000_000 {
+            return String(format: "%.1fM", Double(tokens) / 1_000_000).replacingOccurrences(of: ".0M", with: "M")
+        }
+        return "\(tokens / 1024)K"
+    }
 
     public init(active: String? = nil, loading: String? = nil, busy: Bool = false, models: [String: Model] = [:],
                 job: Job? = nil, openclaw_primary: String? = nil, version: String? = nil, platform: String? = nil,
@@ -272,6 +363,169 @@ public enum SwapperPlatform {
         case strixHalo?: "Strix Halo"
         default: "Model server"
         }
+    }
+}
+
+/// A part of a reply that is read when it has the shape this build knows and is nil otherwise — so a newer
+/// Swapper changing an optional section never makes the whole reply unreadable (and the box look offline).
+public struct Lenient<Wrapped: Decodable & Sendable & Equatable>: Decodable, Sendable, Equatable {
+    public var value: Wrapped?
+
+    public init(_ value: Wrapped?) { self.value = value }
+
+    public init(from decoder: Decoder) throws {
+        value = try? Wrapped(from: decoder)
+    }
+}
+
+/// Pictures next to the model (Swapper 2.2): Qwen-Image through ComfyUI, started when a picture is asked for.
+/// From GET /api/status (`pictures`), and GET /api/pictures, which adds the service's log and what changed lately.
+public struct SwapperPictures: Decodable, Sendable, Equatable {
+    public struct Check: Decodable, Sendable, Equatable {
+        public var key: String?
+        public var ok: Bool?
+        public var text: String?
+
+        public init(key: String? = nil, ok: Bool? = nil, text: String? = nil) {
+            self.key = key
+            self.ok = ok
+            self.text = text
+        }
+    }
+
+    public var installed: Bool?
+    /// Switched on (the user's choice); `ready` says whether one can be made right now.
+    public var enabled: Bool?
+    /// ComfyUI is loaded.
+    public var running: Bool?
+    public var ready: Bool?
+    /// Whether the serving model's window leaves room (nil when that isn't known).
+    public var room: Bool?
+    public var available_gib: Double?
+    public var need_gib: Double?
+    /// "On — starts when a picture is asked for", "Off", or the first check that fails.
+    public var summary: String?
+    public var checks: [Check]?
+    /// GET /api/pictures only: the end of the service's journal, and what changed lately.
+    public var log: [String]?
+    public var activity: [String]?
+
+    public init(installed: Bool? = nil, enabled: Bool? = nil, running: Bool? = nil, ready: Bool? = nil,
+                room: Bool? = nil, available_gib: Double? = nil, need_gib: Double? = nil, summary: String? = nil,
+                checks: [Check]? = nil, log: [String]? = nil, activity: [String]? = nil) {
+        self.installed = installed
+        self.enabled = enabled
+        self.running = running
+        self.ready = ready
+        self.room = room
+        self.available_gib = available_gib
+        self.need_gib = need_gib
+        self.summary = summary
+        self.checks = checks
+        self.log = log
+        self.activity = activity
+    }
+
+    public var isInstalled: Bool { installed ?? false }
+    public var isOn: Bool { enabled ?? false }
+
+    /// The checks that fail, in the box's own words.
+    public var problems: [String] {
+        (checks ?? []).filter { $0.ok == false }.compactMap(\.text)
+    }
+}
+
+/// POST /api/context (Swapper 2.2): what choosing a window came to.
+public struct SwapperContextChange: Decodable, Sendable, Equatable {
+    /// The model is serving, so it restarts with the new window (`job` follows it). False: it was saved for the
+    /// next time the model is switched to, or the model already serves that window.
+    public var restarting: Bool?
+    public var context: Int?
+    public var job: SwapperStatus.Job?
+
+    public init(restarting: Bool? = nil, context: Int? = nil, job: SwapperStatus.Job? = nil) {
+        self.restarting = restarting
+        self.context = context
+        self.job = job
+    }
+
+    public var isRestarting: Bool { restarting ?? (job?.isRunning ?? false) }
+}
+
+/// POST /api/hf/inspect (Swapper 2.1.2): what a Hugging Face repo is, and whether this box can run it.
+public struct SwapperHFInspection: Decodable, Sendable, Equatable {
+    /// One quantization of a GGUF repo.
+    public struct Quantization: Decodable, Sendable, Equatable {
+        public var id: String
+        public var label: String?
+        public var bytes: Double?
+    }
+
+    public var repo: String
+    public var title: String?
+    public var license: Lenient<String>?
+    public var gated: Bool?
+    /// "safetensors", "exl3", "gguf".
+    public var format: Lenient<String>?
+    public var quantization: Lenient<String>?
+    public var size_bytes: Double?
+    public var context_native: Int?
+    public var context_default: Int?
+    /// How the box would run it ("vLLM (community Spark image)").
+    public var profile_label: Lenient<String>?
+    /// A model the catalog already has for this repo: install that one instead.
+    public var catalog_key: Lenient<String>?
+    public var catalog_title: Lenient<String>?
+    public var gguf: Lenient<[Quantization]>?
+    public var memory_gib: Double?
+    public var problems: [String]?
+    public var warnings: [String]?
+    public var supported: Bool?
+
+    public var canRun: Bool { supported ?? false }
+
+    /// "12.4 GB"
+    public var sizeText: String? {
+        guard let size_bytes, size_bytes > 0 else { return nil }
+        return String(format: "%.1f GB", size_bytes / 1_000_000_000)
+    }
+}
+
+/// POST /api/hf/add (Swapper 2.1.2): the model's new key, and the install that started (nil when another job was
+/// running: `note` says so, and the model's card installs it later).
+public struct SwapperHFAdded: Sendable, Equatable {
+    public var key: String
+    public var job: SwapperStatus.Job?
+    public var note: String?
+
+    public init(key: String, job: SwapperStatus.Job? = nil, note: String? = nil) {
+        self.key = key
+        self.job = job
+        self.note = note
+    }
+}
+
+/// Comparing Swapper versions ("2.2.0", "2.10.1").
+public enum SwapperVersion {
+    /// The Swapper that added choosing the context window, pictures and the activity log.
+    public static let contextAndPictures = "2.2.0"
+    /// The Swapper that lets an app connection add a model from Hugging Face.
+    public static let addFromHuggingFace = "2.1.2"
+
+    /// Whether `version` is `minimum` or later. A version nobody reported (nil — a Swapper before 2.0) is not.
+    public static func isAtLeast(_ version: String?, _ minimum: String) -> Bool {
+        guard let version else { return false }
+        let have = numbers(version), want = numbers(minimum)
+        for index in 0..<max(have.count, want.count) {
+            let left = index < have.count ? have[index] : 0
+            let right = index < want.count ? want[index] : 0
+            if left != right { return left > right }
+        }
+        return true
+    }
+
+    private static func numbers(_ version: String) -> [Int] {
+        version.split(separator: ".").map { part in Int(part.prefix { $0.isNumber }) ?? 0 }
     }
 }
 
@@ -365,6 +619,10 @@ public enum SwapperError: LocalizedError, Sendable, Equatable {
     case notInstalled
     /// Another install is running on the box (one at a time).
     case installBusy(String)
+    /// The Swapper is older than the version that added this ("2.2.0", "choosing the context window").
+    case needsUpdate(version: String, feature: String)
+    /// The box understood and said no, in its own words ("A switch is already in progress.").
+    case refused(String)
     case server(Int, String)
     case transport(String)
 
@@ -379,6 +637,9 @@ public enum SwapperError: LocalizedError, Sendable, Equatable {
         case .unsupported(let what): "This Swapper is older than \(what). Update it, or connect with an address and login."
         case .notInstalled: "That model isn't installed on the box yet — install it from Settings ▸ Model Servers."
         case .installBusy(let m): "Another install is already running on the box (\(m)). Wait for it to finish, then try again."
+        case .needsUpdate(let version, let feature):
+            "This box's Spark Swapper is older than \(version), which added \(feature). Update it from the Settings tab of its web page (Update now), then try again."
+        case .refused(let m): m
         case .server(let code, let m): "Spark Swapper replied \(code): \(m)"
         case .transport(let m): "Couldn't reach the Spark Swapper: \(m)"
         }
@@ -565,6 +826,100 @@ public final class SparkSwapperClient: @unchecked Sendable {
     private static func job(in data: Data) -> SwapperStatus.Job? {
         struct Wrapper: Decodable { var job: SwapperStatus.Job? }
         return (try? JSONDecoder().decode(Wrapper.self, from: data))?.job
+    }
+
+    // MARK: Swapper 2.1 and 2.2
+
+    /// Call an endpoint a newer Swapper added. An older one doesn't know the path (404, or 405 for a POST): that is
+    /// `.needsUpdate`, not a server fault. A 400, 403 or 409 is the box saying no in its own words (`.refused`).
+    private func newer(_ path: String, body: [String: Any]? = nil, since version: String,
+                       feature: String) async throws -> Data {
+        let (code, data) = try await signedIn(path, body: body)
+        switch code {
+        case 200...299:
+            return data
+        case 404, 405:
+            throw SwapperError.needsUpdate(version: version, feature: feature)
+        case 400, 403, 409:
+            throw SwapperError.refused(Self.message(data))
+        default:
+            throw SwapperError.server(code, Self.message(data))
+        }
+    }
+
+    /// GET /api/pictures (Swapper 2.2): whether pictures can be made now, every check behind that, the picture
+    /// service's log and what changed lately.
+    public func pictures() async throws -> SwapperPictures {
+        let data = try await newer("api/pictures", since: SwapperVersion.contextAndPictures, feature: "pictures")
+        return try Self.decode(SwapperPictures.self, data, "pictures")
+    }
+
+    /// POST /api/pictures {"enabled"} (Swapper 2.2): turn pictures on or off. Off stops ComfyUI at once, so its
+    /// memory goes back to the model; on is refused while the model serves a window that leaves no room.
+    @discardableResult
+    public func setPictures(_ enabled: Bool) async throws -> SwapperPictures {
+        let data = try await newer("api/pictures", body: ["enabled": enabled],
+                                   since: SwapperVersion.contextAndPictures, feature: "pictures")
+        return try Self.decode(SwapperPictures.self, data, "pictures")
+    }
+
+    /// POST /api/context {"key", "tokens"} (Swapper 2.2): choose the window a model is served with. A model that is
+    /// serving restarts as a job, like a switch (and comes back with the old window if the new one won't start);
+    /// otherwise the choice is kept for the next time it is switched to.
+    @discardableResult
+    public func setContext(model key: String, tokens: Int) async throws -> SwapperContextChange {
+        let data = try await newer("api/context", body: ["key": key, "tokens": tokens],
+                                   since: SwapperVersion.contextAndPictures, feature: "choosing the context window")
+        return try Self.decode(SwapperContextChange.self, data, "context")
+    }
+
+    /// GET /api/activity (Swapper 2.2): what changed on the box lately — switches, context changes, pictures on
+    /// or off — oldest first, one line each ("2026-11-09 08:12:44  Switched to Qwen3.8 27B").
+    public func activity() async throws -> [String] {
+        let data = try await newer("api/activity", since: SwapperVersion.contextAndPictures, feature: "the activity log")
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return (object?["lines"] as? [Any] ?? []).compactMap { $0 as? String }
+    }
+
+    /// POST /api/hf/inspect {"url"} (Swapper 2.1.2, an admin's connection): look a Hugging Face repo up — what it
+    /// is, how big, and whether this box can run it. Nothing is downloaded.
+    public func inspectHuggingFace(_ link: String) async throws -> SwapperHFInspection {
+        let data = try await newer("api/hf/inspect", body: ["url": link],
+                                   since: SwapperVersion.addFromHuggingFace, feature: "adding models from Hugging Face")
+        return try Self.decode(SwapperHFInspection.self, data, "Hugging Face")
+    }
+
+    /// POST /api/hf/add (Swapper 2.1.2, an admin's connection): add a Hugging Face model to the box and start
+    /// installing it. `gguf` picks the quantization of a GGUF repo (an id from `inspectHuggingFace`). An app
+    /// connection can't pass extra launch arguments or allow remote code: those stay with the Swapper's own page.
+    public func addHuggingFace(_ link: String, title: String? = nil, context: Int? = nil,
+                               gguf: String? = nil) async throws -> SwapperHFAdded {
+        var body: [String: Any] = ["url": link]
+        if let title, !title.trimmingCharacters(in: .whitespaces).isEmpty { body["title"] = title }
+        if let context, context > 0 { body["context"] = context }
+        if let gguf, !gguf.isEmpty { body["gguf"] = gguf }
+        let (code, data) = try await signedIn("api/hf/add", body: body)
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        switch code {
+        case 200...299:
+            guard let key = object["key"] as? String, !key.isEmpty else {
+                throw SwapperError.transport("unexpected Hugging Face payload (no model key)")
+            }
+            return SwapperHFAdded(key: key, job: Self.job(in: data))
+        case 409:
+            // Added, but another job is running: its card installs it later.
+            if object["added"] as? Bool == true, let key = object["key"] as? String, !key.isEmpty {
+                return SwapperHFAdded(key: key, note: Self.message(data))
+            }
+            throw SwapperError.refused(Self.message(data))
+        case 404, 405:
+            throw SwapperError.needsUpdate(version: SwapperVersion.addFromHuggingFace,
+                                           feature: "adding models from Hugging Face")
+        case 400, 403:
+            throw SwapperError.refused(Self.message(data))
+        default:
+            throw SwapperError.server(code, Self.message(data))
+        }
     }
 
     /// GET /api/connect (Swapper 2.0): the model API's address, key and certificate.

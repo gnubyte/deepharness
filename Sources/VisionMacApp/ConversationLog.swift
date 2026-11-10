@@ -89,6 +89,18 @@ public final class ConversationLog {
     public var writeDelay: TimeInterval = 0.75
     /// File writes happen here, in order, off the main thread.
     private let io = DispatchQueue(label: "vision.ConversationLog.io", qos: .utility)
+    /// Chat files found at launch that couldn't be read (damaged, or from a build this one doesn't understand).
+    public private(set) var unreadableFiles: [URL] = []
+    /// Called when a chat couldn't be written to disk (a full disk, a folder that lost its permissions), with
+    /// the reason — at most once every couple of minutes, since every later write fails the same way.
+    public var onWriteError: ((String) -> Void)?
+    private var lastWriteErrorAt: Date?
+
+    private func noteWriteFailure(_ reason: String) {
+        if let last = lastWriteErrorAt, Date().timeIntervalSince(last) < 120 { return }
+        lastWriteErrorAt = Date()
+        onWriteError?(reason)
+    }
 
     public init(dir: URL? = nil) {
         let base = dir ?? Self.defaultDir
@@ -103,6 +115,10 @@ public final class ConversationLog {
                     // Timelines load on demand (loadItems): holding every
                     // chat's full history in memory doesn't scale to a long queue.
                     rows[file.session.id] = file.session
+                } else {
+                    // Left where it is (nothing here overwrites a chat it never loaded), and reported: a chat
+                    // that silently isn't in the sidebar any more looks exactly like a chat that was deleted.
+                    unreadableFiles.append(url)
                 }
             }
         } catch {}
@@ -241,9 +257,23 @@ public final class ConversationLog {
             StoredItem(seq: $0.seq, kind: $0.kind, text: $0.text, toolName: $0.toolName,
                        argSummary: $0.argSummary, output: $0.output, isError: $0.isError, at: $0.at)
         })
-        guard let data = try? JSONEncoder().encode(file) else { return }
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(file)
+        } catch {
+            noteWriteFailure(error.localizedDescription)
+            return
+        }
         let url = fileURL(id)
-        io.async { try? data.write(to: url, options: .atomic) }
+        io.async { [weak self] in
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                // Not saved: say so now, rather than at the next launch when the chat is simply shorter.
+                let reason = error.localizedDescription
+                Task { @MainActor [weak self] in self?.noteWriteFailure(reason) }
+            }
+        }
     }
 
     /// Hand a chat's file over to the archive: written out now, then forgotten

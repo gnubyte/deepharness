@@ -48,6 +48,9 @@ public struct ToolContext: Sendable {
     /// The run is unattended work (a queue task, `/goal`): subagents keep off servers whose plans allow
     /// interactive use only.
     public let unattended: Bool
+    /// What this chat's agent has read and written, so a write over a file that changed in the meantime is
+    /// caught. Nil = not tracked.
+    public let fileLedger: FileLedger?
 
     public init(workspace: URL, policy: PermissionPolicy,
                 client: any LLMClient, registry: ToolRegistry, depth: Int = 0,
@@ -57,7 +60,8 @@ public struct ToolContext: Sendable {
                 backgroundAgents: BackgroundAgents? = nil,
                 fleet: AgentFleet? = nil, roster: AgentRoster? = nil, agentTypes: AgentCatalog? = nil,
                 retry: RetryPolicy? = nil, visionEnabled: Bool = true,
-                temperature: Double? = nil, maxOutputTokens: Int? = nil, unattended: Bool = false) {
+                temperature: Double? = nil, maxOutputTokens: Int? = nil, unattended: Bool = false,
+                fileLedger: FileLedger? = nil) {
         self.workspace = workspace
         self.policy = policy
         self.client = client
@@ -78,6 +82,56 @@ public struct ToolContext: Sendable {
         self.temperature = temperature
         self.maxOutputTokens = maxOutputTokens
         self.unattended = unattended
+        self.fileLedger = fileLedger
+    }
+}
+
+/// The files one chat's agent has read or written, each as it was on disk at that moment. Before the agent
+/// writes a file it has seen, the ledger says whether the file has changed since — you saved it in the editor,
+/// another chat's agent edited it, a formatter ran — so the write doesn't silently undo that work. A class so it
+/// outlives the engine, which is rebuilt between turns.
+public final class FileLedger: @unchecked Sendable {
+    /// A file's state on disk: when it was last modified, and its size.
+    public struct Stamp: Equatable, Sendable {
+        public var modified: Date
+        public var size: Int
+
+        public init(modified: Date, size: Int) {
+            self.modified = modified
+            self.size = size
+        }
+    }
+
+    private let lock = NSLock()
+    private var seen: [String: Stamp] = [:]
+
+    public init() {}
+
+    /// The file's state on disk now; nil when there is no such file.
+    public static func stamp(of url: URL) -> Stamp? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modified = attributes[.modificationDate] as? Date else { return nil }
+        return Stamp(modified: modified, size: (attributes[.size] as? NSNumber)?.intValue ?? 0)
+    }
+
+    private static func key(_ url: URL) -> String { url.standardizedFileURL.path }
+
+    /// The agent has just read or written `url`: remember it as it is now.
+    public func note(_ url: URL) {
+        let stamp = Self.stamp(of: url)
+        lock.withLock { seen[Self.key(url)] = stamp }
+    }
+
+    /// Whether `url` is no longer as the agent last saw it. False for a file it has never read or written (there
+    /// is nothing to compare with), and for one that is unchanged.
+    public func changedSinceSeen(_ url: URL) -> Bool {
+        guard let known = lock.withLock({ seen[Self.key(url)] }) else { return false }
+        return Self.stamp(of: url) != known
+    }
+
+    /// What a tool answers instead of writing over a file that changed since the agent last saw it.
+    public static func staleMessage(_ url: URL) -> String {
+        "Error: \(url.lastPathComponent) has changed on disk since you last read it — the user, another agent or a command edited it. Nothing was written. Read the file again, then make the change against what is there now."
     }
 }
 
@@ -128,6 +182,21 @@ public struct ToolResult: Sendable {
     }
 }
 
+/// Fitting long tool output into what a model can take.
+public enum OutputBudget {
+    /// The start and the end of `text`, with a marker in the middle saying how much is missing. Keeping only the
+    /// end (as the harness once did) silently dropped the top of a file or the first search hits while the footer
+    /// still claimed the whole range; keeping only the start drops the error a build ends with.
+    public static func middleOut(_ text: String, head: Int, tail: Int,
+                                 hint: String = "ask for a narrower range to see it") -> String {
+        let total = text.count
+        guard total > head + tail, head >= 0, tail >= 0 else { return text }
+        return String(text.prefix(head))
+            + "\n… [\(total - head - tail) characters omitted here — \(hint)] …\n"
+            + String(text.suffix(tail))
+    }
+}
+
 // MARK: - Executor protocol
 
 /// A concrete tool implementation. Stateless value types keep Swift 6 happy.
@@ -158,18 +227,10 @@ extension ToolExecutor {
         return dict[key] as? String
     }
     internal static func int(_ json: JSONString, _ key: String, default def: Int) -> Int {
-        guard let data = json.raw.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let dict = obj as? [String: Any] else { return def }
-        if let n = dict[key] as? Int { return n }
-        if let d = dict[key] as? Double { return Int(d) }
-        return def
+        JSONArgs.int(json, key, default: def)
     }
     internal static func bool(_ json: JSONString, _ key: String, default def: Bool) -> Bool {
-        guard let data = json.raw.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let dict = obj as? [String: Any] else { return def }
-        return (dict[key] as? Bool) ?? def
+        JSONArgs.bool(json, key, default: def)
     }
     internal static func dict(_ json: JSONString) -> [String: Any] {
         guard let data = json.raw.data(using: .utf8),
@@ -199,14 +260,27 @@ public enum JSONArgs {
               let obj = try? JSONSerialization.jsonObject(with: data),
               let dict = obj as? [String: Any] else { return def }
         if let n = dict[key] as? Int { return n }
-        if let d = dict[key] as? Double { return Int(d) }
+        if let d = dict[key] as? Double, d.isFinite, abs(d) < 1e15 { return Int(d) }
+        // Models that write tool calls as XML — and plenty that don't — send numbers as text ("120"). Ignoring
+        // those silently read the wrong lines and dropped timeouts.
+        if let text = dict[key] as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let n = Int(trimmed) { return n }
+            if let d = Double(trimmed), d.isFinite, abs(d) < 1e15 { return Int(d) }
+        }
         return def
     }
     public static func bool(_ json: JSONString, _ key: String, default def: Bool) -> Bool {
         guard let data = json.raw.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data),
               let dict = obj as? [String: Any] else { return def }
-        return (dict[key] as? Bool) ?? def
+        if let flag = dict[key] as? Bool { return flag }
+        // "true" / "false" as text, for the same reason as numbers above.
+        switch (dict[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true"?, "yes"?, "1"?: return true
+        case "false"?, "no"?, "0"?: return false
+        default: return def
+        }
     }
     public static func dictionary(_ json: JSONString) -> [String: Any] {
         guard let data = json.raw.data(using: .utf8),

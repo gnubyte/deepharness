@@ -19,6 +19,16 @@ final class SwapperBox: Identifiable {
     fileprivate(set) var installError: String?
     /// Models installed while Vision watched: each is offered "Switch to It".
     fileprivate(set) var justInstalled: Set<String> = []
+    /// Why the last thing asked of the box (a context window, pictures on or off) didn't happen. The box itself is
+    /// fine — it said no — so this is shown next to the control, not as the box being unreachable.
+    var actionError: String?
+    /// What is being asked of the box right now ("Turning pictures off…"), so its controls wait.
+    fileprivate(set) var working: String?
+    /// What changed on the box lately, newest first (Swapper 2.2), and why it couldn't be read.
+    fileprivate(set) var activity: [String] = []
+    fileprivate(set) var activityError: String?
+    /// When the box last answered.
+    fileprivate(set) var lastAnswered: Date?
 
     @ObservationIgnored fileprivate var client: SparkSwapperClient?
     @ObservationIgnored fileprivate var watchedJob: String?
@@ -31,7 +41,12 @@ final class SwapperBox: Identifiable {
 
     var name: String { connection.name }
     var isOnline: Bool { status != nil && lastError == nil }
-    var isSwitching: Bool { status?.isSwitching ?? false }
+    /// Status checks that failed in a row. The last status a box gave is kept while it is silent, so after a few
+    /// misses it is stale: a box that dropped off the network mid-switch must not look as if it switches forever
+    /// (sending waits on a switch).
+    fileprivate(set) var failures = 0
+    static let staleAfterFailures = 3
+    var isSwitching: Bool { failures < Self.staleAfterFailures && (status?.isSwitching ?? false) }
 
     /// "DGX Spark · Swapper 2.0.0"
     var summary: String {
@@ -51,6 +66,12 @@ final class SwapperBox: Identifiable {
     var progressLine: String? {
         guard let job = status?.job, job.isRunning else { return nil }
         let title = status?.models[job.target]?.title ?? job.target
+        if failures > 0 {
+            guard failures < Self.staleAfterFailures else {
+                return "Lost contact with \(name) while it was switching to \(title). Still trying to reach it."
+            }
+            return "Switching \(name) to \(title) · the box isn't answering, trying again"
+        }
         let step = job.currentStep?.label ?? "Working"
         let elapsed = Int(Date().timeIntervalSince1970 - job.started)
         return "Switching \(name) to \(title) · \(step) · \(elapsed / 60)m \(String(format: "%02d", elapsed % 60))s"
@@ -58,6 +79,20 @@ final class SwapperBox: Identifiable {
 
     /// The Swapper's web page.
     var webPage: URL? { URL(string: connection.url) }
+
+    /// Whether the box's Swapper has the context window, pictures and activity controls (2.2).
+    var hasContextAndPictures: Bool {
+        SwapperVersion.isAtLeast(status?.version ?? connection.version, SwapperVersion.contextAndPictures)
+    }
+
+    /// "Last answered 3 minutes ago" — for a box that has stopped answering; nil when it never did.
+    func lastAnsweredText(now: Date = Date()) -> String? {
+        guard let lastAnswered else { return nil }
+        let seconds = Int(now.timeIntervalSince(lastAnswered))
+        if seconds < 60 { return "Last answered moments ago" }
+        if seconds < 3600 { return "Last answered \(seconds / 60) minute\(seconds / 60 == 1 ? "" : "s") ago" }
+        return "Last answered \(seconds / 3600) hour\(seconds / 3600 == 1 ? "" : "s") ago"
+    }
 
     /// The model being installed right now.
     var installingKey: String? { installJob?.isRunning == true ? installJob?.installingModel : nil }
@@ -234,6 +269,8 @@ final class SparkController {
             let wasRunning = box.status?.job?.isRunning ?? false
             box.status = s
             box.lastError = nil
+            box.failures = 0
+            box.lastAnswered = Date()
             box.untrustedFingerprint = nil
             noteFacts(s, of: box)
             // An install started elsewhere (the web page, before a relaunch): follow it too.
@@ -248,8 +285,10 @@ final class SparkController {
         } catch let e as SwapperError {
             if case .untrustedCertificate(let fp) = e { box.untrustedFingerprint = fp }
             box.lastError = e.errorDescription
+            box.failures += 1
         } catch {
             box.lastError = error.localizedDescription
+            box.failures += 1
         }
     }
 
@@ -300,9 +339,16 @@ final class SparkController {
             return nil
         } catch SwapperError.notInstalled {
             // Not the box's fault: say so on the request, not as the box's state.
+            box.actionError = Self.notInstalledMessage(box)
             return Self.notInstalledMessage(box)
         } catch let e as SwapperError {
-            box.lastError = e.errorDescription
+            // A box that answered "no" (already switching, unknown model) is reachable: only a failure to reach or
+            // sign in to it is the box's state.
+            if Self.isRefusal(e) {
+                box.actionError = e.errorDescription
+            } else {
+                box.lastError = e.errorDescription
+            }
             return e.errorDescription
         } catch {
             box.lastError = error.localizedDescription
@@ -312,6 +358,257 @@ final class SparkController {
 
     static func notInstalledMessage(_ box: SwapperBox) -> String {
         "That model isn't installed on \(box.name) yet — install it from Settings ▸ Model Servers."
+    }
+
+    /// The box answered and said no (as opposed to not answering, or not letting Vision in).
+    static func isRefusal(_ error: SwapperError) -> Bool {
+        switch error {
+        case .server, .refused, .needsUpdate, .installBusy, .notInstalled, .unsupported: true
+        case .notConfigured, .untrustedCertificate, .certificateMismatch, .badLogin, .revoked, .transport: false
+        }
+    }
+
+    /// Why something asked of a box failed, noted where it belongs: a "no" from the box next to its controls
+    /// (`actionError`), a box that can't be reached or won't let Vision in as the box's state (`lastError`).
+    private func noteFailure(_ error: any Error, on box: SwapperBox) -> String {
+        guard let known = error as? SwapperError else {
+            box.lastError = error.localizedDescription
+            return error.localizedDescription
+        }
+        let message = known.errorDescription ?? "The box couldn't do that."
+        if Self.isRefusal(known) {
+            box.actionError = message
+        } else {
+            box.lastError = message
+        }
+        return message
+    }
+
+    // MARK: Context window, pictures, activity (Swapper 2.2)
+
+    /// Serve `key` with a `tokens` window. When it is serving, the box restarts it like a switch (and puts the old
+    /// window back if the new one won't start); otherwise the choice waits for the next switch to it. Returns an
+    /// error message, or nil.
+    @discardableResult
+    func setContext(_ box: SwapperBox, model key: String, tokens: Int) async -> String? {
+        box.actionError = nil
+        box.working = "Changing the context window…"
+        defer { box.working = nil }
+        let change: SwapperContextChange
+        do {
+            change = try await client(box).setContext(model: key, tokens: tokens)
+        } catch {
+            return noteFailure(error, on: box)
+        }
+        await refresh(box)
+        let title = box.status?.models[key]?.title ?? key
+        let window = ModelSizes.short(tokens)
+        if change.isRestarting {
+            box.watchedJob = change.job?.id ?? box.status?.job?.id
+            startMonitoring()
+            transport?.broadcast("Restarting **\(title)** on \(box.name) with a \(window) context window… chats pick it up when it is ready.")
+        } else if box.status?.active != key {
+            transport?.broadcast("\(title) on \(box.name) will serve a \(window) context window the next time it is switched to.")
+        }
+        return nil
+    }
+
+    /// Turn pictures (Qwen-Image next to the model) on or off. Returns an error message, or nil.
+    @discardableResult
+    func setPictures(_ box: SwapperBox, enabled: Bool) async -> String? {
+        box.actionError = nil
+        box.working = enabled ? "Turning pictures on…" : "Turning pictures off…"
+        defer { box.working = nil }
+        do {
+            let result = try await client(box).setPictures(enabled)
+            box.status?.pictures = Lenient(result)
+            return nil
+        } catch {
+            return noteFailure(error, on: box)
+        }
+    }
+
+    /// Read what changed on the box lately (newest first).
+    func loadActivity(_ box: SwapperBox) async {
+        do {
+            let lines = try await client(box).activity()
+            box.activity = Array(lines.reversed())
+            box.activityError = nil
+        } catch {
+            box.activityError = (error as? SwapperError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    // MARK: Adding a model from Hugging Face (Swapper 2.1.2)
+
+    /// Look a Hugging Face repo up on `box`: what it is and whether the box can run it. Nothing is downloaded.
+    func inspectHuggingFace(_ link: String, on box: SwapperBox) async -> (found: SwapperHFInspection?, problem: String?) {
+        do {
+            return (try await client(box).inspectHuggingFace(link), nil)
+        } catch {
+            return (nil, (error as? SwapperError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    /// Add a Hugging Face model to `box` and follow its install like any other.
+    func addHuggingFace(_ link: String, on box: SwapperBox) async -> (added: SwapperHFAdded?, problem: String?) {
+        do {
+            let added = try await client(box).addHuggingFace(link)
+            await refresh(box)
+            if let job = added.job {
+                box.installError = nil
+                box.installJob = job
+                watchInstall(box)
+            }
+            return (added, nil)
+        } catch {
+            return (nil, (error as? SwapperError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    // MARK: The agent's model_server tool
+
+    /// The box a request names: by the start of its name or host name; with no name, the box behind the main
+    /// model, else the only box.
+    private func pick(_ query: String?) -> (box: SwapperBox?, problem: String) {
+        guard !boxes.isEmpty else { return (nil, SwapperError.notConfigured.errorDescription ?? "No box is set up.") }
+        let names = boxes.map(\.name).joined(separator: ", ")
+        if let query = query?.trimmingCharacters(in: .whitespaces).lowercased(), !query.isEmpty {
+            let hits = boxes.filter { box in
+                box.name.lowercased().hasPrefix(query) || box.name.lowercased().contains(query)
+                    || (box.connection.hostname?.lowercased().hasPrefix(query) ?? false)
+                    || (box.connection.host?.hasPrefix(query) ?? false)
+            }
+            if hits.count == 1 { return (hits[0], "") }
+            return (nil, hits.isEmpty ? "No box matches “\(query)”. The boxes: \(names)."
+                                      : "“\(query)” matches several boxes: \(hits.map(\.name).joined(separator: ", ")). Say more of the name.")
+        }
+        if let primary = primaryBox { return (primary, "") }
+        if boxes.count == 1 { return (boxes[0], "") }
+        return (nil, "There are several boxes (\(names)) and none is behind this chat's model: pass `box`.")
+    }
+
+    /// The model a request names on `box`, from its last status.
+    private func model(_ query: String?, on box: SwapperBox) -> SwapperStatus.Model? {
+        guard let status = box.status else { return nil }
+        guard let query, !query.isEmpty else { return status.activeModel }
+        return status.resolve(query).flatMap { status.models[$0] }
+    }
+
+    /// What a request would do, for the permission prompt.
+    func describe(_ request: ModelServerRequest) -> String {
+        let picked = pick(request.box)
+        guard let box = picked.box else { return "Change a model server: \(picked.problem)" }
+        let own = box.id == primaryBox?.id ? " The model answering this chat is on this box, so it pauses until the box is back." : ""
+        switch request {
+        case .status, .activity:
+            return "Read \(box.name)'s status."
+        case .switchModel(_, let query):
+            let target = model(query, on: box)
+            return "Switch \(box.name) to \(target?.title ?? query) (\(target?.switchDuration ?? "a few minutes")). The model it serves now stops.\(own)"
+        case .setContext(_, let query, let tokens):
+            let target = model(query, on: box)
+            let serving = target != nil && target?.key == box.status?.active
+            return "Serve \(target?.title ?? query ?? "the model") on \(box.name) with a \(ModelSizes.short(tokens)) context window."
+                + (serving ? " It restarts (\(target?.switchDuration ?? "a few minutes")).\(own)" : " It applies the next time the model is switched to.")
+        case .setPictures(_, let enabled):
+            return "Turn pictures \(enabled ? "on" : "off") on \(box.name)."
+        case .install(_, let query):
+            let target = model(query, on: box)
+            var size = ""
+            if let summary = target?.install?.summary { size = " (\(summary))" }
+            return "Download and install \(target?.title ?? query) on \(box.name)\(size)."
+        case .addModel(_, let link, _, _):
+            return "Add the Hugging Face model \(link) to \(box.name) and download it."
+        }
+    }
+
+    /// Carry a `model_server` request out and say what happened, for the model to read.
+    func perform(_ request: ModelServerRequest) async -> String {
+        if case .status(let query) = request, query == nil {
+            // Every box, when none is named.
+            await refreshAll()
+            guard !boxes.isEmpty else { return "Error: \(SwapperError.notConfigured.errorDescription ?? "no box is set up.")" }
+            return boxes.map { box in
+                box.status?.report(name: box.name, summary: box.summary)
+                    ?? "\(box.name) — \(box.summary)\nNot reachable: \(box.lastError ?? "it hasn't answered yet.")"
+            }.joined(separator: "\n\n")
+        }
+        let picked = pick(request.box)
+        guard let box = picked.box else { return "Error: \(picked.problem)" }
+        await refresh(box)
+        guard let status = box.status, box.lastError == nil else {
+            return "Error: \(box.name) can't be reached: \(box.lastError ?? "it hasn't answered.")"
+        }
+        let own = box.id == primaryBox?.id
+        switch request {
+        case .status:
+            return status.report(name: box.name, summary: box.summary)
+        case .activity:
+            await loadActivity(box)
+            if let problem = box.activityError { return "Error: \(problem)" }
+            return box.activity.isEmpty ? "Nothing has changed on \(box.name) lately."
+                                        : "\(box.name), newest first:\n" + box.activity.prefix(40).joined(separator: "\n")
+        case .switchModel(_, let query):
+            guard let target = model(query, on: box) else {
+                return "Error: no model on \(box.name) matches “\(query)”. Keys: \(status.ordered.map(\.key).joined(separator: ", "))."
+            }
+            guard target.isInstalled else { return "Error: \(target.title) isn't installed on \(box.name). Use action install first." }
+            if target.key == status.active { return "\(box.name) is already serving \(target.title)." }
+            if status.isSwitching { return "Error: \(box.name) is already switching models. Wait for it to finish." }
+            if let failure = await swap(box, to: target.key) { return "Error: \(failure)" }
+            return "Switching \(box.name) to \(target.title) — it takes \(target.switchDuration). "
+                + (own ? "You are running on this box: your next step waits until it answers again, then continues on the new model."
+                       : "Chats on that box follow it when it is ready; call status to check.")
+        case .setContext(_, let query, let tokens):
+            guard let target = model(query, on: box) else {
+                if let query { return "Error: no model on \(box.name) matches “\(query)”." }
+                return "Error: nothing is serving on \(box.name), so say which `model`."
+            }
+            let choices = target.contextChoices
+            guard !choices.isEmpty else {
+                return "Error: \(target.title)'s context window can't be changed on \(box.name)" + (box.hasContextAndPictures ? "." : " (its Spark Swapper is older than \(SwapperVersion.contextAndPictures)).")
+            }
+            guard let choice = choices.first(where: { $0.tokens == tokens })
+                    ?? choices.first(where: { $0.name.lowercased() == ModelSizes.short(tokens).lowercased() }) else {
+                return "Error: \(target.title) serves \(choices.map(\.name).joined(separator: " or ")), not \(ModelSizes.short(tokens))."
+            }
+            let serving = target.key == status.active
+            if serving && target.window == choice.tokens { return "\(target.title) already serves a \(choice.name) window." }
+            if let failure = await setContext(box, model: target.key, tokens: choice.tokens) { return "Error: \(failure)" }
+            guard serving else { return "Saved: \(target.title) will serve \(choice.name) the next time \(box.name) switches to it." }
+            return "\(target.title) is restarting with a \(choice.name) window (\(target.switchDuration)); if it won't start, the box puts the old window back. "
+                + (own ? "You are running on this box: your next step waits until it answers again." : "Call status to check.")
+        case .setPictures(_, let enabled):
+            guard let pictures = status.pictures?.value, pictures.isInstalled else {
+                return "Error: pictures aren't set up on \(box.name)" + (box.hasContextAndPictures ? "." : " (its Spark Swapper is older than \(SwapperVersion.contextAndPictures)).")
+            }
+            if let failure = await setPictures(box, enabled: enabled) { return "Error: \(failure)" }
+            return "Pictures are \(enabled ? "on" : "off") on \(box.name). \(box.status?.pictures?.value?.summary ?? "")"
+        case .install(_, let query):
+            guard let target = model(query, on: box) else {
+                return "Error: no model on \(box.name) matches “\(query)”. Keys: \(status.ordered.map(\.key).joined(separator: ", "))."
+            }
+            if target.isInstalled { return "\(target.title) is already installed on \(box.name)." }
+            await install(target.key, on: box)
+            if let failure = box.installError { return "Error: \(failure)" }
+            var size = ""
+            if let summary = target.install?.summary { size = " (\(summary))" }
+            return "Installing \(target.title) on \(box.name)\(size). The chat is told when it is done; call status to follow it."
+        case .addModel(_, let link, let context, let install):
+            do {
+                let found = try await client(box).inspectHuggingFace(link)
+                guard install else { return found.report() }
+                guard found.canRun, found.catalog_key?.value == nil else { return "Error: not added.\n" + found.report() }
+                let added = try await client(box).addHuggingFace(link, context: context)
+                await refresh(box)
+                if added.job != nil { watchInstall(box) }
+                return "Added \(found.title ?? found.repo) to \(box.name) as `\(added.key)`. "
+                    + (added.note ?? "It is downloading now; the chat is told when it is installed, then switch to it.")
+            } catch {
+                return "Error: \((error as? SwapperError)?.errorDescription ?? error.localizedDescription)"
+            }
+        }
     }
 
     // MARK: Installing
@@ -453,6 +750,11 @@ final class SparkController {
 
     /// The banner's lines while boxes switch (or install).
     var progressLines: [String] { boxes.compactMap(\.progressLine) + boxes.compactMap(\.installProgressLine) }
+
+    /// Switch from a menu or a confirmation, where nothing else would show a failure: it is said in the chat.
+    func swapReporting(_ box: SwapperBox, to key: String) async {
+        if let failure = await swap(box, to: key) { transport?.broadcast(failure, error: true) }
+    }
 }
 
 /// "1M", "512K" — a context window in a few characters.

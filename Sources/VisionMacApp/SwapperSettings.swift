@@ -61,6 +61,77 @@ struct SwapperBoxRow: View {
     @State private var removing = false
     @State private var showModels = false
     @State private var pending: SwapperStatus.Model?
+    @State private var showActivity = false
+    @State private var windowChange: WindowChange?
+
+    /// A context window picked for a model, waiting for "Restart It" (or "Save" when the model isn't serving).
+    struct WindowChange {
+        let model: SwapperStatus.Model
+        let choice: SwapperStatus.Model.ContextChoice
+        /// The model is serving: the box restarts it.
+        let restarts: Bool
+    }
+
+    private var windowChangeMessage: String {
+        guard let change = windowChange else { return "" }
+        var text = change.restarts
+            ? "\(change.model.title) stops and loads again with a \(change.choice.name) window (\(change.model.switchDuration)). If it won't start, the box puts the old window back. Chats follow automatically."
+            : "\(change.model.title) isn't serving, so nothing restarts: it uses a \(change.choice.name) window the next time \(box.name) switches to it."
+        if let detail = change.choice.detail, !detail.isEmpty { text += " \(change.choice.name): \(detail)." }
+        if change.choice.pictures == false, box.status?.pictures?.value?.isOn == true {
+            text += " Pictures are switched off first — there's no room for them next to this window."
+        }
+        return text
+    }
+
+    /// Pictures next to the model: the switch, what the box says about it, and what's in the way.
+    @ViewBuilder
+    private func picturesRow(_ pictures: SwapperPictures) -> some View {
+        let spark = model.spark
+        VStack(alignment: .leading, spacing: 3) {
+            Toggle(isOn: Binding(get: { pictures.isOn },
+                                 set: { on in Task { await spark.setPictures(box, enabled: on) } })) {
+                Text("Pictures (Qwen-Image next to the model)").font(.caption)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .disabled(box.working != nil || box.isSwitching)
+            if let summary = pictures.summary, !summary.isEmpty {
+                Text(summary).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if pictures.isOn {
+                ForEach(Array(pictures.problems.enumerated()), id: \.offset) { _, problem in
+                    Label(problem, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(Theme.noticeTint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// What changed on the box lately, newest first.
+    @ViewBuilder
+    private var activityList: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let problem = box.activityError {
+                Text(problem).font(.caption).foregroundStyle(Theme.errorTint)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if box.activity.isEmpty {
+                Text("Nothing has changed lately.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(box.activity.prefix(30).enumerated()), id: \.offset) { _, line in
+                    Text(line).font(Theme.mono(10)).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Button("Refresh") { Task { await model.spark.loadActivity(box) } }
+                .buttonStyle(.plain).font(.caption).foregroundStyle(.tint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
+    }
 
     var body: some View {
         let spark = model.spark
@@ -76,6 +147,10 @@ struct SwapperBoxRow: View {
                         Circle().fill(dotColor).frame(width: 7, height: 7)
                             .help(box.isOnline ? "Answering" : box.lastError ?? "Not checked yet")
                         Text(box.name).font(.callout.weight(.semibold))
+                        if box.refreshing || box.working != nil {
+                            ProgressView().controlSize(.mini)
+                                .accessibilityLabel(box.working ?? "Checking \(box.name)")
+                        }
                     }
                     Text(box.summary).font(.caption).foregroundStyle(.secondary)
                     Text(box.servingLine)
@@ -83,6 +158,41 @@ struct SwapperBoxRow: View {
                         .foregroundStyle(box.lastError == nil ? Color.secondary : Theme.errorTint)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+                    if box.lastError != nil, box.untrustedFingerprint == nil {
+                        // Not answering: say since when, and offer the one thing that can help from here.
+                        HStack(spacing: 8) {
+                            if let since = box.lastAnsweredText() {
+                                Text(since).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Button("Try Again") { Task { await spark.refresh(box) } }
+                                .controlSize(.small)
+                                .disabled(box.refreshing)
+                        }
+                    } else if let memory = box.status?.memory?.value, let summary = memory.summary {
+                        HStack(spacing: 8) {
+                            if let used = memory.usedFraction {
+                                ProgressView(value: used)
+                                    .frame(width: 90)
+                                    .tint(used > 0.92 ? Theme.errorTint : Color.accentColor)
+                                    .accessibilityLabel("Memory in use")
+                            }
+                            Text("Memory: \(summary)").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if let working = box.working {
+                        Text(working).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let error = box.actionError {
+                        HStack(alignment: .top, spacing: 6) {
+                            Text(error).font(.caption).foregroundStyle(Theme.errorTint)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                            Button { box.actionError = nil } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .help("Dismiss")
+                                .accessibilityLabel("Dismiss this message")
+                        }
+                    }
                     if let line = box.progressLine {
                         Label(line, systemImage: "hourglass").font(.caption)
                     }
@@ -142,8 +252,51 @@ struct SwapperBoxRow: View {
                 }
                 .padding(.leading, 42)
             }
+            if let pictures = box.status?.pictures?.value, pictures.isInstalled {
+                picturesRow(pictures)
+                    .padding(.leading, 42)
+            }
+            if box.status != nil,
+               SwapperVersion.isAtLeast(box.status?.version ?? box.connection.version, SwapperVersion.addFromHuggingFace) {
+                DisclosureGroup("Add a model from Hugging Face") {
+                    SwapperAddModelForm(box: box)
+                        .padding(.top, 6)
+                }
+                .font(.caption)
+                .padding(.leading, 42)
+            }
+            if box.status != nil {
+                if box.hasContextAndPictures {
+                    DisclosureGroup(isExpanded: $showActivity) {
+                        activityList
+                    } label: {
+                        Text("Recent activity").font(.caption)
+                    }
+                    .padding(.leading, 42)
+                    .onChange(of: showActivity) { _, shown in
+                        if shown { Task { await spark.loadActivity(box) } }
+                    }
+                } else {
+                    Text("Update this box's Spark Swapper to \(SwapperVersion.contextAndPictures) or later (its web page ▸ Settings ▸ Update now) to choose the context window, switch pictures on or off, and see its activity from here.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, 42)
+                }
+            }
         }
         .padding(12)
+        .alert("Serve \(windowChange?.model.title ?? "") with \(windowChange?.choice.name ?? "")?",
+               isPresented: Binding(get: { windowChange != nil }, set: { if !$0 { windowChange = nil } })) {
+            Button(windowChange?.restarts == true ? "Restart It" : "Save") {
+                if let change = windowChange {
+                    Task { await spark.setContext(box, model: change.model.key, tokens: change.choice.tokens) }
+                }
+                windowChange = nil
+            }
+            Button("Cancel", role: .cancel) { windowChange = nil }
+        } message: {
+            Text(windowChangeMessage)
+        }
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.corner))
         .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(Theme.hairline))
         .alert("Rename \(box.name)", isPresented: $renaming) {
@@ -161,6 +314,7 @@ struct SwapperBoxRow: View {
                isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
             Button("Switch") {
                 if let target = pending { Task { await spark.swap(box, to: target.key) } }
+                // (A failure shows on this row: the box's error line, or `actionError` when the box said no.)
                 pending = nil
             }
             Button("Cancel", role: .cancel) { pending = nil }
@@ -198,6 +352,25 @@ struct SwapperBoxRow: View {
                     Text("Install: \(install)").font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if m.isInstalled, !m.contextChoices.isEmpty {
+                    // The windows the box can serve it with (Swapper 2.2): picking one asks first.
+                    Menu {
+                        ForEach(m.contextChoices) { choice in
+                            Button {
+                                windowChange = WindowChange(model: m, choice: choice, restarts: m.key == status.active)
+                            } label: {
+                                Text(choice.detail.map { "\(choice.name) — \($0)" } ?? choice.name)
+                            }
+                            .disabled(choice.tokens == m.window)
+                        }
+                    } label: {
+                        Text("Context window: \(ModelSizes.short(m.window))").font(.caption)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(status.isSwitching || box.working != nil)
+                    .help("Serve this model with a different context window")
+                }
             }
             Spacer()
             if m.key == status.active {
@@ -214,6 +387,93 @@ struct SwapperBoxRow: View {
                     .disabled(box.installingKey != nil)
                     .help("Downloads and sets the model up on the box. One install runs at a time.")
             }
+        }
+    }
+}
+
+/// Add a model to a box from a Hugging Face link: check it first (what it is, how big, whether this box can run
+/// it — nothing is downloaded), then add it, which starts its install. The box decides how to run it; extra
+/// launch arguments and remote code stay with the Swapper's own page.
+struct SwapperAddModelForm: View {
+    @Environment(AppModel.self) private var model
+    let box: SwapperBox
+    @State private var link = ""
+    @State private var working: String?
+    @State private var found: SwapperHFInspection?
+    /// The link `found` is about (the field may have been edited since).
+    @State private var foundLink = ""
+    @State private var problem: String?
+    @State private var done: String?
+
+    private var trimmed: String { link.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("Link", text: $link, prompt: Text("https://huggingface.co/owner/model  or  owner/model"))
+                    .font(Theme.mono(11))
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { Task { await check() } }
+                Button(working ?? "Check") { Task { await check() } }
+                    .controlSize(.small)
+                    .disabled(working != nil || trimmed.isEmpty)
+            }
+            if let problem {
+                Text(problem).font(.caption).foregroundStyle(Theme.errorTint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let done {
+                Text(done).font(.caption).foregroundStyle(Theme.successTint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let found, foundLink == trimmed {
+                Text(found.report())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if found.canRun, found.catalog_key?.value == nil {
+                    Button("Add and Install on \(box.name)") { Task { await add() } }
+                        .controlSize(.small)
+                        .disabled(working != nil || box.installingKey != nil)
+                        .help(box.installingKey != nil ? "Another install is running on this box. One runs at a time."
+                                                       : "Downloads the model to the box and sets it up. This can take a while.")
+                }
+            }
+            Text("Needs a connection made by an admin of the box. Gated models also need a Hugging Face token saved on the Swapper's Settings tab.")
+                .font(.caption).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func check() async {
+        let asked = trimmed
+        guard !asked.isEmpty, working == nil else { return }
+        working = "Checking…"
+        defer { working = nil }
+        problem = nil
+        done = nil
+        found = nil
+        let result = await model.spark.inspectHuggingFace(asked, on: box)
+        found = result.found
+        foundLink = asked
+        problem = result.problem
+    }
+
+    private func add() async {
+        let asked = trimmed
+        guard !asked.isEmpty, working == nil else { return }
+        working = "Adding…"
+        defer { working = nil }
+        problem = nil
+        let result = await model.spark.addHuggingFace(asked, on: box)
+        if let added = result.added {
+            done = added.note ?? "Added as “\(found?.title ?? added.key)”. It is downloading now — the install shows above, and the chat is told when it is ready to switch to."
+            found = nil
+            link = ""
+        } else {
+            problem = result.problem
         }
     }
 }

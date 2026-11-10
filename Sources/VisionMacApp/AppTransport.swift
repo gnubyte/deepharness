@@ -97,6 +97,9 @@ public final class AppTransport {
     @ObservationIgnored private var gates: [String: (cont: CheckedContinuation<Bool, Never>, sessionID: String)] = [:]
     /// Screen/computer approvals per chat, kept across engine rebuilds.
     @ObservationIgnored private var computerGrants: [String: ComputerGrants] = [:]
+    @ObservationIgnored private var fileLedgers: [String: FileLedger] = [:]
+    /// When each kind of save failure was last put in the banner (see `reportSaveFailure`).
+    @ObservationIgnored private var saveFailureReported: [String: Date] = [:]
     /// Server-reported context ceilings (from overflow errors), which a later
     /// probe of the advertised window must not raise again.
     @ObservationIgnored private var overflowCeiling: [String: Int] = [:]
@@ -216,6 +219,11 @@ public final class AppTransport {
     @ObservationIgnored var isServerSwitching: (() -> Bool)?
     /// Handles `/swap [model]`.
     @ObservationIgnored var onSwapCommand: ((String?, SessionVM) -> Void)?
+    /// The agent's `model_server` tool: whether any Spark Swapper box is connected, what a request would do (for
+    /// the permission prompt), and carrying one out.
+    @ObservationIgnored var modelServerConfigured: (() -> Bool)?
+    @ObservationIgnored var modelServerDescribe: (@MainActor (ModelServerRequest) async -> String)?
+    @ObservationIgnored var modelServerPerform: (@MainActor (ModelServerRequest) async -> String)?
 
     // MARK: - Chats without a project
 
@@ -282,6 +290,13 @@ public final class AppTransport {
         reload()
         refreshDrafts()
         loadQueue()
+        // Chats that can't be written, or couldn't be read back, are said out loud.
+        log.onWriteError = { [weak self] reason in self?.reportSaveFailure("this conversation", reason) }
+        if banner == nil, !log.unreadableFiles.isEmpty {
+            let count = log.unreadableFiles.count
+            banner = "\(count) chat\(count == 1 ? "" : "s") couldn't be read and \(count == 1 ? "isn't" : "aren't") in the sidebar. "
+                + "The file\(count == 1 ? " is" : "s are") untouched in \(log.directory.path) (\(log.unreadableFiles.prefix(3).map(\.lastPathComponent).joined(separator: ", "))\(count > 3 ? ", …" : ""))."
+        }
         config.onRoutesChanged = { [weak self] in self?.refreshFleet() }
         refreshFleet()
     }
@@ -386,6 +401,7 @@ public final class AppTransport {
         engines[id] = nil
         engineKeys[id] = nil
         computerGrants[id] = nil
+        fileLedgers[id] = nil
         vaultGrants[id] = nil
         backgroundPools.removeValue(forKey: id)?.stopAll()
         agentQueuedCount[id] = nil
@@ -446,8 +462,21 @@ public final class AppTransport {
                                                     withIntermediateDirectories: true)
             try data.write(to: queueFile, options: .atomic)
         } catch {
-            // Non-fatal; the in-memory queue keeps working for this session.
+            // Non-fatal — the in-memory queue keeps working for this session — but not silent: a queue that
+            // isn't on disk is gone after a restart.
+            reportSaveFailure("the task queue", error.localizedDescription)
         }
+    }
+
+    /// Something couldn't be saved: say so in the banner, with what and why, instead of letting it show up as
+    /// missing work at the next launch. (Repeats of the same failure don't re-raise a banner the user closed
+    /// within the last two minutes.)
+    func reportSaveFailure(_ what: String, _ reason: String) {
+        let key = what
+        if let last = saveFailureReported[key], Date().timeIntervalSince(last) < 120 { return }
+        saveFailureReported[key] = Date()
+        banner = "\(AppIdentity.name) couldn't save \(what): \(reason) Check that the disk has room and that "
+            + "\(skillLocations.appSupport.path) can be written to — until then, new work may not survive a restart."
     }
 
     // MARK: Queue CRUD
@@ -1102,6 +1131,15 @@ public final class AppTransport {
                 await self?.runAutomationByIdOrName(id, name) ?? false
             }))
         }
+        // The user's own model servers (Spark Swapper boxes): the model can see what each serves and — asking
+        // first, unless the chat has full access — switch it, change its window, or install a model.
+        if modelServerConfigured?() == true {
+            extra.append(ModelServerTool(
+                describe: { [weak self] request in await self?.modelServerDescribe?(request) ?? "Change a model server." },
+                perform: { [weak self] request in
+                    await self?.modelServerPerform?(request) ?? "Error: the app is closing."
+                }))
+        }
         extra.append(SearchChatsTool(directory: skillLocations.appSupport.appendingPathComponent("conversations", isDirectory: true)))
         extra.append(ImportMemoryTool(memory: memory))
         extra.append(HarnessInfoTool(memory: memory, vault: vault, promptHistory: promptHistory,
@@ -1192,7 +1230,8 @@ public final class AppTransport {
             backgroundAgents: backgroundPool(for: sessionID),
             fleet: fleet,
             roster: roster(for: sessionID),
-            agentTypes: agentCatalog(for: vm)
+            agentTypes: agentCatalog(for: vm),
+            fileLedger: fileLedger(for: sessionID)
         )
         engines[sessionID] = engine
         return engine
@@ -1344,6 +1383,15 @@ public final class AppTransport {
         vaultRevision += 1
     }
 
+    /// What a chat's agent has read and written, kept across its turns: a file you save in the editor between two
+    /// turns is then known to have changed before the agent writes over it.
+    private func fileLedger(for sessionID: String) -> FileLedger {
+        if let existing = fileLedgers[sessionID] { return existing }
+        let fresh = FileLedger()
+        fileLedgers[sessionID] = fresh
+        return fresh
+    }
+
     private func grants(for sessionID: String) -> ComputerGrants {
         if let existing = computerGrants[sessionID] { return existing }
         let fresh = ComputerGrants()
@@ -1410,34 +1458,39 @@ public final class AppTransport {
     /// tests and when not signed in.
     @ObservationIgnored public var guardianSync: (@Sendable (SessionVM.PromptRecord, String) -> Void)?
 
+    /// Send a prompt. Returns whether it was taken: false means nothing was sent (the agent is still working, or
+    /// the model's server is switching), a note in the chat says why, and the caller keeps what the user typed —
+    /// the composer once cleared the prompt and its attachments first, and "send again" meant typing it again.
+    @discardableResult
     public func send(_ text: String, sessionID: String,
-                     attachments: [MessageAttachment] = []) {
-        guard let vm = sessions.first(where: { $0.id == sessionID }) else { return }
+                     attachments: [MessageAttachment] = []) -> Bool {
+        guard let vm = sessions.first(where: { $0.id == sessionID }) else { return false }
         guard !vm.running, runTasks[sessionID] == nil else {
-            vm.note("The agent is still working; send again when it is done.")
-            return
+            vm.note("The agent is still working; your message is still in the box — send it when this is done.")
+            return false
         }
         autoContinuations[sessionID] = 0
         if attachments.isEmpty, let command = SlashCommand.parse(text) {
             runCommand(command, vm: vm)
-            return
+            return true
         }
         // "/deploy staging": a skill or command invoked by name.
         if attachments.isEmpty, let (skill, args) = matchSkillCommand(text, vm: vm),
            let expanded = invocationText(skill, arguments: args) {
             if isServerSwitching?() == true {
-                vm.note("The main model's server is switching models right now — send again once it says it's ready.")
-                return
+                vm.note("The main model's server is switching models right now. Your message is still in the box — send it once the chat says the model is ready.")
+                return false
             }
             let display = "/\(skill.slug)" + (args.isEmpty ? "" : " \(args)")
             runTasks[sessionID] = Task { await runTurn(vm, text: display, modelText: expanded) }
-            return
+            return true
         }
         if isServerSwitching?() == true {
-            vm.note("The main model's server is switching models right now — send again once it says it's ready (usually a few minutes).")
-            return
+            vm.note("The main model's server is switching models right now (usually a few minutes). Your message is still in the box — send it once the chat says the model is ready.")
+            return false
         }
         runTasks[sessionID] = Task { await runTurn(vm, text: text, attachments: attachments) }
+        return true
     }
 
     // MARK: - Slash commands
@@ -1731,17 +1784,13 @@ public final class AppTransport {
             ?? ""
         let failures = Self.validationFailures(state: state, reply: reply)
         if let failure = failures.first {
+            // The run is over by the time it is validated, and nothing here starts another: saying "executing
+            // again to fix it" (as this once did) left the card on a pulsing "Executing" that never ended and the
+            // prompt's history row on "working". Finish, and say plainly what didn't pass — the user decides
+            // whether to send it back.
             state.lastValidationFailure = failure
-            if state.loopBack(reason: failure) {
-                vm.turnPhase = state
-                vm.note("⚠️ Validation failed: \(failure) — executing again to fix it"
-                        + (state.loopbackCap.map { " (capped at \($0) retries)" } ?? "") + ".")
-                return
-            }
-            // Capped out: finish with what was achieved, and say what didn't pass.
-            state.addEvidence(.init(kind: .note, title: "Validation hit the retry cap",
-                                    detail: "Last failure: \(failure)"))
-            state.beginResults(summary: "Completed with unresolved validation failures: \(failure)")
+            state.addEvidence(.init(kind: .note, title: "Validation warning", detail: failure))
+            state.beginResults(summary: "Finished, but a check didn't pass: \(failure). Ask the agent to look again if that matters here.")
             vm.turnPhase = state
             phasesFinish(vm, completed: false)
             return
@@ -1872,12 +1921,15 @@ public final class AppTransport {
     /// happened — never the model's word alone.
     static func validationFailures(state: TurnPhaseState, reply: String) -> [String] {
         var failures: [String] = []
-        // A turn that ended in an error message didn't complete its work.
-        for marker in ["Error:", "error: ", "Traceback (most recent call last)", "Build FAILED"] {
-            if reply.contains(marker) {
-                failures.append("the reply reports an error (\(marker.trimmingCharacters(in: .whitespaces)))")
-                break
-            }
+        // A turn that ended in an error message didn't complete its work. Only the closing line counts for the
+        // loose markers: a reply that explains an error it fixed, or quotes one, mentions "error:" too.
+        let closing = reply.components(separatedBy: "\n")
+            .last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        if closing.hasPrefix("Error:") || closing.lowercased().hasPrefix("error: ") {
+            failures.append("the reply ends with an error")
+        } else if let marker = ["Traceback (most recent call last)", "Build FAILED"].first(where: { closing.contains($0) }) {
+            failures.append("the reply ends with an error (\(marker))")
         }
         // An empty reply after executing is not an answer.
         if reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, state.plan != nil || state.filesChanged > 0 {
@@ -2884,8 +2936,12 @@ public final class AppTransport {
         if text.isEmpty {
             try? FileManager.default.removeItem(at: url)
         } else {
-            try? FileManager.default.createDirectory(at: draftsDirectory, withIntermediateDirectories: true)
-            try? text.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try FileManager.default.createDirectory(at: draftsDirectory, withIntermediateDirectories: true)
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                reportSaveFailure("your unsent draft", error.localizedDescription)
+            }
         }
     }
 

@@ -132,9 +132,12 @@ public struct ReadFileTool: ToolExecutor {
         let (url, _) = context.policy.resolve(raw)
         // CRLF and lone CR become LF so line math is sane, and so an edit copied
         // from this output matches a CRLF file (the edit writes CRLF back).
+        // (Stamped before the read: a change that lands in between is then seen as a change, not missed.)
+        let stamp = FileLedger.stamp(of: url)
         guard let read = FileText.read(url) else {
             return .init(output: "Error: cannot read \(url.lastPathComponent): not a readable text file (binary or missing).")
         }
+        if stamp == FileLedger.stamp(of: url) { context.fileLedger?.note(url) }
         let text = read.text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -172,6 +175,10 @@ public struct WriteFileTool: ToolExecutor {
         let (url, _) = context.policy.resolve(raw)
         var isDir: ObjCBool = false
         let existed = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && !isDir.boolValue
+        // Replacing a whole file with what the model remembers of it throws away whatever changed since it looked.
+        if existed, context.fileLedger?.changedSinceSeen(url) == true {
+            return .init(output: FileLedger.staleMessage(url))
+        }
         do {
             // Rewriting an existing file keeps its BOM and line endings. Content that
             // already uses CRLF is stored as written, so it is not converted twice.
@@ -179,6 +186,7 @@ public struct WriteFileTool: ToolExecutor {
             if existed, let previous = FileText.read(url) { format = previous.format }
             if content.contains("\r\n") { format.usesCRLF = false }
             try FileText.write(to: url, text: content, format: format)
+            context.fileLedger?.note(url)
             let change = FileChange(url, existed ? .modified : .created)
             return .init(output: "Wrote \(content.count) characters to \(url.lastPathComponent).", files: [change])
         } catch {
@@ -193,7 +201,7 @@ public struct EditTool: ToolExecutor {
     public static let name = "edit"
     public static let spec = ToolSpec(
         name: name,
-        description: "Replace an exact block of text in a file. old_string must match exactly (including whitespace) and must be unique in the file unless replace_all is true. Creates the file with just new_string when the file does not exist.",
+        description: "Replace an exact block of text in a file. old_string must match exactly (including whitespace) and must be unique in the file unless replace_all is true. Leave line-number prefixes from read_file out of old_string. To create a new file, use write_file (or an empty old_string).",
         parameters: """
         {"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string","description":"Exact text to find"},"new_string":{"type":"string","description":"Replacement text"},"replace_all":{"type":"boolean","description":"Replace every occurrence"},"description":{"type":"string"}},"required":["file_path","old_string","new_string"]}
         """
@@ -207,6 +215,9 @@ public struct EditTool: ToolExecutor {
         }
         let replaceAll = Self.bool(args, "replace_all", default: false)
         let (url, _) = context.policy.resolve(raw)
+        guard old != new else {
+            return .init(output: "Error: old_string and new_string are the same, so nothing would change.")
+        }
 
         // Read, change and write back as one step: another agent editing this file
         // waits its turn and then starts from what this edit left.
@@ -214,6 +225,13 @@ public struct EditTool: ToolExecutor {
             var isDir: ObjCBool = false
             let isFile = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && !isDir.boolValue
             if !isFile {
+                // An edit of text that should already be there, on a path with no file: the path is wrong.
+                // Creating a file here (as this once did) reported success, left a stray file holding only the
+                // new block, and the file that was meant stayed as it was.
+                guard old.isEmpty else {
+                    let what = isDir.boolValue ? "is a folder, not a file" : "does not exist"
+                    return .init(output: "Error: \(url.path) \(what), so there is nothing to edit. Check the path (glob finds a file by name). To create a new file, use write_file.")
+                }
                 do {
                     try FileText.write(to: url, text: new, format: .default)
                     return .init(output: "Created \(url.lastPathComponent) with the new block.",
@@ -232,9 +250,12 @@ public struct EditTool: ToolExecutor {
             let needle = crlf ? old.replacingOccurrences(of: "\r\n", with: "\n") : old
             let replacement = crlf ? new.replacingOccurrences(of: "\r\n", with: "\n") : new
 
+            guard !needle.isEmpty else {
+                return .init(output: "Error: \(url.lastPathComponent) already exists, and an empty old_string only creates a new file. Give the text to replace, or use write_file to replace the whole file.")
+            }
             let occurrences = FileText.countOccurrences(of: needle, in: existing)
             guard occurrences >= 1 else {
-                return .init(output: "Error: old_string not found in \(url.lastPathComponent). Read the file and copy the exact text (whitespace matters).")
+                return .init(output: "Error: old_string not found in \(url.lastPathComponent). Read the file and copy the exact text (whitespace matters).\(Self.notFoundHint(needle: needle, in: existing))")
             }
             if occurrences > 1 && !replaceAll {
                 return .init(output: "Error: old_string matches \(occurrences) times. Include more surrounding lines to make it unique, or set replace_all=true.")
@@ -248,15 +269,61 @@ public struct EditTool: ToolExecutor {
             } else {
                 return .init(output: "Error: old_string not found.")
             }
+            // An edit is made against the file as it is now, and only where old_string still matches, so one that
+            // changed since the agent looked is still safe to edit — but the agent should know the rest moved.
+            let movedOn = context.fileLedger?.changedSinceSeen(url) == true
             do {
                 try FileText.write(to: url, text: updated, format: read.format)
+                context.fileLedger?.note(url)
                 let n = replaceAll ? occurrences : 1
-                return .init(output: "Edited \(url.lastPathComponent): replaced \(n) occurrence\(n == 1 ? "" : "s").",
+                let note = movedOn
+                    ? " Note: this file had changed on disk since you last read it (the user, another agent or a command edited it). Your edit went into the current text; read the file again before relying on what you remember of the rest."
+                    : ""
+                return .init(output: "Edited \(url.lastPathComponent): replaced \(n) occurrence\(n == 1 ? "" : "s").\(note)",
                              files: [FileChange(url, .modified)])
             } catch {
                 return .init(output: "Error: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Why `needle` isn't in `text`, when the reason is one a model can act on: it copied read_file's line
+    /// numbers along, or the block is there with different indentation or spacing — and where. Empty when
+    /// nothing recognisable explains it.
+    static func notFoundHint(needle: String, in text: String) -> String {
+        let wanted = needle.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard let first = wanted.first else { return "" }
+        if wanted.allSatisfy({ $0.range(of: #"^\d+ \|( |$)"#, options: .regularExpression) != nil }) {
+            return " old_string includes read_file's line-number prefixes (like \"12 | \"): leave them out."
+        }
+        let lines = text.components(separatedBy: "\n")
+        guard lines.count <= 50_000 else { return "" }
+        // The file's lines that aren't blank, each with its line number, compared without their indentation.
+        var filled: [(number: Int, text: String)] = []
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { filled.append((index + 1, trimmed)) }
+        }
+        if wanted.count <= filled.count {
+            for start in 0...(filled.count - wanted.count) where filled[start].text == first {
+                var same = true
+                for offset in 1..<wanted.count where filled[start + offset].text != wanted[offset] {
+                    same = false
+                    break
+                }
+                if same {
+                    let last = filled[start + wanted.count - 1].number
+                    return " The same lines are at \(filled[start].number)–\(last) with different indentation or spacing: read those lines again and copy them exactly."
+                }
+            }
+        }
+        if let hit = filled.first(where: { $0.text == first }) {
+            return wanted.count == 1
+                ? " Line \(hit.number) has this text with different spacing around it: read it again and copy it exactly."
+                : " Its first line is at line \(hit.number), but what follows there is different: read from line \(hit.number) and copy the current text."
+        }
+        return ""
     }
 }
 
